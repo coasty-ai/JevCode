@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { BSU, ESU, classifyFrames, eraseHeights, framesTallerThan, latin1View, paintedMax, paintedRows, regionRows, ruleRegionRows, splitFrames, splitRegion } from '../../../src/perf/pty.js';
-import { frames as ptyFrames, regionCrossCheck, units } from '../../pty/helpers.js';
+import { frames as ptyFrames, regionCrossCheck, syncFrames, units } from '../../pty/helpers.js';
 
 const RULE = '─'.repeat(20);
 
@@ -27,7 +27,27 @@ describe('units() (pty helpers): rows by the next write’s erase count, cross-c
     expect(all.map((u) => u.rows)).toEqual([3, 3, 3, 3]);
     expect(all.map((u) => u.eraseRows)).toEqual([3, 3, 3, null]);
     expect(all[1]!.staticRows).toEqual(['[you] hi']);
-    expect(regionCrossCheck(all)).toEqual({ compared: 3, mismatches: [] });
+    expect(regionCrossCheck(all)).toEqual({ compared: 3, splash: 0, mismatches: [] });
+  });
+
+  it('the splash box on TOP of the region (above the rule) is dynamic: `region` starts at it, the cross-check counts it apart, and the commit frame writes the same rows as scrollback', () => {
+    // the owner's directive of 2026-09-23: the classic splash box sits above the rule in the committed block's own rows
+    const G = '    ██ ███';
+    const box = ['', G, G, G, G, G, ''];
+    const cap = write([...box, RULE, '› ', 'idle'], 0) + write([...box, RULE, '› ', 'idle'], 10) + write([RULE, '› ', 'idle'], 3) + write([RULE, '› h', 'idle'], 3);
+    const all = units(cap).filter((u) => u.ruleIndex >= 0);
+    // frame 0 (the splash): Ink erased the box with the region; frame 1 (the commit): the box's rows are its scrollback
+    expect(all.map((u) => u.rows)).toEqual([10, 3, 3, 3]);
+    expect(all[0]).toMatchObject({ eraseRows: 10, ruleRows: 3, staticRows: [] });
+    expect(all[0]!.region).toEqual([...box, RULE, '›', 'idle']);
+    expect(all[1]).toMatchObject({ eraseRows: 3, ruleRows: 3, staticRows: box });
+    expect(all[1]!.region).toEqual([RULE, '›', 'idle']);
+    expect(regionCrossCheck(all)).toEqual({ compared: 3, splash: 1, mismatches: [] });
+    // the same split in the synchronized-frame parser
+    const sync = syncFrames(cap).filter((f) => f.ruleIndex >= 0);
+    expect(sync[0]!.region).toEqual([...box, RULE, '›', 'idle']);
+    expect(sync[0]!.dynamic).toEqual([RULE, '› ', 'idle']);
+    expect(sync[1]!.region).toEqual([RULE, '›', 'idle']);
   });
 
   it('blank rows closing the region count (the rule parse drops them); a live tail above the rule is dynamic, not scrollback', () => {

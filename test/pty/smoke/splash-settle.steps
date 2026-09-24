@@ -1,7 +1,7 @@
 # the startup splash left alone (TUI-DESIGN-3 §3.4 / §3.5): no key — the wordmark ticks at 50 ms (≤ 15 frames in 700 ms) and settles by
-# itself into the held mark with its caption `◆ <version>` (the round-3 settle sentinel); every frame after it carries the mark; the loop
-# rests for 5.75 s after `splash:done`, so the 5 s after the settle write no frame (the frames between the caption frame and the echo of
-# the marker key are counted by run-smoke.sh: 0); zero clears
+# itself into the held mark with its caption `◆ <version>` (the round-3 settle sentinel), which is then COMMITTED as the first scrollback
+# block (the owner's directive of 2026-09-23); a committed mark is never repainted, so the 5 s after the commit write no frame (the frames
+# between the commit and the echo of the marker key are counted by run-smoke.sh: 0); zero clears
 expect \x1b\[\?25l
 expect step 0/
 expect ◆(?:\x1b\[[0-9;]*m)* (?:\x1b\[[0-9;]*m)*\d+\.\d+\.\d+

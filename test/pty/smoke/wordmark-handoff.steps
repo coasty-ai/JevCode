@@ -1,6 +1,6 @@
-# the hand-off, as amended by owner directive 2: the mark is PINNED, so a task keeps it up for the WHOLE run (a wordmark frame between
-# `[run] start` and `end`, and after `end` the strip AND the mark); at 24 rows (< WORDMARK_SHARE_MIN_ROWS) `/panel` still takes the slot
-# and `/panel off` gives it back
+# the hand-off, as amended by the owner's directive of 2026-09-23: the settled mark is COMMITTED as the first scrollback block before the
+# task, so no frame of the run or after `end` draws it in the dynamic region; the strip keeps the rule row after `end`; `/panel` opens the
+# panel under the rule and `/panel off` gives the strip back, neither touching the mark
 expect \x1b\[\?25l
 expect Say hi
 expect sess \$

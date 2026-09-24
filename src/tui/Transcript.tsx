@@ -29,7 +29,9 @@
  * label row joins the body with one space); in `flush` the label already *is* row 0's first token. The cap row is the one case
  * where the rows do not reconstruct the item and is declared a truncation marker, the same class as `clipDetail`'s
  * `…[N lines omitted]`. Colours come from the theme (`/theme` changes new items only, R4); the `epoch` key remounts `<Static>` with
- * a fresh array past the 20,000-item soft cap (the header is printed with epoch 0 only). Every item renders inside its own
+ * a fresh array past the 20,000-item soft cap (the mark and the header are printed with epoch 0 only). The owner's directive of
+ * 2026-09-23: the session's settled wordmark (`WordmarkBlock.tsx`), when the App hands one over, is index 0 — above the header
+ * and every item — and is no speaker (the item under it keeps the spacing of an empty scrollback's top). Every item renders inside its own
  * `PaneBoundary` (§13.4). The component is memoised: a hidden-only batch changes no prop, so it dirties no `<Static>` subtree
  * (§4.5); the App's `keySeq` hands `<Static>` a fresh `style` per key so a key's frame takes Ink's immediate path (TD2 D-F).
  */
@@ -44,6 +46,7 @@ import { itemRole, labelRole, textProps, themeFor, type ColorOn, type ColorRole,
 import { GLYPHS, glyphTwin, type GlyphSet } from './glyphs.js';
 import { FLUSH_MIN_COLUMNS, LABEL_GUTTER, STACKED_MIN_COLUMNS, STATIC_ITEM_MAX_ROWS, cappedTailRow, cappedTailRowAscii, cappedTailRungs, capItemRows, gutterBodyWidth, gutterIndent, gutterMode, isCappedTailRow, rungBodyWidth, type GutterMode } from './gutter.js';
 import { joinWrapped, wrapBody, wrapBodyCut } from './transcript/wrap.js';
+import { WordmarkBlankBlock, WordmarkBlock, committedMarkRows, isCommittedMark, type CommittedMark } from './WordmarkBlock.js';
 
 /**
  * TUI-DESIGN-4 §2.3 / §3.1.2: `src/tui/gutter.ts` is the rung's home (zero imports, so the no-Ink `block/lines.ts` and the
@@ -68,6 +71,13 @@ export const DETAIL_TABLE_RE = /^(\S+\s{2,})/;
 
 export interface TranscriptProps {
   items: readonly TranscriptItem[];
+  /**
+   * The owner's directive of 2026-09-23: the session's settled wordmark, the FIRST block of the scrollback (above the
+   * header). The App hands it over at the commit — before the first item ever reaches `<Static>`, because `<Static>`
+   * writes by index and a block prepended after the first flush would reprint the tail — and never changes it after.
+   * Printed with epoch 0 only, like the header.
+   */
+  mark?: CommittedMark | null;
   /** rendered once at the top of the scrollback (the task / session header, present from the first frame) */
   header?: TranscriptItem;
   theme?: Theme;
@@ -435,22 +445,41 @@ export function TranscriptRow({ item, prev, theme, color, glyphs, columns }: { i
   );
 }
 
-function TranscriptImpl({ items, header, theme = themeFor('dark'), color = true, glyphs = GLYPHS.unicode, epoch = 0, onFail, fault, log, columns, keySeq = 0, paintSeq = 0 }: TranscriptProps): React.JSX.Element {
+function TranscriptImpl({ items, mark, header, theme = themeFor('dark'), color = true, glyphs = GLYPHS.unicode, epoch = 0, onFail, fault, log, columns, keySeq = 0, paintSeq = 0 }: TranscriptProps): React.JSX.Element {
   // a new (empty) style object per key (and per leading-edge stream flush) → Ink's reconciler runs `commitUpdate` on the
   // <Static> box → immediate render
   const staticStyle = useMemo<StaticStyle>(() => ({}), [keySeq, paintSeq]);
   // Prepending keeps the array append-only from <Static>'s point of view: index 0 never changes. After a soft-cap
-  // remount (epoch > 0) the header is already in the scrollback and is never printed again.
-  const all = useMemo(() => (header && epoch === 0 ? [header, ...items] : [...items]), [header, items, epoch]);
+  // remount (epoch > 0) the mark and the header are already in the scrollback and are never printed again.
+  const all = useMemo((): (TranscriptItem | CommittedMark)[] => {
+    if (epoch !== 0) return [...items];
+    const lead: (TranscriptItem | CommittedMark)[] = [];
+    if (mark) lead.push(mark);
+    if (header) lead.push(header);
+    return lead.length === 0 ? [...items] : [...lead, ...items];
+  }, [mark, header, items, epoch]);
+  // `render:static` targets the first transcript item only (never the mark): every item of one pass renders before any
+  // boundary's componentDidCatch marks the fault as fired, so a fault on all of them would degrade the whole pass
+  const firstItem = mark && epoch === 0 ? 1 : 0;
   return (
     <Static key={`static-${epoch}`} items={all} style={staticStyle}>
-      {(item, index) => (
-        // `render:static` targets the first item only: every item of one pass renders before any boundary's
-        // componentDidCatch marks the fault as fired, so a fault on all of them would degrade the whole pass
-        <PaneBoundary key={item.key} pane={STATIC_ITEM_PANE} fault={index === 0 ? fault : undefined} {...(onFail ? { onFail } : {})} {...(log !== undefined ? { log } : {})} fallback={(f) => <Text color="red" wrap="truncate">{itemFailedRow(f.error.name, log)}</Text>}>
-          <TranscriptRow item={item} prev={index > 0 ? (all[index - 1] ?? null) : null} theme={theme} color={color} glyphs={glyphs} columns={columns} />
-        </PaneBoundary>
-      )}
+      {(entry, index) => {
+        if (isCommittedMark(entry)) {
+          return (
+            <PaneBoundary key={entry.key} pane="wordmark" fault={fault} {...(onFail ? { onFail } : {})} {...(log !== undefined ? { log } : {})} fallback={() => <WordmarkBlankBlock rows={committedMarkRows(entry)} />}>
+              <WordmarkBlock mark={entry} theme={theme} color={color} />
+            </PaneBoundary>
+          );
+        }
+        // the mark is not a speaker: the first item below it keeps the spacing it has at the top of an empty scrollback
+        const before = index > 0 ? (all[index - 1] ?? null) : null;
+        const prev = before === null || isCommittedMark(before) ? null : before;
+        return (
+          <PaneBoundary key={entry.key} pane={STATIC_ITEM_PANE} fault={index === firstItem ? fault : undefined} {...(onFail ? { onFail } : {})} {...(log !== undefined ? { log } : {})} fallback={(f) => <Text color="red" wrap="truncate">{itemFailedRow(f.error.name, log)}</Text>}>
+            <TranscriptRow item={entry} prev={prev} theme={theme} color={color} glyphs={glyphs} columns={columns} />
+          </PaneBoundary>
+        );
+      }}
     </Static>
   );
 }

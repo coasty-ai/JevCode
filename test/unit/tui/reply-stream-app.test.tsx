@@ -130,7 +130,9 @@ describe('the agent reply block: prose streams in place and commits with zero ju
     await feed(m, [{ type: 'generator:delta', step: 1, text: ' before it evaluates anything at all.\n' }]);
     const before = rowsOf(m.stdout.lastFrame());
     expect(before.some((l) => l.startsWith('[jevcode] The parser walks'))).toBe(true);
-    for (const l of before.slice(-22)) expect(stringWidth(l)).toBeLessThanOrEqual(80);
+    // the committed wordmark rows (the scrollback's first block, `isWordmarkRow`) were written once at 100 columns — the terminal reflows scrollback,
+    // Ink never rewrites it — so only the rows drawn at the new width are held to it
+    for (const l of before.slice(-22).filter((r) => !/^ {4,}██/.test(r))) expect(stringWidth(l)).toBeLessThanOrEqual(80);
     m.bus.emit({ type: 'assistant:text', step: 1, turn: 1, attempt: 1, text: 'The parser walks the tokens left to right and folds every operator into a tree before it evaluates anything at all.', final: false });
     await tick(60);
     expect(rowsOf(m.stdout.lastFrame())).toEqual(before);

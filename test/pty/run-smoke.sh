@@ -248,25 +248,86 @@ none=sum(1 for f in frames if b'\xe2\x96\x88\xe2\x96\x88' not in strip(f) and re
 print(head, mark, none, len(frames))
 PY
 }
-# the dynamic-region row count of the frame that first matches <re> (rule row → last row), or -1
-# owner directive 3: the padded branding box makes the idle dynamic region `rule 1 + (5 + 2p) + console 5` rows —
-# 11 below 26 rows, 13 at 26–33, 15 from 34 up
-idle_rows_for() { r=$1; if [ "$r" -ge 34 ]; then echo 15; elif [ "$r" -ge 26 ]; then echo 13; else echo 11; fi; }
+# The dynamic region of synchronized frame <i> by Ink's own accounting: log-update opens the NEXT write with one erase per
+# row of this one's region (+1 for its trailing newline), so the region is this frame's last (erase − 1) rows — during the
+# splash that includes the splash box ABOVE the rule row (the owner's directive of 2026-09-23: the box sits on top of the
+# region and turns into the committed block in place), which a rule-row parse cannot see. The rule parse (last rule row →
+# last row) is the fallback when no later frame tells (the last frame; a clear-terminal frame next). Shared by
+# `wm_rows_at` and `wm_committed` below as the python source in $REGION_PY.
+REGION_PY='
+def _strip(f): return re.sub(rb"\x1b\[[0-9;?]*[ -/]*[@-~]", b"", f)
+def _laid(f):
+    rows=[r.rstrip(b"\r") for r in _strip(f).split(b"\r\n")]
+    nl=len(rows)>1 and rows[-1].strip()==b""
+    if nl: rows.pop()
+    return rows, nl
+def split_region(raw, i):
+    """(above, region) of frame i: the rows it committed to the scrollback and its dynamic rows; None without a rule row"""
+    rows, nl = _laid(raw[i])
+    rule=max((k for k,l in enumerate(rows) if re.match(rb"^(?:\xe2\x94\x80){3}|^-{3}", l)), default=None)
+    if rule is None: return None
+    n=None
+    for j in range(i+1, len(raw)):
+        if b"\x1b[2J" in raw[j]: break
+        head=re.match(rb"(?:\x1b\[[0-9;?]*[ -/]*[@-~]|[\x00-\x1f\x7f])*", raw[j]).group(0)
+        e=head.count(b"\x1b[2K")
+        if e>0: n=e-(1 if nl else 0); break
+        if _strip(raw[j]).strip()!=b"": break
+    cut=rule if n is None else max(0, len(rows)-n)
+    return rows[:cut], rows[cut:]
+'
+# the dynamic-region row count (`split_region`: the splash box included while it is up) of the frame that first matches <re>,
+# or -1; `last` as a third argument measures the LAST frame that matches instead (the idle frame after the commit)
+# the owner's directive of 2026-09-23: the settled mark is committed to the scrollback, so the idle dynamic region is the rule
+# and the console — `rule 1 + console 5` = 6 rows at every height (the splash frames before the commit are taller: the box)
+idle_rows_for() { echo 6; }
 wm_rows_at() {
-  python3 - "$1" "$2" <<'PY'
+  python3 - "$1" "$2" "${3:-first}" "$REGION_PY" <<'PY'
 import re,sys
+exec(sys.argv[4])
 b=open(sys.argv[1],'rb').read()
-frames=b.split(b'\x1b[?2026h')[1:]
-strip=lambda f: re.sub(rb'\x1b\[[0-9;?]*[ -/]*[@-~]', b'', f)
+raw=b.split(b'\x1b[?2026h')[1:]
 pat=re.compile(sys.argv[2].encode())
-for f in frames:
-    t=strip(f)
-    if pat.search(t):
-        rows=t.split(b'\r\n')
-        while rows and rows[-1].strip()==b'': rows.pop()
-        idx=next((i for i,l in enumerate(rows) if re.match(rb'^(?:\xe2\x94\x80){3}|^-{3}', l)), None)
-        print(-1 if idx is None else len(rows)-idx); sys.exit()
+order=range(len(raw)-1,-1,-1) if sys.argv[3]=='last' else range(len(raw))
+for i in order:
+    if pat.search(_strip(raw[i])):
+        s=split_region(raw, i)
+        if s is None: continue
+        region=list(s[1])
+        while region and region[-1].strip()==b'': region.pop()
+        print(len(region)); sys.exit()
 print(-1)
+PY
+}
+# THE OWNER'S DIRECTIVE (2026-09-23): the classic renderer COMMITS the settled wordmark as the first `<Static>` block. Over the
+# synchronized-output frames (a clear-terminal frame repeats Ink's whole static output, so it is skipped for the count):
+# "<blocks> <redrawn> <commit_frame> <between>" — the runs of `██` rows a frame wrote ABOVE its dynamic region (`split_region`,
+# so the splash box, which is the top of the region, never counts; 1: committed exactly once), the frames after the commit
+# that draw a `██` row in their dynamic region (0: never redrawn), the frame that committed it (-1: none), and the frames
+# strictly between the commit and the first later frame matching <echo_re> (-1 without one)
+wm_committed() {
+  python3 - "$1" "${2:-}" "$REGION_PY" <<'PY'
+import re,sys
+exec(sys.argv[3])
+b=open(sys.argv[1],'rb').read()
+raw=b.split(b'\x1b[?2026h')[1:]
+wm=lambda l: re.match(rb'^ {4,}\xe2\x96\x88\xe2\x96\x88', l) is not None  # a wordmark glyph row (a pane's probability bar never starts a row with 4+ blanks)
+blocks=0; redrawn=0; commit=-1
+for i,f in enumerate(raw):
+    s=split_region(raw, i)
+    if s is None: continue
+    above, dyn = s
+    if b'\x1b[2J' not in f:
+        runs=sum(1 for k,l in enumerate(above) if wm(l) and not (k>0 and wm(above[k-1])))
+        if runs>0 and commit<0: commit=i
+        blocks+=runs
+    if commit>=0 and i>commit and any(wm(l) for l in dyn): redrawn+=1
+between=-1
+if sys.argv[2] and commit>=0:
+    pat=re.compile(sys.argv[2].encode())
+    e=next((i for i in range(commit+1,len(raw)) if pat.search(_strip(raw[i]))), None)
+    between=-1 if e is None else e-commit-1
+print(blocks, redrawn, commit, between)
 PY
 }
 # frames from the first that matches <from_re> on (stripped): 0 when none of them carries ≥ 5 `██` rows, else 1
@@ -288,6 +349,13 @@ import re,sys
 b=open(sys.argv[1],'rb').read()
 frames=[re.sub(rb'\x1b\[[0-9;?]*[ -/]*[@-~]', b'', f) for f in b.split(b'\x1b[?2026h')[1:]]
 mark=lambda f: sum(1 for l in f.split(b'\r\n') if b'\xe2\x96\x88\xe2\x96\x88' in l)>=5
+# the owner's directive of 2026-09-23: the mark is committed to the scrollback, so a frame's DYNAMIC region (its last rule row
+# on) never carries a `██` row after the commit
+def dyn(f):
+    rows=f.split(b'\r\n')
+    rule=max((k for k,l in enumerate(rows) if re.match(rb'^(?:\xe2\x94\x80){3}|^-{3}', l)), default=None)
+    return [] if rule is None else rows[rule:]
+dynmark=lambda f: any(re.match(rb'^ {4,}\xe2\x96\x88\xe2\x96\x88', l) for l in dyn(f))  # a wordmark glyph row, never a pane's probability bar
 which=sys.argv[2]
 if which=='handoff':
     # OWNER ADDENDUM: the `[run] started` item is no longer printed in the TUI — the run's first frame is the one
@@ -295,33 +363,33 @@ if which=='handoff':
     start=next((i for i,f in enumerate(frames) if re.search(rb'step \d+/\d+', f)), None)
     end=next((i for i,f in enumerate(frames) if re.search(rb'\] finished (?:\xc2\xb7|-) (complete|max_steps|generator_done)', f)), None)
     if start is None or end is None: print('no-run'); sys.exit()
-    # owner directive 2: the mark is PINNED — it is up in EVERY frame of the run, not hidden for it
-    bare=[i for i,f in enumerate(frames[start:end+1], start) if not mark(f)]
-    if bare: print('mark-lost-while-live'); sys.exit()
+    # the mark was committed before the run (the settle, or the submit) and NO frame of the run or after it draws it
+    if not any(mark(f) for f in frames[:start+1]): print('mark-not-committed-before-the-run'); sys.exit()
+    if any(dynmark(f) for f in frames[start:]): print('mark-redrawn-in-the-dynamic-region'); sys.exit()
     after=frames[end:]
-    back=next((i for i,f in enumerate(after) if mark(f) and b'\xe2\x96\xb8 jev' in f), None)
-    if back is None: print('no-return-under-strip'); sys.exit()
-    # at 24 rows (< WORDMARK_SHARE_MIN_ROWS) the panel still takes the slot, and `/panel off` gives it back
+    back=next((i for i,f in enumerate(after) if b'\xe2\x96\xb8 jev' in f), None)
+    if back is None: print('no-strip-after-end'); sys.exit()
+    # `/panel` opens the panel in the dynamic region and `/panel off` gives the strip back; neither touches the mark
     panel=next((i for i,f in enumerate(after) if b'\xe2\x96\xbe decisions' in f), None)
-    if panel is None or mark(after[panel]): print('panel-did-not-hide'); sys.exit()
-    off=next((i for i in range(panel+1,len(after)) if b'\xe2\x96\xb8 jev' in after[i] and mark(after[i])), None)
-    print('ok' if off is not None else 'no-return-after-panel-off')
+    if panel is None: print('panel-did-not-open'); sys.exit()
+    off=next((i for i in range(panel+1,len(after)) if b'\xe2\x96\xb8 jev' in after[i]), None)
+    print('ok' if off is not None else 'no-strip-after-panel-off')
 elif which=='postrun22':
     end=next((i for i,f in enumerate(frames) if re.search(rb'\] finished (?:\xc2\xb7|-) (complete|max_steps|generator_done)', f)), None)
     echo=next((i for i,f in enumerate(frames) if re.search(rb'(?:\xe2\x80\xba|>) h', f)), None)
     if end is None or echo is None: print('no-run-or-echo'); sys.exit()
-    # owner directive 2: no post-run hand-off left to wait for — the mark is up before AND after the first key
-    if not any(mark(f) for f in frames[end:echo]): print('no-mark-before-first-key'); sys.exit()
-    print('ok' if mark(frames[echo]) else 'no-mark-on-first-key')
+    if not any(mark(f) for f in frames[:end]): print('mark-not-committed'); sys.exit()
+    print('ok' if not any(dynmark(f) for f in frames[end:echo+1]) else 'mark-redrawn-after-end')
 elif which=='palette21':
     pal=[f for f in frames if b'Tab' in f and b'commands' in f]
-    print('ok' if pal and all(mark(f) for f in pal) else 'palette-handoff')
+    print('ok' if pal and not any(dynmark(f) for f in pal) else 'mark-in-the-palette-frames')
 elif which=='flat-no-mark':
     # TUI-DESIGN-2 §1.5: the flat tier's badge prefix is the FIRST thing dropped when the row runs short (round 3's 18-cell
     # `llm-jev` badge could not fit 60 columns; the agent default's `agent ·` does). A flat frame is one with a status row at
     # column 0 — the badge prefix optional — and no rounded box edge.
     flat=[f for f in frames if re.search(rb'\r\n(?:[^\r\n]{1,24} \xc2\xb7 )?idle {2,}step 0/', f) and b'\xe2\x95\xad' not in f]
-    print('ok' if flat and not any(b'\xe2\x96\x88\xe2\x96\x88' in f for f in flat) else 'mark-in-flat-tier')
+    # the flat frames' DYNAMIC region: a shrink's clear-terminal frame repeats Ink's whole static output, the committed mark included
+    print('ok' if flat and not any(dynmark(f) for f in flat) else 'mark-in-flat-tier')
 elif which=='head-after-echo':
     echo=next((i for i,f in enumerate(frames) if re.search(rb'(?:\xe2\x80\xba|>) h', f)), None)
     print('ok' if echo is not None and all(b'\xe2\x96\x93\xe2\x96\x92\xe2\x96\x91' not in f for f in frames[echo:]) else 'head-after-echo')
@@ -343,21 +411,6 @@ PY
 # the bytes of the first dynamic frame (cursor hide → cursor show)
 first_frame() {
   python3 -c 'import sys; b=open(sys.argv[1],"rb").read(); i=b.find(b"\x1b[?25l"); j=b.find(b"\x1b[?25h", i); sys.stdout.buffer.write(b[i:j] if i>=0 else b"")' "$1"
-}
-# the splash settling by itself (splash-settle): "<wordmark_frames> <wordmark_after_brand> <frames_before_brand>" — frames are
-# the synchronized-output brackets (BSU `ESC[?2026h` opens every frame; the cursor hide does not — a frame drawn while the
-# cursor is already hidden, e.g. under a card, writes none); the brand row `◆ jevcode` marks the settled frame (§5.2 t ≥ 700 → §5.4)
-splash_settle() {
-  python3 - "$1" <<'PY'
-import sys
-b=open(sys.argv[1],'rb').read()
-frames=b.split(b'\x1b[?2026h')[1:]
-wm=[i for i,f in enumerate(frames) if b'\xe2\x96\x88\xe2\x96\x88' in f]
-brand=[i for i,f in enumerate(frames) if '◆ jevcode'.encode() in f]
-first_brand=brand[0] if brand else len(frames)
-after=sum(1 for i in wm if i>=first_brand)
-print(len(wm), after, first_brand)
-PY
 }
 # an SGR-stripped, CR-free copy of a capture for the text checks (every transcript label is its own dim span, so a
 # `grep` on the raw bytes would miss `[step 1] …` and `╭─ jev-only`)
@@ -573,37 +626,47 @@ run() {
       grep -q '› y' "$txt" && { ok=0; checks="$checks Y-TYPED-AS-TEXT"; } || checks="$checks enter-inert:no-y-echo";;
     mode-switch) grep -q 'Pick the generator provider' "$txt" && { ok=0; checks="$checks STARTUP-WIZARD"; } || checks="$checks in-place-wizard";;
     mode-switch-keyed) grep -q 'jev+llm · next run' "$txt" && checks="$checks badge:next-run" || { ok=0; checks="$checks MISSING:badge"; };;
-    # TUI-DESIGN-3 §3.3: a key completes the reveal — wordmark cells before AND after the echo frame; no `▓▒░` head after the echo frame; the idle frame is 11 rows
-    splash|splash-wide) set -- $(wordmark "$cap"); checks="$checks wordmark_before_key=$1 after_key=$2"; [ "$1" -gt 0 ] && [ "$2" -gt 0 ] || ok=0
+    # THE OWNER'S DIRECTIVE (2026-09-23): every wordmark scenario gates `wm_committed` — the settled mark is committed ONCE as the
+    # first scrollback block (blocks=1) and never redrawn in a dynamic region (redrawn=0)
+    # TUI-DESIGN-3 §3.3: a key completes the reveal — wordmark cells before the echo frame (the splash box), the mark committed once and
+    # never redrawn; no `▓▒░` head after the echo frame; the idle frame is 6 rows (the rule and the console)
+    splash|splash-wide) set -- $(wordmark "$cap"); checks="$checks wordmark_before_key=$1"; [ "$1" -gt 0 ] || ok=0
+      set -- $(wm_committed "$cap"); checks="$checks committed_blocks=$1 redrawn=$2"; [ "$1" = "1" ] && [ "$2" = "0" ] || ok=0
       h=$(wm_handoff "$cap" head-after-echo); [ "$h" = "ok" ] && checks="$checks no-head-after-echo" || { ok=0; checks="$checks $h"; }
-      idlewant=$(idle_rows_for "$rows"); rows=$(wm_rows_at "$cap" 'Say hi'); [ "$rows" = "$idlewant" ] && checks="$checks idle-rows=$rows" || { ok=0; checks="$checks IDLE-ROWS=$rows(want $idlewant)"; }
+      idlewant=$(idle_rows_for "$rows"); rows=$(wm_rows_at "$cap" 'Say hi' last); [ "$rows" = "$idlewant" ] && checks="$checks idle-rows=$rows" || { ok=0; checks="$checks IDLE-ROWS=$rows(want $idlewant)"; }
       ff=$(expect_t "$tim" 'step 0/'); checks="$checks first_frame_t=${ff}ms";;
-    # TUI-DESIGN-3 §3.2 twins: the static resting mark from frame 0, never the head, 11 rows
-    wordmark-reduced) set -- $(wm_shape "$cap"); checks="$checks head_frames=$1 mark_frames=$2 frames=$4"; [ "$1" = "0" ] && [ "$2" -ge 1 ] && [ "$2" = "$4" ] || ok=0
-      idlewant=$(idle_rows_for "$rows"); rows=$(wm_rows_at "$cap" 'step 0/'); [ "$rows" = "$idlewant" ] && checks="$checks rows=$rows" || { ok=0; checks="$checks ROWS=$rows(want $idlewant)"; };;
-    # TUI-DESIGN-3 §3.4 / §3.5: no key — ≤ 15 reveal frames before the caption frame, every frame after it carries the mark, 0 frames in the 5 s after the settle
-    splash-settle) set -- $(wm_shape "$cap"); checks="$checks head_frames=$1 mark_frames=$2 markless_frames=$3"; [ "$1" -ge 1 ] && [ "$1" -le 15 ] && [ "$3" = "0" ] || ok=0
-      set -- $(wm_frames_between "$cap" '\xe2\x97\x86(?:\x1b\[[0-9;]*m)* (?:\x1b\[[0-9;]*m)*[0-9]+\.[0-9]+\.[0-9]+' '(?:\xe2\x80\xba|>) (?:\x1b\[[0-9;]*m)*h'); checks="$checks frames_after_settle_before_key=$1"; [ "$1" = "0" ] || ok=0
+    # TUI-DESIGN-3 §3.2 twins: the static resting mark in the splash box from frame 0 (the box on top of the region: 7 rows + the rule and the
+    # console), committed once the config has arrived — the first frame after `setUi`, never frame 0 — never the head, 6 rows at rest
+    wordmark-reduced) set -- $(wm_shape "$cap"); checks="$checks head_frames=$1"; [ "$1" = "0" ] || ok=0
+      set -- $(wm_committed "$cap"); checks="$checks committed_blocks=$1 redrawn=$2 commit_frame=$3"; [ "$1" = "1" ] && [ "$2" = "0" ] && [ "$3" -ge 1 ] || ok=0
+      first=$(wm_rows_at "$cap" 'step 0/'); [ "$first" = "13" ] && checks="$checks first-rows=13" || { ok=0; checks="$checks FIRST-ROWS=$first(want 13)"; }
+      idlewant=$(idle_rows_for "$rows"); rows=$(wm_rows_at "$cap" 'Say hi' last); [ "$rows" = "$idlewant" ] && checks="$checks rows=$rows" || { ok=0; checks="$checks ROWS=$rows(want $idlewant)"; };;
+    # TUI-DESIGN-3 §3.4 / §3.5: no key — ≤ 15 reveal frames, the caption, the commit, then 0 frames in the 5 s before the marker key
+    splash-settle) set -- $(wm_shape "$cap"); checks="$checks head_frames=$1"; [ "$1" -ge 1 ] && [ "$1" -le 15 ] || ok=0
+      set -- $(wm_committed "$cap" '(?:\xe2\x80\xba|>) (?:\x1b\[[0-9;]*m)*h'); checks="$checks committed_blocks=$1 redrawn=$2 frames_after_commit_before_key=$4"; [ "$1" = "1" ] && [ "$2" = "0" ] && [ "$4" = "0" ] || ok=0
       ff=$(expect_t "$tim" 'step 0/'); st=$(expect_t "$tim" '\d+\.\d+\.\d+'); checks="$checks settle_t=$(( st - ff ))ms";;
-    # TUI-DESIGN-3 §3.4 / §3.9: 12 s alone = one pass — 14–18 frames between the settle and the marker key, each ≤ 3 KB, band cells in the sweep SGR, letters unchanged, 11 rows
-    wordmark-idle|wordmark-idle-wide) set -- $(wm_frames_between "$cap" '\xe2\x97\x86(?:\x1b\[[0-9;]*m)* (?:\x1b\[[0-9;]*m)*[0-9]+\.[0-9]+\.[0-9]+' '(?:\xe2\x80\xba|>) (?:\x1b\[[0-9;]*m)*h'); checks="$checks pass_frames=$1 max_bytes=$2 band_frames=$3 letters_ok=$4"
-      [ "$1" -ge 14 ] && [ "$1" -le 18 ] && [ "$2" -le 3072 ] && [ "$3" -ge 14 ] && [ "$4" = "1" ] || ok=0
-      idlewant=$(idle_rows_for "$rows"); rows=$(wm_rows_at "$cap" 'Say hi'); [ "$rows" = "$idlewant" ] && checks="$checks rows=$rows" || { ok=0; checks="$checks ROWS=$rows(want $idlewant)"; };;
-    # TUI-DESIGN-3 §3.6: the key lands mid-pass — the echo within 50 ms of the send, band frames continue after it
+    # 12 s alone after the commit write NO frame (a committed mark is never repainted: the idle sweep is the splash's only), 6 rows
+    wordmark-idle|wordmark-idle-wide) set -- $(wm_committed "$cap" '(?:\xe2\x80\xba|>) (?:\x1b\[[0-9;]*m)*h'); checks="$checks committed_blocks=$1 redrawn=$2 frames_after_commit_before_key=$4"
+      [ "$1" = "1" ] && [ "$2" = "0" ] && [ "$4" = "0" ] || ok=0
+      set -- $(wm_frames_between "$cap" '\xe2\x97\x86(?:\x1b\[[0-9;]*m)* (?:\x1b\[[0-9;]*m)*[0-9]+\.[0-9]+\.[0-9]+' 'Say hi'); checks="$checks band_frames=$3"; [ "$3" = "0" ] || ok=0
+      idlewant=$(idle_rows_for "$rows"); rows=$(wm_rows_at "$cap" 'Say hi' last); [ "$rows" = "$idlewant" ] && checks="$checks rows=$rows" || { ok=0; checks="$checks ROWS=$rows(want $idlewant)"; };;
+    # a key ≈ 7.5 s after the settle (where the old idle pass ran) echoes within 50 ms; no band frame is ever written
     wordmark-key-during-pass) k=$(echo_wait "$tim"); checks="$checks echo_wait=${k}ms"; [ "$k" -ge 0 ] && [ "$k" -le 50 ] || ok=0
-      set -- $(wm_frames_between "$cap" '(?:\xe2\x80\xba|>) (?:\x1b\[[0-9;]*m)*h' 'Say hi'); checks="$checks band_frames_after_echo=$3"; [ "$3" -ge 1 ] || ok=0;;
-    # TUI-DESIGN-3 §3.2: hidden for the whole run, back under the strip after `end` (24 rows), gone with the panel, back with /panel off
-    wordmark-handoff) h=$(wm_handoff "$cap" handoff); [ "$h" = "ok" ] && checks="$checks handoff:mark-pinned,strip+mark,panel-hides,off-restores" || { ok=0; checks="$checks HANDOFF:$h"; };;
-    # TUI-DESIGN-3 §3.1: the mark shows at 21 rows and the palette never hands it off; the brand row at 20 rows; the post-run return on the first key at 22 rows
-    wordmark-21) set -- $(wm_shape "$cap"); [ "$2" -ge 1 ] && checks="$checks mark_frames=$2" || { ok=0; checks="$checks NO-MARK"; }
-      h=$(wm_handoff "$cap" palette21); [ "$h" = "ok" ] && checks="$checks palette-keeps-mark" || { ok=0; checks="$checks $h"; };;
-    # §3.2 row "16–20 rows": the reveal still runs (its frames carry the mark), then `splash:done` collapses to the brand row — so the
-    # gate is "no resting mark from the brand-row frame on", measured there (6 dynamic rows), never "no mark in the whole capture"
-    wordmark-20) set -- $(wm_shape "$cap"); checks="$checks head_frames=$1 reveal_mark_frames=$2"; { [ "$1" -ge 1 ] && grep -q '◆ jevcode' "$txt"; } || { ok=0; checks="$checks MISSING:reveal-or-brand-row"; }
-      m=$(wm_mark_after "$cap" '\xe2\x97\x86 jevcode'); [ "$m" = "0" ] && checks="$checks no-mark-after-brand-row" || { ok=0; checks="$checks MARK-AFTER-BRAND-ROW:$m"; }
-      rows=$(wm_rows_at "$cap" '\xe2\x97\x86 jevcode'); [ "$rows" = "6" ] && checks="$checks rows=6" || { ok=0; checks="$checks ROWS=$rows"; };;  # measured at the brand-row frame, after the reveal
-    wordmark-22-postrun) h=$(wm_handoff "$cap" postrun22); [ "$h" = "ok" ] && checks="$checks post-run:mark-never-left" || { ok=0; checks="$checks POST-RUN:$h"; };;
-    wordmark-nocolor) set -- $(wm_frames_between "$cap" '\xe2\x97\x86(?:\x1b\[[0-9;]*m)* (?:\x1b\[[0-9;]*m)*[0-9]+\.[0-9]+\.[0-9]+' '(?:\xe2\x80\xba|>) h'); checks="$checks idle_frames=$1"; [ "$1" = "0" ] || ok=0
+      set -- $(wm_frames_between "$cap" '(?:\xe2\x80\xba|>) (?:\x1b\[[0-9;]*m)*h' 'Say hi'); checks="$checks band_frames_after_echo=$3"; [ "$3" = "0" ] || ok=0
+      set -- $(wm_committed "$cap"); checks="$checks committed_blocks=$1 redrawn=$2"; [ "$1" = "1" ] && [ "$2" = "0" ] || ok=0;;
+    # committed before the run, never redrawn by it; the strip after `end`; `/panel` opens and `/panel off` closes without touching the mark
+    wordmark-handoff) h=$(wm_handoff "$cap" handoff); [ "$h" = "ok" ] && checks="$checks handoff:committed-before-run,never-redrawn,strip,panel-open-off" || { ok=0; checks="$checks HANDOFF:$h"; }
+      set -- $(wm_committed "$cap"); checks="$checks committed_blocks=$1"; [ "$1" = "1" ] && [ "$2" = "0" ] || ok=0;;
+    # the height tiers are gone: 21 rows commits the mark and the palette never draws it; 20 rows commits it too (the plain rule,
+    # never the brand row); 22 rows after a run: the mark never returns to the dynamic region
+    wordmark-21) set -- $(wm_committed "$cap"); checks="$checks committed_blocks=$1 redrawn=$2"; [ "$1" = "1" ] && [ "$2" = "0" ] || ok=0
+      h=$(wm_handoff "$cap" palette21); [ "$h" = "ok" ] && checks="$checks palette-never-draws-mark" || { ok=0; checks="$checks $h"; };;
+    wordmark-20) set -- $(wm_shape "$cap"); checks="$checks head_frames=$1"; [ "$1" -ge 1 ] || { ok=0; checks="$checks MISSING:reveal"; }
+      set -- $(wm_committed "$cap"); checks="$checks committed_blocks=$1 redrawn=$2"; [ "$1" = "1" ] && [ "$2" = "0" ] || ok=0
+      grep -q '◆ jevcode [0-9]' "$txt" && { ok=0; checks="$checks BRAND-ROW"; } || checks="$checks no-brand-row"
+      rows=$(wm_rows_at "$cap" 'Say hi' last); [ "$rows" = "6" ] && checks="$checks rows=6" || { ok=0; checks="$checks ROWS=$rows"; };;
+    wordmark-22-postrun) h=$(wm_handoff "$cap" postrun22); [ "$h" = "ok" ] && checks="$checks post-run:mark-never-redrawn" || { ok=0; checks="$checks POST-RUN:$h"; };;
+    wordmark-nocolor) set -- $(wm_committed "$cap" '(?:\xe2\x80\xba|>) h'); checks="$checks committed_blocks=$1 idle_frames=$4"; [ "$1" = "1" ] && [ "$2" = "0" ] && [ "$4" = "0" ] || ok=0
       set -- $(wm_shape "$cap"); [ "$1" -ge 1 ] && checks="$checks reveal-ran" || { ok=0; checks="$checks NO-REVEAL"; }
       grep -q $'\x1b\[38;' "$cap" && { ok=0; checks="$checks SGR-COLOUR"; } || checks="$checks no-colour-sgr";;
     # TUI-DESIGN-3 §2 (D-H): the pinks by depth
@@ -629,14 +692,15 @@ run() {
     trust-esc) grep -q 'trust unchanged' "$txt" && checks="$checks trust-unchanged" || { ok=0; checks="$checks MISSING:trust-unchanged"; };;
     keybindings) grep -q '› ?' "$txt" && checks="$checks ?-inserted" || { ok=0; checks="$checks MISSING:?-as-text"; }
       grep -q 'Tab picks' "$txt" && { ok=0; checks="$checks HELP-OPENED"; } || checks="$checks no-help";;
-    # TUI-DESIGN-3 §3.2: no wordmark at 12×60 (the flat frame carries no `██` row), the mark back at 24×80
+    # TUI-DESIGN-3 §3.2: no wordmark at 12×60 (the flat frame carries no `██` row); the mark committed once at 24×80 before the
+    # shrink and never redrawn after the grow (the owner's directive of 2026-09-23: it is scrollback)
     # the flat tier's anchor is its SHAPE (a status row at column 0), not the badge prefix: TUI-DESIGN-2 §1.5
     # drops that prefix first when short, and the `llm-jev` default badge (18 cells) cannot fit 60 columns
     # the flat status row keeps the `<badge> · ` prefix when it fits (the agent default's 5-cell badge does at 60 columns)
     chrome-tiers) grep -q "╭─ $BADGE" "$txt" && grep -qE "^($BADGE_RE · )?idle {2,}step 0/" "$txt" && checks="$checks boxed+flat" || { ok=0; checks="$checks MISSING:tier-rows"; }
       flat_rows=$(wm_rows_at "$cap" "\r\n(?:$BADGE_RE · )?idle {2,}step 0/"); [ "$flat_rows" -ge 1 ] && [ "$flat_rows" -le 10 ] && checks="$checks flat-rows=$flat_rows" || { ok=0; checks="$checks FLAT-ROWS=$flat_rows"; }
       w=$(wm_handoff "$cap" flat-no-mark); [ "$w" = "ok" ] && checks="$checks no-mark-in-flat" || { ok=0; checks="$checks $w"; }
-      m=$(wm_mark_after "$cap" "(?:\xe2\x80\xba|>) (?:\x1b\[[0-9;]*m)*Z"); [ "$m" = "1" ] && checks="$checks mark-back-at-24x80" || { ok=0; checks="$checks MARK-NOT-BACK"; };;
+      set -- $(wm_committed "$cap"); [ "$1" = "1" ] && [ "$2" = "0" ] && checks="$checks mark-committed-once" || { ok=0; checks="$checks MARK:blocks=$1,redrawn=$2"; };;
     zero-arg-chat|zero-arg-run) grep -q "╭─ $BADGE" "$txt" && checks="$checks badge:default($BADGE)" || { ok=0; checks="$checks MISSING:badge"; }
       grep -q 'OpenRouter API key\|Where do you reach Jev\|Pick the generator provider' "$txt" && { ok=0; checks="$checks WIZARD"; } || checks="$checks no-wizard";;
     # TUI-DESIGN-3 §1.4 / §1.6: the one-key field under `setup · key` beneath the mark, never the round-2 provider questions; Ctrl-C → the jev-on fix block

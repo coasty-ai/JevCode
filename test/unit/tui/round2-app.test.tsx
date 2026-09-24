@@ -71,9 +71,15 @@ const MARK_ROW = `${' '.repeat(22)}${WORDMARK[1]}`.replace(/\s+$/, '');
 function ruleRow(m: Mounted): string {
   return dynamicLines(m.lastFrame())[0] ?? '';
 }
-/** the resting mark is on screen (TUI-DESIGN-3 §3.2: idle, thinking, after a run at ≥ 24 rows) */
+/**
+ * The resting mark is on screen (TUI-DESIGN-3 §3.2: idle, thinking, after a run). The owner's directive of 2026-09-23:
+ * it is COMMITTED — exactly once in the scrollback above the dynamic region, never inside the dynamic region.
+ */
 function markShown(m: Mounted): boolean {
-  return dynamicLines(m.lastFrame()).includes(MARK_ROW);
+  const all = m.lastFrame().split('\n');
+  const dyn = dynamicLines(m.lastFrame());
+  const scroll = all.slice(0, all.length - dyn.length);
+  return !dyn.includes(MARK_ROW) && scroll.filter((l) => l.trimEnd() === MARK_ROW).length === 1;
 }
 
 /** a host whose `submit` stays pending until `release()` — the intake, lookup or reply in flight */
@@ -114,11 +120,11 @@ describe('finding 1: the thinking phase under `run: starting` (TUI-DESIGN-2 §3.
     await waitFor(() => new RegExp(`│ ${SPINNER} thinking`).test(m.lastFrame()));
     await waitFor(() => probes.roles.length > 0); // the spinner's next frame re-renders the console
     const dyn = dynamicLines(m.lastFrame());
-    expect(dyn[0]).toMatch(PLAIN_RE); // finding 2: not the strip; §3.2: the mark stays while thinking
-    expect(dyn).toHaveLength(11);
+    expect(dyn[0]).toMatch(PLAIN_RE); // finding 2: not the strip; §3.2: the mark stays while thinking (committed above the rule)
+    expect(dyn).toHaveLength(6);
     expect(markShown(m)).toBe(true);
-    expect(dyn[7]).toBe(`│ › ${PLACEHOLDERS.thinking}${' '.repeat(96 - 2 - PLACEHOLDERS.thinking.length)} │`);
-    expect(dyn[9]).toMatch(new RegExp(`^│ ${SPINNER} thinking\\s+step 0/–`));
+    expect(dyn[2]).toBe(`│ › ${PLACEHOLDERS.thinking}${' '.repeat(96 - 2 - PLACEHOLDERS.thinking.length)} │`);
+    expect(dyn[4]).toMatch(new RegExp(`^│ ${SPINNER} thinking\\s+step 0/–`));
     expect(m.lastFrame()).not.toContain('│ starting');
     expect(m.lastFrame()).not.toContain(PLACEHOLDERS.steer);
     // the console border keeps the idle `border` role — no `borderFocus`, no `steer` prompt: no engine run is live
@@ -200,12 +206,13 @@ describe('finding 2: the rule row between Enter and the reply (TUI-DESIGN-2 §5.
     // the intake's own decision rows (§3.11) arrive while still starting — still the plain rule, the mark still there
     m.dispatch({ type: 'chat-decisions', rows: [] });
     await tick(30);
-    // every frame committed since Enter carries the plain rule and the mark, never `▸ jev`, never the brand row
+    // every frame committed since Enter carries the plain rule and the mark (committed above it), never `▸ jev`, never the brand row
     expect(m.frames.length).toBeGreaterThan(framesBefore);
     for (const f of m.frames.slice(framesBefore)) {
       const rows = dynamicLines(f.replace(/\x1b\[[0-9;]*m/g, ''));
       expect(rows[0]).toBe(plain);
-      expect(rows).toContain(MARK_ROW);
+      expect(rows).not.toContain(MARK_ROW);
+      expect(f.replace(/\x1b\[[0-9;]*m/g, '').split('\n').map((l) => l.trimEnd())).toContain(MARK_ROW);
       expect(f).not.toContain('▸ jev');
       expect(f).not.toMatch(BRAND_RE);
     }
@@ -214,14 +221,14 @@ describe('finding 2: the rule row between Enter and the reply (TUI-DESIGN-2 §5.
     await waitFor(() => m.state()?.run === 'none');
     expect(ruleRow(m)).toBe(plain);
     expect(markShown(m)).toBe(true);
-    // owner directive 2: the mark is PINNED, so `run:start` no longer hands the slot back — the rule row stays the
-    // plain rule (the brand rides in the mark below it) until the first `run:ready` brings the strip
+    // the mark is committed (the scrollback's first block), so `run:start` has nothing to hand back — the rule row stays
+    // the plain rule (the brand rides in the mark above it) until the first `run:ready` brings the strip
     m.bus.emit({ type: 'run:start', runId: 'r1', task: 'Fix the failing test', mode: 'jev-on', resumedFromStep: null });
     await waitFor(() => m.state()?.run === 'live');
     await tick(60);
     expect(markShown(m)).toBe(true);
     expect(ruleRow(m)).toBe(plain);
-    expect(dynamicLines(m.lastFrame())).toHaveLength(11);
+    expect(dynamicLines(m.lastFrame())).toHaveLength(6);
     m.bus.emit({ type: 'run:ready', runId: 'r1', step: 0, maxSteps: 40, task: 'Fix the failing test', resumed: false });
     // RE-PINNED BY SLOT S1 (TUI-DESIGN-4 §1.2 P-H1 / D-T a): at `run:ready` the strip appears WITH the permanent
     // `◆ jevcode` prefix. The pre-`run:ready` assertions above (the plain rule, then the brand row) are unchanged.
@@ -268,7 +275,7 @@ describe('finding 3: a hidden-only engine batch dirties no <Static> subtree thro
 });
 
 describe('finding 4: the panel keys on the idle first frame (TUI-DESIGN-2 §4.6, §5.4)', () => {
-  it('`]` opens a headed decisions tab (`▾ decisions s0`, `(no decisions yet)`) in place of the mark, `]`/`[` cycle, Esc collapses back to the plain rule and the mark returns (TUI-DESIGN-3 §3.3: 11 rows)', async () => {
+  it('`]` opens a headed decisions tab (`▾ decisions s0`, `(no decisions yet)`) in the dynamic region under the committed mark, `]`/`[` cycle, Esc collapses back to the plain rule (the rule and the console: 6 rows)', async () => {
     const m = mountApp({ mode: 'session' });
     await settleSplash(m);
     expect(ruleRow(m)).toMatch(PLAIN_RE);
@@ -280,21 +287,22 @@ describe('finding 4: the panel keys on the idle first frame (TUI-DESIGN-2 §4.6,
     expect(dyn[0]).toContain('─── ▾ decisions s0');
     expect(dyn[0]).toContain('[d]ecisions [p]lan [t]ime [s]ynth');
     expect(dyn[1]).toContain('(no decisions yet)');
-    expect(dyn).toHaveLength(1 + 6 + 5); // header · 6 pane rows · console — the panel owns the slot, the mark is gone
-    expect(markShown(m)).toBe(false);
+    expect(dyn).toHaveLength(1 + 6 + 5); // header · 6 pane rows · console — the committed mark stays in the scrollback above
+    expect(markShown(m)).toBe(true);
     expect(m.lastFrame()).not.toMatch(BRAND_RE);
     m.stdin.write(']');
     await waitFor(() => m.lastFrame().includes('─── ▾ plan s0'));
     m.stdin.write('[');
     await waitFor(() => m.lastFrame().includes('─── ▾ decisions s0'));
-    // Esc on the empty idle draft collapses the panel before it arms Esc Esc — and brings the mark back (§3.3)
+    // Esc on the empty idle draft collapses the panel before it arms Esc Esc (§3.3)
     m.stdin.write('\x1b');
     await tick(ESC_REBUFFER_MS + 40);
     await waitFor(() => m.state()?.panel === 'collapsed');
-    await waitFor(() => markShown(m));
+    await waitFor(() => PLAIN_RE.test(ruleRow(m)));
     dyn = dynamicLines(m.lastFrame());
     expect(dyn[0]).toMatch(PLAIN_RE);
-    expect(dyn).toHaveLength(11);
+    expect(dyn).toHaveLength(6);
+    expect(markShown(m)).toBe(true);
   });
 
   it('Ink’s `ESC j` → global:panelToggle (open, then collapsed) and `ESC J` → global:panelFull (12 headed rows); `/panel`, `/panel t` and `/panel off` through the composer', async () => {

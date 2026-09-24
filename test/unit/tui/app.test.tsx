@@ -30,7 +30,7 @@ import { EXIT_CONFIRM_ROW } from '../../../src/tui/Overlay.js';
 import { renderFaultFor, resetRenderFaults } from '../../../src/tui/PaneBoundary.js';
 import { resolveLaunchSettings } from '../../../src/config/launch.js';
 import { detectSecrets } from '../../../src/core/redact.js';
-import { fakeEngine, loadRunEvents, mkConfirmRequest, mkDecision, mkProposal, mkStatus, tick } from '../../fixtures/tui/fixtures.js';
+import { fakeEngine, loadRunEvents, mkConfirmRequest, mkDecision, mkProposal, mkStatus, mkUiConfig, tick } from '../../fixtures/tui/fixtures.js';
 import { StubStdin, StubStdout, dynamicRegion } from './stub-stdout.js';
 
 afterEach(() => cleanup());
@@ -39,16 +39,27 @@ beforeEach(() => resetRenderFaults());
 import { CANARY, CTRL_C, CTRL_D, CTRL_G, CTRL_O, CTRL_R, DOWN, ESC, UP, dynamicLines, fakeHistory, fakeHost, goLive, mountApp, retryInfo, stripSgr, waitFor, type Mounted } from './app-harness.js';
 
 describe('<App> first frame (§1)', { retry: 1 }, () => {
-  it('one-shot: renders the status sentinel `step 0/` and the task header in the very first frame, before any engine is attached', () => {
+  it('one-shot: renders the status sentinel `step 0/` and splash frame 0 in the very first frame, before any engine is attached; the task header lands directly below the mark once the mark is committed', async () => {
     const m = mountApp();
     expect(m.frames.length).toBeGreaterThanOrEqual(1);
-    expect(stripSgr(m.frames[0] ?? '')).toContain('step 0/–');
-    expect(stripSgr(m.frames[0] ?? '')).toContain(plainFirstLine('Fix the failing test', null));
-    expect(m.lastFrame()).toContain('starting');
+    const f0 = stripSgr(m.frames[0] ?? '');
+    expect(f0).toContain('step 0/–');
+    // RE-PINNED (the owner's directive of 2026-09-23, review round 1): `jevcode run`'s reveal plays in the dynamic region
+    // like a session's, and its task header waits for the mark's commit (the settle, the first run item, or — for a mount
+    // settled in frame 0 — the config), because `<Static>` writes by index and nothing may ever land above the mark
+    expect(f0).toContain(`${WORDMARK[3]!.slice(0, 7)}▓▒░`);
+    expect(f0).not.toContain(plainFirstLine('Fix the failing test', null));
     expect(m.lastFrame()).toContain('─'.repeat(10));
+    m.dispatch({ type: 'splash:done' });
+    await tick(20);
+    const f = m.lastFrame();
+    expect(f).toContain(plainFirstLine('Fix the failing test', null));
+    expect(f).toContain('starting');
+    expect(f.indexOf(`◆ ${VERSION}`)).toBeGreaterThan(-1);
+    expect(f.indexOf(`◆ ${VERSION}`)).toBeLessThan(f.indexOf(plainFirstLine('Fix the failing test', null)));
   });
 
-  it('session: NO header row (the quiet start), splash frame 0 (the `J` column), the console with the placeholder and the idle status row — from argv only (H-A1); `splash:done` keeps the resting mark under the plain rule with its `◆ <version>` caption (TUI-DESIGN-3 §3.2 H-A3 → F-W1: 11 dynamic rows)', async () => {
+  it('session: NO header row (the quiet start), splash frame 0 (the `J` column), the console with the placeholder and the idle status row — from argv only (H-A1); `splash:done` commits the resting mark with its `◆ <version>` caption as the first scrollback block, above the plain rule (the owner\'s directive of 2026-09-23: 6 dynamic rows)', async () => {
     const m = mountApp({ mode: 'session' });
     const f = m.lastFrame();
     // the quiet start (2026-09, owner's directive "clean"): a session opens with the mark and the composer — the
@@ -61,26 +72,38 @@ describe('<App> first frame (§1)', { retry: 1 }, () => {
     expect(m.state()?.splash).toBe('running');
     m.dispatch({ type: 'splash:done' });
     await tick(20);
+    const all = m.lastFrame().split('\n');
     const dyn = dynamicLines(m.lastFrame());
-    expect(dyn).toHaveLength(11); // plain rule + the 5-row mark + console (top, composer, divider, status, bottom)
+    expect(dyn).toHaveLength(6); // plain rule + console (top, composer, divider, status, bottom)
     expect(dyn[0]).toMatch(/^─+$/);
     expect(dyn[0]).toHaveLength(100);
-    for (let r = 0; r < 4; r++) expect(dyn[1 + r]).toBe(`${' '.repeat(22)}${WORDMARK[r]}`.replace(/\s+$/, ''));
-    expect(dyn[5]).toBe(`${' '.repeat(22)}${WORDMARK[4]}  ◆ ${VERSION}`);
-    expect(dyn[6]).toMatch(new RegExp(`^╭─ ${MODE_BADGE_WORD[DEFAULT_MODE].replace(/[+·]/g, (c) => `\\${c}`)} ─+ proj ─╮$`));
-    expect(dyn[7]).toBe(`│ › ${PLACEHOLDERS.task}${' '.repeat(96 - 2 - PLACEHOLDERS.task.length)} │`);
-    expect(dyn[8]).toMatch(/^├─+┤$/);
-    expect(dyn[9]).toMatch(/^│ idle\s+step 0\/–\s+\? help │$/);
-    expect(dyn[10]).toMatch(/^╰─+╯$/);
+    // the scrollback above it opens with the committed block: one blank row, the five glyph rows, one blank row
+    const scroll = all.slice(0, all.length - dyn.length).map((l) => l.trimEnd());
+    expect(scroll).toHaveLength(7);
+    expect([scroll[0], scroll[6]]).toEqual(['', '']);
+    for (let r = 0; r < 4; r++) expect(scroll[1 + r]).toBe(`${' '.repeat(22)}${WORDMARK[r]}`.replace(/\s+$/, ''));
+    expect(scroll[5]).toBe(`${' '.repeat(22)}${WORDMARK[4]}  ◆ ${VERSION}`);
+    expect(dyn[1]).toMatch(new RegExp(`^╭─ ${MODE_BADGE_WORD[DEFAULT_MODE].replace(/[+·]/g, (c) => `\\${c}`)} ─+ proj ─╮$`));
+    expect(dyn[2]).toBe(`│ › ${PLACEHOLDERS.task}${' '.repeat(96 - 2 - PLACEHOLDERS.task.length)} │`);
+    expect(dyn[3]).toMatch(/^├─+┤$/);
+    expect(dyn[4]).toMatch(/^│ idle\s+step 0\/–\s+\? help │$/);
+    expect(dyn[5]).toMatch(/^╰─+╯$/);
     expect(m.lastFrame()).not.toContain('▓▒░');
     expect(m.lastFrame()).not.toMatch(/◆ jevcode/);
     expect(m.state()?.splash).toBe('done');
   });
 
-  it('resume mode: the first frame names the run being resumed', () => {
+  it('resume mode: the header names the run being resumed, once the mark is committed (the config and the settle)', async () => {
     const bus = createEventBus();
-    const { frames } = render(<App task="resuming 20260919-120000-ab12" resumeId="20260919-120000-ab12" source={bus} confirmer={createTuiConfirmer()} onAbort={() => undefined} tickMs={0} />);
-    expect(stripSgr(frames[0] ?? '')).toContain('[run] jevcode resuming 20260919-120000-ab12 | step 0/– starting');
+    const bridge = createBridge(null, null);
+    const { frames, lastFrame } = render(<App task="resuming 20260919-120000-ab12" resumeId="20260919-120000-ab12" source={bus} confirmer={createTuiConfirmer()} onAbort={() => undefined} tickMs={0} bridge={bridge} />);
+    expect(stripSgr(frames[0] ?? '')).toContain('step 0/–');
+    // the session's startup: the config arrives after the first frame, then the splash settles
+    bridge.ui = mkUiConfig(resolveLaunchSettings({}, process.env));
+    bridge.notify();
+    bridge.command({ type: 'dispatch', action: { type: 'splash:done' } });
+    await tick(20);
+    expect(stripSgr(lastFrame() ?? '')).toContain('[run] jevcode resuming 20260919-120000-ab12 | step 0/– starting');
   });
 });
 
@@ -682,6 +705,31 @@ describe('createTuiRenderer', { retry: 1 }, () => {
 // ---------------------------------------------------------------------------------------------------------------
 
 describe('<App> a submission that never becomes a run (§4.9, finding 1)', { retry: 1 }, () => {
+  it('an Enter before the host attaches is held under the `! starting…` toast; the attach sends it and the toast leaves WITH it — the status row reads its own word at once, not 2 s later', async () => {
+    const m = mountApp({ mode: 'session' });
+    m.stdin.write('hi');
+    await waitFor(() => m.lastFrame().includes('› hi'));
+    m.stdin.write('\r');
+    await waitFor(() => m.lastFrame().includes('! starting…'));
+    expect(dynamicLines(m.lastFrame()).at(-2)).toMatch(/^│ ! starting…\s/);
+    // the controller attaches the host (`setHost`): the held Enter flushes. (The session's `submit()` resolves once the
+    // turn has started or been refused — a few ms at the least, never in the microtask of the Enter itself.)
+    const host = fakeHost();
+    const submit = host.submit;
+    host.submit = async (text, opts) => {
+      await submit(text, opts);
+      await tick(20);
+    };
+    m.bridge.host = host;
+    m.bridge.notify();
+    expect(await waitFor(() => host.submitted.length === 1)).toBe(true);
+    expect(host.submitted[0]?.text).toBe('hi');
+    await tick(60);
+    // well inside the toast's 2 s: it is gone, and the row is back to the real state (the fake host starts no run: idle)
+    expect(m.lastFrame()).not.toContain('starting…');
+    expect(dynamicLines(m.lastFrame()).at(-2)).toMatch(/^│ idle\s/);
+  });
+
   it('host.submit() resolving without run:start returns run to none: the status is idle again, Enter submits again, Ctrl-C ×2 exits 0', async () => {
     const host = fakeHost();
     const m = mountApp({ mode: 'session', host });

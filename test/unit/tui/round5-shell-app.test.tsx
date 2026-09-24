@@ -610,7 +610,8 @@ describe('(b) `/import` opens the review overlay (TUI-DESIGN-5 §5.2, §7 rows 5
       m.bridge.geometry = { rows, columns };
       m.bridge.notify();
       await tick(40);
-      for (const l of m.lastFrame().split('\n')) expect([...l].length, `${rows}x${columns}: ${l}`).toBeLessThanOrEqual(Math.max(columns, 80));
+      // the committed wordmark is scrollback written once at the launch width (the terminal reflows it; Ink never rewrites it)
+      for (const l of m.lastFrame().split('\n').filter((r) => !/^ {4,}██/.test(r))) expect([...l].length, `${rows}x${columns}: ${l}`).toBeLessThanOrEqual(Math.max(columns, 80));
     }
     // ink-testing-library never emits a clear at all; the pty scenario owns the real check (§7 row 85)
     expect(clears()).toBe(before);

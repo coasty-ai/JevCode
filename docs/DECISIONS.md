@@ -10,10 +10,11 @@ document, not part of this repository — are also listed in `docs/DESIGN.md` un
 
 ## Contents
 
-101 entries, newest first.
+102 entries, newest first.
 
 **2026-09-23**
 
+- [The wordmark is committed once, as the first scrollback block; the chat is below it](#2026-09-23-the-wordmark-is-committed-once-as-the-first-scrollback-block-the-chat-is-below-it)
 - [The Jev-driven modules live under `src/jev-modes/`; dated entries keep the paths they were written with](#2026-09-23-the-jev-driven-modules-live-under-srcjev-modes-dated-entries-keep-the-paths-they-were-written-with)
 - [The default mode is `agent`: the code model drives with native tool calls, and Jev keeps three quick hints](#2026-09-23-the-default-mode-is-agent-the-code-model-drives-with-native-tool-calls-and-jev-keeps-three-quick-hints)
 - [A best guess with no reproduction oracle is verified by its scoped suite; an un-ignored virtualenv is never a candidate](#2026-09-23-a-best-guess-with-no-reproduction-oracle-is-verified-by-its-scoped-suite-an-un-ignored-virtualenv-is-never-a-candidate)
@@ -1961,3 +1962,65 @@ in `docs/STATUS.md`, `docs/research/**`, `docs/measurements/**`, `experiments/de
 
 **Affects.** The layout only. `src/loop/engine.ts` keeps the Jev-mode branches and imports the moved modules from
 `src/jev-modes/`; splitting it stays deferred (design open risk 17).
+
+## 2026-09-23 The wordmark is committed once, as the first scrollback block; the chat is below it
+
+**Decision.** The owner asked twice: "Keep jevcode branding on top only and even after chat starts keep it there only and
+chats appear after that" and "make sure the jevcode ascii design stays at top and chat is below the ascii design". In the
+classic (inline) renderer the resting mark lived in the dynamic region directly above the console, so every committed message
+landed above it. Now the startup splash still animates in the dynamic region, in a splash box on top of it (the box, then the
+rule, then the console), and the settled mark (padding, the five glyph rows, the tagline where it fits, the `◆ <version>`
+caption, padding) is then committed as the first `<Static>` block, in exactly the rows the box held. Every message lands below
+it and the console stays at the bottom. A long session scrolls it off the top, like any scrollback. It is never redrawn. The
+opt-in fullscreen renderer is unchanged: its header slot keeps the mark.
+
+**When.** The commit is decided once, at the earliest of these moments:
+
+- the settle of an animated splash: the timer, a key or an overlay, so any `splash:done` after a frame 0 that was `running`;
+- the first item bound for `<Static>`: a submit's `[you]` bubble before the settle, a `--resume` replay, or the first item of
+  `jevcode run`;
+- frame 0, for a mount that can never draw a mark (the flat tier, a screen reader);
+- for a mount settled in frame 0 (reduced motion), the arrival of the configuration. The configuration is read after the first
+  frame by contract (`applyConfig` calls `setUi`), so a decision in frame 0 would bake the launch defaults into the scrollback
+  and ignore `ui.wordmark: off`, `ui.noColor` and `ui.theme` for good. Until the configuration arrives, such a mount holds the
+  resting mark in the splash box, so its first frame still carries the mark. The settle and a real item decide without the
+  configuration, so a configuration that never arrives cannot stall the commit.
+
+`jevcode run`'s task header waits for the same decision: it is handed to `<Transcript>` only once the commit is decided. So the
+one-shot reveal plays in the dynamic region like a session's, the first frame is splash frame 0 with the `step 0/–` sentinel and
+no header, and the header lands one item below the mark. `<Static>` writes by index, so a block prepended after the first
+flush would reprint the tail, and nothing can ever land above the mark. WHETHER a mark is drawn is decided at that moment only
+(`wordmarkWanted`). A session that starts narrow and widens later never drops a mark into the middle of the transcript. The
+classic renderer has no `/clear`, Ctrl+L repaints in place, `/new` keeps the scrollback, and the 20,000-item soft-cap remount
+does not reprint the mark, like the header. So it is committed exactly once per process.
+
+**What changed with it.**
+
+- *Which terminals get a mark.* `wordmarkWanted` is a width rule now: the boxed tier (16 rows, 40 columns), at least 64
+  columns, no screen reader, `ui.wordmark` not `off`. This is the TUI owner's rule for a committed mark, specified by the
+  session that designed the resting mark. The 21-row floor, and the rule that let a panel, picker or review take the mark's
+  rows below 30 rows, existed only because the pinned mark held dynamic rows. A mark in the scrollback holds none, so a 16–20
+  row terminal now commits the mark where it used to show the one-line brand row.
+- *Spacing, a deliberate change.* The committed block has at least one blank row on each side (`scrollbackMarkPad`: one, or two
+  from 34 rows up). The resting mark had none at 21–25 rows. The user asked for generous spacing around the branding, and the
+  blank row also keeps the mark off the shell prompt above it and the first `[you]` bubble below it. At 24×80 the first frame
+  is 13 dynamic rows (box 7, rule, console 5) instead of 11.
+- *Nothing moves at the commit.* The splash box is the top of the dynamic region, above the rule, and is exactly the committed
+  block's height. The commit turns it into the same rows of scrollback, so no glyph row, rule row or console row moves.
+  Emulated pty frames at 24×80, 30×100 and 40×120 keep the glyph rows and the rule on the same screen rows from frame 0
+  through the commit, with zero clears.
+- *Width.* A committed mark keeps the width it was committed at. After the terminal gets narrower, the terminal's reflow (and
+  Ink's rewrite of the static output on a shrink) wraps its 82–116-cell glyph rows, like any scrollback row. The mark in the
+  dynamic region used to re-centre itself.
+- *Motion.* The idle sweep never runs on a committed mark, so an idle session writes zero frames, and in the classic renderer
+  `ui.wordmark: sweep` and `static` look the same (the reveal never read the setting; the fullscreen header keeps the sweep). The rule row stays the plain rule while the mark is on screen and a panel has no rows.
+- *Reading captures.* A splash frame's rows above the rule are dynamic, so the pty parsers take the region from Ink's own
+  accounting (the next write erases exactly this write's region) instead of the rule row: `FrameUnit.region` and
+  `SyncFrame.region` in `test/pty/helpers.ts` (whose `regionCrossCheck` counts splash frames apart), `split_region` in
+  `test/pty/run-smoke.sh` and `box` in `scripts/pty/polish-check.mjs`. The first-frame probe is unchanged: frame 0 is splash
+  frame 0 again for both `chat` and `run`.
+
+**Affects.** `src/tui/App.tsx` (the latch, the header hand-off, the splash box on top of the region), `src/tui/Transcript.tsx`
+(the mark at index 0), `src/tui/WordmarkBlock.tsx` (new: `SplashRow`, the committed block), `src/tui/wordmark.ts`
+(`wordmarkWanted` without the height tiers, `scrollbackMarkPad`, `scrollbackMarkRows`), `scripts/pty/polish-check.mjs`,
+`test/pty/helpers.ts`, `test/pty/run-smoke.sh`, and the app, pty and smoke pins of the mark's position.

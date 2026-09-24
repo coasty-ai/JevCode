@@ -1,7 +1,8 @@
 /**
  * TUI-DESIGN-3 §8 pty scenarios of round 3, every run `--mock` or offline (`JEVCODE_ASSERT_NO_NETWORK=1`) inside a real pty driven
- * by scripts/pty/drive.exp: the persistent wordmark (§3 — the idle sweep's one pass in 12 s, a key mid-pass, the run hand-off, the
- * 21 / 20 / 22-row edges, the reduced-motion and no-colour twins); the TypeSafe pink by depth (§2); the hero-frame checklist of §9
+ * by scripts/pty/drive.exp: the wordmark (§3, RE-PINNED for the owner's directive of 2026-09-23 — the settled mark is COMMITTED as the
+ * first scrollback block: 12 s alone write no frame, a key paints within 50 ms, the run and `/panel` never draw it in the dynamic
+ * region, the 21 / 20 / 22-row edges all commit it, the no-colour twin); the TypeSafe pink by depth (§2); the hero-frame checklist of §9
  * through scripts/pty/polish-check.mjs over `polish.steps` at 24×80 and 40×120 and its twins; the one-key wizard edges of §1.8
  * (Esc → options → Ctrl-C, a pasted CR, the masked field's bytes in no frame, TypeSafe-only start persisting `mode: jev-only` and the
  * restart that opens no wizard, `JEVCODE_MODE=jev-only`, the screen-reader and `--plain` twins, the keyless pipe); the §4 audit's
@@ -16,7 +17,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { checkPolish } from '../../scripts/pty/polish-check.mjs';
 import { DEFAULT_MODE } from '../../src/config/defaults.js';
 import { SR_OPTIONS_ROWS_AGENT, missingGeneratorOnly, optionHint } from '../../src/tui/onboarding/lines.js';
-import { BADGE_DEFAULT, BADGE_DEFAULT_TEXT, BADGE_JEV_ONLY, CHAT_OPEN, EXIT_IDLE, FIRST_FRAME_STEP, IDLE_STEP, MOCK_RUN_MODE, PLACEHOLDER_FOLLOWUP, PLACEHOLDER_TASK, RAW_MODE_STEP, RUN_STARTED_STEP, SGR_GAP, afterFirstFrame, binPath, childEnv, cleanupScratch, countClears, drive, echoStep, hasExpect, labelStep, registerScratch, stripAnsi, syncFrames, timingOf, topEdgeStep, type Drive, type SyncFrame } from './helpers.js';
+import { BADGE_DEFAULT, BADGE_DEFAULT_TEXT, BADGE_JEV_ONLY, CHAT_OPEN, EXIT_IDLE, FIRST_FRAME_STEP, IDLE_STEP, MOCK_RUN_MODE, PLACEHOLDER_FOLLOWUP, PLACEHOLDER_TASK, RAW_MODE_STEP, RUN_STARTED_STEP, SGR_GAP, afterFirstFrame, binPath, childEnv, cleanupScratch, committedMark, countClears, drive, echoStep, hasExpect, labelStep, registerScratch, stripAnsi, syncFrames, timingOf, topEdgeStep, type Drive, type SyncFrame } from './helpers.js';
 
 afterEach(cleanupScratch);
 
@@ -60,51 +61,50 @@ function assertNoKeyBytes(r: Drive, ...secrets: string[]): void {
   }
 }
 /**
- * Owner directive 3: the branding box is padded with `wordmarkPad(rows)` blank rows above AND below the glyphs, so an
- * idle boxed frame is `rule 1 + (5 + 2p) + console 5` — 11 below 26 rows, 13 at 26–33, 15 from 34 up.
+ * The owner's directive of 2026-09-23: the settled mark is committed to the scrollback, so an idle boxed frame is the rule and
+ * the console — `rule 1 + console 5` at every height.
  */
-const idleRows = (rows: number): number => 1 + (5 + 2 * (rows >= 34 ? 2 : rows >= 26 ? 1 : 0)) + 5;
+const IDLE_ROWS = 6;
+/** the committed mark: one block of five glyph rows at the head of the scrollback */
+function expectCommittedOnce(r: Drive): void {
+  const mark = committedMark(r.text);
+  expect(mark.blocks, mark.scroll.slice(0, 12).join('\n')).toBe(1);
+  expect(mark.rows).toHaveLength(5);
+  expect(mark.scroll.slice(0, mark.at).every((l) => l === '')).toBe(true);
+}
 
-/** the index of the first frame whose dynamic rows match `re` */
-const frameWith = (all: readonly SyncFrame[], re: RegExp, from = 0): number => all.findIndex((f, i) => i >= from && f.dynamic.some((l) => re.test(l)));
+/** the index of the first frame whose dynamic rows match `re` (`region`: Ink's own accounting — the splash box, on top of the region above the rule, included) */
+const frameWith = (all: readonly SyncFrame[], re: RegExp, from = 0): number => all.findIndex((f, i) => i >= from && f.region.some((l) => re.test(l)));
 
-describe.skipIf(!hasExpect)('pty round 3: the persistent wordmark (TUI-DESIGN-3 §3)', () => {
+describe.skipIf(!hasExpect)('pty round 3: the wordmark (TUI-DESIGN-3 §3; committed to the scrollback, the owner\'s directive of 2026-09-23)', () => {
   for (const [rows, cols] of [
     [24, 80],
     [40, 120],
   ] as const) {
-    it(`wordmark-idle ${rows}x${cols}: settle, 12 s alone → exactly one sweep pass (14–18 frames between the caption frame and the marker key), each ≤ 3 KB, band cells in the sweep SGR, the letters unchanged, ${idleRows(rows)} rows, 0 clears`, async () => {
+    it(`wordmark-idle ${rows}x${cols}: settle, 12 s alone → the mark is committed once and NO frame is written (a committed mark is never repainted), ${IDLE_ROWS} dynamic rows, 0 clears`, async () => {
       const r = await drive({ name: `r3-wordmark-idle-${rows}x${cols}`, args: ['chat', '--mock'], rows, cols, steps: [FIRST_FRAME_STEP, 'expect step 0/', CAPTION_STEP, 'mark settled', IDLE_STEP, 'sleep 12', 'mark idled', 'send h', echoStep('h'), 'send \\x03', `expect ${PLACEHOLDER_TASK}`, ...EXIT_IDLE], timeoutS: 40 });
       expect(r.timeouts).toBe(0);
       expect(r.code).toBe(0);
       const all = dynFrames(r);
       const raw = rawFrames(r.text);
+      // the caption first shows in the held splash box; the commit frame follows it (and the host's settle frame, the session meter)
       const caption = frameWith(all, CAPTION_RE);
       expect(caption).toBeGreaterThan(0);
       const echo = frameWith(all, /[›>] h/, caption + 1);
       expect(echo).toBeGreaterThan(caption);
-      // the host's settle frame (the session meter) may land right after the caption; everything else in the window is the pass
       const between = all.slice(caption + 1, echo);
-      const passFrames = between.filter((f) => BAND_SGR.test(raw[f.index] ?? ''));
-      const other = between.filter((f) => !BAND_SGR.test(raw[f.index] ?? ''));
-      expect(passFrames.length).toBeGreaterThanOrEqual(14);
-      expect(passFrames.length).toBeLessThanOrEqual(18);
-      expect(other.length).toBeLessThanOrEqual(2);
-      const letters = (f: SyncFrame): string[] => f.dynamic.filter((l) => WORDMARK_RE.test(l));
-      const ref = letters(all[caption]!);
-      for (const f of passFrames) {
-        expect(letters(f)).toEqual(ref);
-        expect(Buffer.byteLength(raw[f.index] ?? '', 'utf8')).toBeLessThanOrEqual(3072);
-        expect(f.dynamic.length).toBe(idleRows(rows));
-      }
-      // the sweep touches the letters only (colour): no `▓▒░` head, no clear, no width change
-      expect(passFrames.some((f) => f.dynamic.some((l) => HEAD_RE.test(l)))).toBe(false);
+      expect(between.length).toBeLessThanOrEqual(2);
+      // 12 s alone: no sweep band anywhere, no wordmark row in any dynamic region after the commit
+      expect(between.some((f) => BAND_SGR.test(raw[f.index] ?? ''))).toBe(false);
+      expect(all.slice(caption + 1).some((f) => hasMark(f.region))).toBe(false);
+      expect(all.at(-1)!.dynamic.length).toBe(IDLE_ROWS);
+      expectCommittedOnce(r);
       expect(countClears(afterFirstFrame(r.text))).toBe(0);
-      console.log(`wordmark-idle ${rows}x${cols}: ${passFrames.length} pass frames, ${other.length} other frame(s) in 12 s idle, widest ${Math.max(...passFrames.map((f) => Buffer.byteLength(raw[f.index] ?? '', 'utf8')))} B`);
+      console.log(`wordmark-idle ${rows}x${cols}: ${between.length} frame(s) between the caption and the key after 12 s alone`);
     });
   }
 
-  it('wordmark-key-during-pass: a key ≈ 7.5 s after the settle lands mid-pass — its echo within 50 ms of the send, the pass finishes (band frames after the echo), no new pass within 3 s', async () => {
+  it('wordmark-key-during-pass (the pass is gone): a key ≈ 7.5 s after the settle echoes within 50 ms; no band frame is ever written', async () => {
     const r = await drive({ name: 'r3-wordmark-key-during-pass', args: ['chat', '--mock'], steps: [FIRST_FRAME_STEP, 'expect step 0/', CAPTION_STEP, 'mark settled', IDLE_STEP, 'sleep 7.0', 'mark mid-pass', 'send h', echoStep('h'), 'mark echoed', 'sleep 3.5', 'mark after', 'send \\x03', `expect ${PLACEHOLDER_TASK}`, ...EXIT_IDLE], timeoutS: 40 });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
@@ -114,16 +114,14 @@ describe.skipIf(!hasExpect)('pty round 3: the persistent wordmark (TUI-DESIGN-3 
     const all = dynFrames(r);
     const raw = rawFrames(r.text);
     const echo = frameWith(all, /[›>] h/);
-    const clear = frameWith(all, /Say hi/, echo + 1);
-    const after = all.slice(echo + 1, clear).filter((f) => BAND_SGR.test(raw[f.index] ?? ''));
-    expect(after.length).toBeGreaterThanOrEqual(1);
-    // the frame that echoes the key keeps the mark (a key completes / never kills the mark) and carries no head
-    expect(hasMark(all[echo]!.dynamic)).toBe(true);
+    expect(all.slice(echo).some((f) => BAND_SGR.test(raw[f.index] ?? ''))).toBe(false);
+    expect(hasMark(all[echo]!.dynamic)).toBe(false);
+    expectCommittedOnce(r);
     expect(countClears(afterFirstFrame(r.text))).toBe(0);
-    console.log(`key during pass: echo ${echoed.t - sent.t} ms after the send, ${after.length} band frames after it`);
+    console.log(`key at 7.5 s: echo ${echoed.t - sent.t} ms after the send`);
   });
 
-  it('wordmark-handoff: the PINNED mark is up in EVERY frame of the run and after `end` under the strip (24 rows); `/panel` below 30 rows still hides it, `/panel off` brings it back', async () => {
+  it('wordmark-handoff: the committed mark heads the scrollback above the `[you]` bubble; no frame of the run or after `end` draws it in the dynamic region; `/panel` and `/panel off` never touch it (24 rows)', async () => {
     const r = await drive({
       name: 'r3-wordmark-handoff',
       args: ['chat', ...MOCK_RUN_MODE, '--mock', '--mock-steps', '3'],
@@ -137,20 +135,21 @@ describe.skipIf(!hasExpect)('pty round 3: the persistent wordmark (TUI-DESIGN-3 
     const end = all.findIndex((f) => f.lines.some((l) => /^ {0,9}\[run\] finished [·-] /.test(l)));
     expect(start).toBeGreaterThan(0);
     expect(end).toBeGreaterThan(start);
-    // owner directive 2: the mark is PINNED — it is up in every frame of the run, not hidden for it
-    for (const f of all.slice(start, end + 1)) expect(hasMark(f.dynamic)).toBe(true);
-    const back = all.slice(end).find((f) => hasMark(f.dynamic));
+    for (const f of all.slice(start)) expect(hasMark(f.dynamic)).toBe(false);
+    const back = all.slice(end).find((f) => /^─── (?:◆ jevcode ─ )?▸ jev s\d+/.test(f.dynamic[0] ?? ''));
     expect(back).toBeDefined();
-    expect(back!.dynamic[0]).toMatch(/^─── (?:◆ jevcode ─ )?▸ jev s\d+/);
     const panel = all.slice(end).find((f) => f.dynamic.some((l) => l.includes('▾ decisions')));
     expect(panel).toBeDefined();
-    expect(hasMark(panel!.dynamic)).toBe(false);
-    const off = all.slice(all.indexOf(panel!) + 1).find((f) => /^─── (?:◆ jevcode ─ )?▸ jev/.test(f.dynamic[0] ?? '') && hasMark(f.dynamic));
+    const off = all.slice(all.indexOf(panel!) + 1).find((f) => /^─── (?:◆ jevcode ─ )?▸ jev/.test(f.dynamic[0] ?? ''));
     expect(off).toBeDefined();
+    // the scrollback: the mark first (once), then the bubble
+    expectCommittedOnce(r);
+    const mark = committedMark(r.text);
+    expect(mark.scroll.findIndex((l) => /\[you\] fix the failing test/.test(l))).toBeGreaterThan(mark.at + 4);
     expect(countClears(afterFirstFrame(r.text))).toBe(0);
   });
 
-  it('wordmark-21 / 20: the mark shows at 21 rows and the palette never hands it off; 20 rows keeps the brand row and 6 dynamic rows', async () => {
+  it('wordmark-21 / 20: the height tiers are gone — both commit the mark; the palette at 21 rows never touches it; 20 rows keeps the plain rule (not the brand row) and 6 dynamic rows', async () => {
     const r21 = await drive({ name: 'r3-wordmark-21', args: ['chat', '--mock'], rows: 21, cols: 80, steps: [FIRST_FRAME_STEP, 'expect step 0/', CAPTION_STEP, IDLE_STEP, 'sleep 0.3', 'send /', 'expect Tab', 'sleep 0.4', 'mark palette', 'send \\x1b', 'sleep 0.3', 'send \\x03', `expect ${PLACEHOLDER_TASK}`, ...EXIT_IDLE] });
     expect(r21.timeouts).toBe(0);
     expect(r21.code).toBe(0);
@@ -158,22 +157,24 @@ describe.skipIf(!hasExpect)('pty round 3: the persistent wordmark (TUI-DESIGN-3 
     const palette = all21.filter((f) => f.dynamic.some((l) => l.includes('Tab')) && f.dynamic.some((l) => /╭─ commands/.test(l)));
     expect(palette.length).toBeGreaterThan(0);
     for (const f of palette) {
-      expect(hasMark(f.dynamic)).toBe(true);
+      expect(hasMark(f.dynamic)).toBe(false);
       expect(f.dynamic.length).toBeLessThanOrEqual(19);
     }
+    expectCommittedOnce(r21);
     expect(countClears(afterFirstFrame(r21.text))).toBe(0);
-    const r20 = await drive({ name: 'r3-wordmark-20', args: ['chat', '--mock'], rows: 20, cols: 80, steps: [FIRST_FRAME_STEP, 'expect step 0/', 'expect ◆ jevcode', IDLE_STEP, 'sleep 1', 'send h', echoStep('h'), 'send \\x03', `expect ${PLACEHOLDER_TASK}`, ...EXIT_IDLE] });
+    const r20 = await drive({ name: 'r3-wordmark-20', args: ['chat', '--mock'], rows: 20, cols: 80, steps: [FIRST_FRAME_STEP, 'expect step 0/', CAPTION_STEP, IDLE_STEP, 'sleep 1', 'send h', echoStep('h'), 'send \\x03', `expect ${PLACEHOLDER_TASK}`, ...EXIT_IDLE] });
     expect(r20.timeouts).toBe(0);
     expect(r20.code).toBe(0);
     const all20 = dynFrames(r20);
     const idle20 = all20.at(-1)!;
-    expect(idle20.dynamic[0]).toMatch(/^─── ◆ jevcode \d+\.\d+\.\d+ ─/);
+    expect(idle20.dynamic[0]).toMatch(/^─{80}$/);
     expect(hasMark(idle20.dynamic)).toBe(false);
-    expect(idle20.dynamic.length).toBe(6);
+    expect(idle20.dynamic.length).toBe(IDLE_ROWS);
+    expectCommittedOnce(r20);
     expect(countClears(afterFirstFrame(r20.text))).toBe(0);
   });
 
-  it('wordmark-22 after a mock run: the PINNED mark never left — it is up before the first key and after it, under the strip (F-W5)', async () => {
+  it('wordmark-22 after a mock run: the committed mark stays above everything — no frame after `end` or on the first key draws it in the dynamic region, the strip keeps the rule row (F-W5)', async () => {
     const r = await drive({ name: 'r3-wordmark-22-postrun', args: ['chat', ...MOCK_RUN_MODE, '--mock', '--mock-steps', '3'], rows: 22, cols: 80, steps: [...CHAT_OPEN, 'send fix the failing test', echoStep('fix the failing test'), 'send \\r', RUN_STARTED_STEP, 'expect finished [·-] (complete|max_steps)', `expect ${PLACEHOLDER_FOLLOWUP}`, 'sleep 0.5', 'mark ended', 'send h', echoStep('h'), 'sleep 0.3', 'send \\x03', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE] });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
@@ -182,21 +183,23 @@ describe.skipIf(!hasExpect)('pty round 3: the persistent wordmark (TUI-DESIGN-3 
     const echo = all.findIndex((f, i) => i > end && f.dynamic.some((l) => /[›>] h/.test(l)));
     expect(end).toBeGreaterThan(0);
     expect(echo).toBeGreaterThan(end);
-    for (const f of all.slice(end, echo + 1)) expect(hasMark(f.dynamic)).toBe(true);
+    for (const f of all.slice(end, echo + 1)) expect(hasMark(f.dynamic)).toBe(false);
     expect(all[echo]!.dynamic[0]).toMatch(/^─── (?:◆ jevcode ─ )?▸ jev/);
+    expectCommittedOnce(r);
     expect(countClears(afterFirstFrame(r.text))).toBe(0);
   });
 
-  it('wordmark-nocolor: --no-color turns the sweep off — the reveal still runs, the mark rests, 12 s alone write no frame; no `38;` anywhere', async () => {
+  it('wordmark-nocolor: --no-color turns the sweep off — the reveal still runs, the mark is committed, 12 s alone write no frame; no `38;` anywhere', async () => {
     const r = await drive({ name: 'r3-wordmark-nocolor', args: ['chat', '--mock', '--no-color'], steps: [FIRST_FRAME_STEP, 'expect step 0/', CAPTION_STEP, 'mark settled', IDLE_STEP, 'sleep 12', 'mark idled', 'send h', 'expect (?:›|>) h', 'send \\x03', `expect ${PLACEHOLDER_TASK}`, ...EXIT_IDLE], timeoutS: 40 });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
     const all = dynFrames(r);
-    expect(all[0]!.dynamic.some((l) => HEAD_RE.test(l))).toBe(true);
+    expect(all[0]!.region.some((l) => HEAD_RE.test(l))).toBe(true);
     const caption = frameWith(all, CAPTION_RE);
     const echo = frameWith(all, /[›>] h/, caption + 1);
-    // the host's settle frame at most; no sweep frame in 12 s
-    expect(all.slice(caption + 1, echo).length).toBeLessThanOrEqual(1);
+    // the commit frame and the host's settle frame at most; no sweep frame in 12 s
+    expect(all.slice(caption + 1, echo).length).toBeLessThanOrEqual(2);
+    expectCommittedOnce(r);
     expect(r.text).not.toMatch(/\x1b\[38;/);
     expect(countClears(afterFirstFrame(r.text))).toBe(0);
   });
@@ -287,7 +290,9 @@ describe.skipIf(!hasExpect)('pty round 3: the one-key wizard edges (TUI-DESIGN-3
     expect(plain).toContain('export OPENROUTER_API_KEY=');
     const options = dynFrames(r).filter((f) => f.dynamic.some((l) => l.startsWith('╭─ setup · options')));
     expect(options.length).toBeGreaterThan(0);
-    expect(hasMark(options[0]!.dynamic)).toBe(true);
+    // the mark stays above the wizard: committed to the scrollback when the wizard ended the splash
+    expect(hasMark(options[0]!.dynamic)).toBe(false);
+    expectCommittedOnce(r);
     expect(r.runDirs()).toEqual([]);
   });
   it('edge 1: a key pasted with a trailing CR saves the clean key (four file keys from one paste, 0600); `n` skips the verify; the `[setup] spend caps` item; the bytes never in a frame', async () => {

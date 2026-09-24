@@ -13,6 +13,8 @@ export interface PolishFrame {
   ruleIndex: number;
   scrollback: string[];
   dynamic: string[];
+  /** the dynamic region's rows above the rule by Ink's erase count (the splash box, a reply's tail); set by `splitFrames` */
+  regionAbove: number;
   clears: number;
   hasFrame: boolean;
 }

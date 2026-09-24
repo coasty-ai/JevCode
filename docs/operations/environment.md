@@ -92,7 +92,7 @@ configuration file cannot change one.
 | `JEVCODE_ASCII` | `ui.ascii` (launch) | automatic | force the ASCII glyph table |
 | `JEVCODE_SCREEN_READER` | `ui.screenReader` (launch) | `false` | screen-reader mode; `INK_SCREEN_READER` is also accepted |
 | `JEVCODE_REDUCED_MOTION` | `ui.reducedMotion` | true under screen-reader mode | no spinner animation |
-| `JEVCODE_WORDMARK` | `ui.wordmark` | `static` over a remote shell, else `sweep` | the idle wordmark animation; `off` disables it |
+| `JEVCODE_WORDMARK` | `ui.wordmark` | `static` over a remote shell, else `sweep` | the wordmark: `off` draws no mark; otherwise the settled mark is written once at the top of the scrollback, and `sweep` / `static` differ only in the fullscreen renderer's header (an idle sweep, or none) |
 | `JEVCODE_TITLE` | `ui.title` | `false` | set the terminal title |
 | `JEVCODE_NOTIFY` | `ui.notify` | true under screen-reader mode | terminal notifications |
 | `JEVCODE_OSC52` | `ui.osc52` | `false` | copy to the clipboard through the terminal escape sequence |

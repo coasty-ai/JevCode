@@ -42,7 +42,7 @@ import { Overlay, type OverlayData } from '../../../src/tui/Overlay.js';
 import { Pane } from '../../../src/tui/Pane.js';
 import { CAP, chromeRows, type OverlayKind } from '../../../src/tui/layout.js';
 import { createEventBus, createTuiConfirmer, type UiAction } from '../../../src/tui/useEngine.js';
-import { mkConfirmRequest, mkDecision, mkStatus } from '../../fixtures/tui/fixtures.js';
+import { mkConfirmRequest, mkDecision, mkStatus, mkUiConfig } from '../../fixtures/tui/fixtures.js';
 import { paneState } from './pane/helpers.js';
 import { StubStdin, StubStdout } from './stub-stdout.js';
 
@@ -80,6 +80,8 @@ function mount(rows: number, columns: number): Mounted {
   const bus = createEventBus();
   const confirmer = createTuiConfirmer();
   const bridge: Bridge = createBridge(null, null);
+  // a session past startup: the config has arrived (`setUi`), so the reduced-motion mount commits its mark in frame 0
+  bridge.ui = mkUiConfig(STILL);
   const instance = render(
     <App task="" resumeId={null} source={bus} confirmer={confirmer} onAbort={() => undefined} mode="session" cwd="/Users/x/proj" tickMs={0} now={() => NOW} bridge={bridge} launch={STILL} env={{ FORCE_COLOR: '3' }} />,
     { stdout: stdout as unknown as NodeJS.WriteStream, stdin: stdin as unknown as NodeJS.ReadStream, debug: true, exitOnCtrlC: false, patchConsole: false },

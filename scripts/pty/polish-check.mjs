@@ -155,7 +155,34 @@ export function splitFrames(capture) {
   const sep = capture.includes(BSU) ? BSU : CURSOR_HIDE;
   const parts = capture.split(sep);
   const prologue = parts.shift() ?? '';
-  return { prologue, frames: parts.map((raw, index) => frameOf(raw, index)) };
+  const frames = parts.map((raw, index) => frameOf(raw, index));
+  // THE OWNER'S DIRECTIVE (2026-09-23): the classic splash box is the TOP of the dynamic region, ABOVE the rule row (it
+  // turns into the committed block in place), so a splash frame's rows above the rule are not all scrollback. Ink's own
+  // accounting tells: log-update opens the next write with one erase per row of this frame's region (+1 for the trailing
+  // newline). `regionAbove` is the region's rows above the rule — the splash box, or a streaming reply's tail — and
+  // `scrollback` excludes them.
+  frames.forEach((f, i) => {
+    if (!f.hasFrame) return;
+    for (let j = i + 1; j < frames.length; j++) {
+      const next = frames[j];
+      if (next.clears > 0) break;
+      const erased = eraseCount(next.raw);
+      if (erased > 0) {
+        const region = erased - (stripAnsi(f.raw).replace(/\r/g, '').endsWith('\n') ? 1 : 0);
+        f.regionAbove = Math.max(0, Math.min(f.ruleIndex, region - f.dynamic.length));
+        f.scrollback = f.rows.slice(0, f.ruleIndex - f.regionAbove);
+        break;
+      }
+      if (next.rows.length > 0) break;
+    }
+  });
+  return { prologue, frames };
+}
+
+/** the erase run at a write's head: `ESC[2K` count before its first printable character (the previous region's rows + 1) */
+function eraseCount(raw) {
+  const head = /^(?:\x1b\[[0-9;?]*[ -/]*[@-~]|[\x00-\x1f\x7f])*/.exec(raw)?.[0] ?? '';
+  return head.split('\x1b[2K').length - 1;
 }
 
 function isRule(row, ascii) {
@@ -184,6 +211,8 @@ export function frameOf(raw, index) {
     ruleIndex,
     scrollback: ruleIndex >= 0 ? rows.slice(0, ruleIndex) : [],
     dynamic: ruleIndex >= 0 ? rows.slice(ruleIndex) : [],
+    /** the dynamic region's rows above the rule by Ink's erase count (the splash box, a reply's tail; set by `splitFrames`) */
+    regionAbove: 0,
     clears: (raw.match(/\x1b\[[0-9;]*[23]J|\x1bc|\x1b\[\?1049[hl]/g) ?? []).length,
     hasFrame: ruleIndex >= 0,
   };
@@ -342,29 +371,44 @@ export function checkPolish(capture, opts = {}) {
   const allScroll = [...prologueRows, ...scrollback];
   const runStartAt = frames.findIndex((f) => f.scrollback.some((r) => RUN_STARTED_RE.test(r)));
   const captionFits = cols >= 73;
-  const settledIdx = frames.findIndex((f, i) => (runStartAt < 0 || i < runStartAt) && f.dynamic.filter((r) => isWordmarkRow(r, ascii)).length >= 5 && !/[▓▒░]{3}|#\+\./.test(f.dynamic.slice(0, 7).join('\n')) && (!captionFits || /[◆*] \d+\.\d+\.\d+/.test(f.dynamic.join('\n'))));
+  // THE OWNER'S DIRECTIVE (2026-09-23): the settled mark is COMMITTED as the first `<Static>` block, so the settle frame
+  // is the first frame before the first run whose SCROLLBACK carries the five glyph rows (no reveal head) and the caption
+  // where it fits — the splash frames before it carry the mark in their dynamic region
+  const markRowsOf = (rs) => rs.filter((r) => isWordmarkRow(r, ascii));
+  const settledIdx = frames.findIndex((f, i) => (runStartAt < 0 || i < runStartAt) && markRowsOf(f.scrollback).length >= 5 && !/[▓▒░]{3}|#\+\./.test(f.scrollback.join('\n')) && (!captionFits || /[◆*] \d+\.\d+\.\d+/.test(f.scrollback.join('\n'))));
 
-  // V1 — the settled idle frame
-  if (settledIdx < 0) add('V1', false, 'no settled idle frame (5 wordmark rows without the sweep head' + (captionFits ? ' and with the caption `◆ <version>`' : '') + ') before the first [run] start');
+  // V1 — the settled frame: the committed block (padding, 5 glyph rows, caption, padding) above the rule, the console below
+  if (settledIdx < 0) add('V1', false, 'no settled frame (5 committed wordmark rows without the sweep head' + (captionFits ? ' and with the caption `◆ <version>`' : '') + ') before the first [run] start');
   else {
     const f = frames[settledIdx];
     const dyn = f.dynamic.join('\n');
     const problems = [];
-    if (f.dynamic.filter((r) => /██|##/.test(r)).length < 5) problems.push('fewer than 5 wordmark rows');
-    if (captionFits && !new RegExp(`[◆*] ${version ? version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : '\\d+\\.\\d+\\.\\d+'}`).test(dyn)) problems.push('no caption `◆ <version>`');
+    const first = f.scrollback.findIndex((r) => isWordmarkRow(r, ascii));
+    const glyphs = f.scrollback.slice(first, first + 5);
+    if (glyphs.filter((r) => isWordmarkRow(r, ascii)).length < 5) problems.push('fewer than 5 contiguous wordmark rows');
+    if (captionFits && !new RegExp(`[◆*] ${version ? version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : '\\d+\\.\\d+\\.\\d+'}`).test(glyphs.join('\n'))) problems.push('no caption `◆ <version>`');
     if (!/[›>] Say hi, ask a question, or describe a task/.test(dyn)) problems.push('no `› Say hi, ask a question, or describe a task…` prompt');
-    // owner directive 3: the branding box is padded with `markPad(rows)` blank rows above AND below the glyphs, so
-    // the idle frame is `rule 1 + (5 + 2p) + console 5` — 11 below 26 rows, 13 at 26–33, 15 from 34 up
-    const pad = rows >= 34 ? 2 : rows >= 26 ? 1 : 0;
-    const wantRows = 1 + (5 + 2 * pad) + 5;
+    // the committed block is padded with `scrollbackMarkPad(rows)` blank rows above AND below the glyphs (1, 2 from 34
+    // rows up); the dynamic region is the rule and the console — `rule 1 + console 5`, no wordmark row in it
+    const pad = rows >= 34 ? 2 : 1;
+    const above = f.scrollback.slice(Math.max(0, first - pad), first);
+    const below = f.scrollback.slice(first + 5, first + 5 + pad);
+    if (above.length !== pad || above.some((r) => r.trim() !== '') || below.length !== pad || below.some((r) => r.trim() !== '')) problems.push(`the block is not padded with ${pad} blank row(s) each side`);
+    const wantRows = 1 + 5;
     if (f.dynamic.length !== wantRows) problems.push(`${f.dynamic.length} dynamic rows (want ${wantRows})`);
-    add('V1', problems.length === 0, problems.length === 0 ? `frame ${f.index}: 5 wordmark rows, ${pad} padding row(s) each side, caption, prompt, ${wantRows} dynamic rows` : `frame ${f.index}: ${problems.join('; ')}`);
+    if (markRowsOf(f.dynamic).length > 0) problems.push('a wordmark row in the dynamic region');
+    add('V1', problems.length === 0, problems.length === 0 ? `frame ${f.index}: 5 committed wordmark rows, ${pad} padding row(s) each side, caption, prompt, ${wantRows} dynamic rows` : `frame ${f.index}: ${problems.join('; ')}`);
   }
-  // V2 — wordmark cells in the settled frame and every idle frame until the first [run] start
+  // V2 — the mark heads the scrollback, committed exactly once, and no frame from the settle on draws it in its dynamic region
   if (settledIdx >= 0) {
-    const until = runStartAt < 0 ? frames.length : runStartAt;
-    const bare = frames.slice(settledIdx, until).filter((f) => wordmarkCells(f.dynamic.join('')) === 0 && !ascii);
-    add('V2', bare.length === 0, bare.length === 0 ? `wordmark cells in frames ${settledIdx}..${until - 1}` : `${bare.length} idle frame(s) without the mark before the first run: ${bare.slice(0, 5).map((f) => f.index).join(', ')}`);
+    const firstRow = scrollback.findIndex((r) => r.trim() !== '');
+    const blocks = scrollback.filter((r, i) => isWordmarkRow(r, ascii) && !(i > 0 && isWordmarkRow(scrollback[i - 1], ascii))).length;
+    const redrawn = frames.slice(settledIdx).filter((f) => markRowsOf(f.dynamic).length > 0 || markRowsOf(f.rows.slice(f.ruleIndex - f.regionAbove, f.ruleIndex)).length > 0);
+    const problems = [];
+    if (firstRow < 0 || !isWordmarkRow(scrollback[firstRow], ascii)) problems.push(`the scrollback opens with ${JSON.stringify((scrollback[firstRow] ?? '').slice(0, 40))}, not the mark`);
+    if (blocks !== 1) problems.push(`${blocks} wordmark blocks in the scrollback (want 1)`);
+    if (redrawn.length > 0) problems.push(`${redrawn.length} frame(s) after the settle draw the mark in the dynamic region: ${redrawn.slice(0, 5).map((f) => f.index).join(', ')}`);
+    add('V2', problems.length === 0, problems.length === 0 ? `the mark heads the scrollback, committed once (frame ${frames[settledIdx].index}), never redrawn` : problems.join('; '));
   } else add('V2', false, 'no settled frame');
   // V3 / V4 / V5 / V14 / V15 — colours
   const fgs = new Set();

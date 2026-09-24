@@ -5,13 +5,15 @@
  *
  * What is pinned here:
  *  - **P-H1 / D-T a** — after the first `run:ready` the rule row's strip carries `◆ jevcode`, **whether or not**
- *    the 5-row mark is up (F-H1, F-H2; TD3 §729 F-W5 "the strip keeps its information; the mark sits under it");
- *  - **P-H2 / D-T b** — the mark stays up during a live run at `rows ≥ WORDMARK_LIVE_MIN_ROWS = 32`, yields at 31,
- *    and the idle sweep is **frozen** while live, so a run still writes zero decoration frames (the `idle-frames`
- *    and `dynamic ≤ maxFps + 1` gates are untouched);
+ *    the 5-row mark is on screen (F-H1, F-H2). RE-PINNED for the owner's directive of 2026-09-23: the settled mark is
+ *    COMMITTED as the first scrollback block, so it sits ABOVE the strip (the rule row now sits between the mark and
+ *    the console) instead of under it;
+ *  - **the committed mark during a run** — it is scrollback at every height the boxed tier has (P-H2's 32 rows and the
+ *    pinned mark's 21 are both gone), a run never draws it in the dynamic region, and a run writes zero decoration
+ *    frames for it (the `idle-frames` and `dynamic ≤ maxFps + 1` gates are untouched);
  *  - **P-H3** — the wordmark renders inside `<PaneBoundary pane="wordmark">` and `mark.spans()` inside `guard()`:
- *    an injected fault degrades the five rows to blanks and appends one `[ui]` item, and the frame survives;
- *  - **D-F / the memoised `SplashRow`** — a keystroke while the mark is up leaves the five mark rows byte-identical;
+ *    an injected fault degrades the splash box's rows to blanks and appends one `[ui]` item, and the frame survives;
+ *  - **D-F** — a keystroke leaves the committed mark's rows byte-identical (it is `<Static>`: never laid out again);
  *  - **§1.4** — the real renderer's clear on a shrink resize carries `ESC[2J` and **never** `ESC[3J`.
  */
 import { render } from 'ink';
@@ -20,7 +22,7 @@ import type { LaunchSettings } from '../../../src/core/types.js';
 import { App, SYNC_COMMIT_MIN_MS, createBridge, createTuiRenderer, shouldSyncCommit, type Bridge } from '../../../src/tui/App.js';
 import { WORDMARK } from '../../../src/tui/splash.js';
 import { alternateScreenEntered, markAlternateScreen } from '../../../src/tui/terminal.js';
-import { WORDMARK_MIN_ROWS } from '../../../src/tui/wordmark.js';
+import { scrollbackMarkRows } from '../../../src/tui/wordmark.js';
 import { createEventBus, createTuiConfirmer } from '../../../src/tui/useEngine.js';
 import { mkRunResult, mkStatus, tick } from '../../fixtures/tui/fixtures.js';
 import { StubStdin, StubStdout, dynamicRegion, stripSgr } from './stub-stdout.js';
@@ -43,6 +45,8 @@ interface M {
   dyn: () => string[];
   frame: () => string;
   frames: () => string[][];
+  /** every frame's WHOLE rows (debug mode: the scrollback plus the dynamic region), trailing blanks trimmed */
+  fullFrames: () => string[][];
 }
 
 function mount(rows: number, columns: number, o: { fault?: string; tickMs?: number } = {}): M {
@@ -63,6 +67,7 @@ function mount(rows: number, columns: number, o: { fault?: string; tickMs?: numb
     dyn: () => dynamicRegion(stripSgr(stdout.lastFrame()), columns),
     frame: () => stripSgr(stdout.lastFrame()),
     frames: () => stdout.frames.map((f) => dynamicRegion(stripSgr(f), columns)),
+    fullFrames: () => stdout.frames.map((f) => stripSgr(f).replace(/\n$/, '').split('\n').map((l) => l.trimEnd())),
   };
 }
 
@@ -90,29 +95,36 @@ const endRun = (m: M): void => {
   m.bus.emit({ type: 'run:end', result: { ...mkRunResult('complete'), steps: 3 }, exitCode: 0 });
 };
 const hasMark = (dyn: readonly string[], columns: number): boolean => dyn.includes(markRow(1, columns));
+/** the committed mark: glyph row 1 in the last frame's scrollback (the rows above its dynamic region), exactly once */
+const markAbove = (m: M, columns: number): boolean => {
+  const all = m.frame().replace(/\n$/, '').split('\n').map((l) => l.trimEnd());
+  const scroll = all.slice(0, all.length - m.dyn().length);
+  return scroll.filter((l) => l === markRow(1, columns)).length === 1;
+};
 const ruleRow = (m: M): string => m.dyn()[0] ?? '';
 
 describe('P-H1 (D-T a): the brand never leaves the rule row once a run has been ready', () => {
-  it('F-H1 at 24×80: the strip leads with `◆ jevcode` and the 5-row mark sits UNDER it (the two coexist)', async () => {
+  it('F-H1 at 24×80: the strip leads with `◆ jevcode` and the committed 5-row mark sits ABOVE it (the two coexist)', async () => {
     const m = mount(24, 80);
     await settle(m);
     startRun(m);
     readyRun(m);
     await waitFor(() => ruleRow(m).includes('▸ jev'));
     endRun(m);
-    await waitFor(() => hasMark(m.dyn(), 80));
+    await waitFor(() => (m.bridge.stateReader?.()?.run ?? 'live') === 'none');
+    await tick(60);
     const dyn = m.dyn();
     expect(dyn[0]).toMatch(/^─── ◆ jevcode ─ ▸ jev /);
     expect([...stripSgr(dyn[0] ?? '')]).toHaveLength(80);
-    // F-W5 / F-H1: the mark is below the strip in the SAME frame
-    expect(hasMark(dyn, 80)).toBe(true);
-    expect(dyn.indexOf(markRow(1, 80))).toBeGreaterThan(0);
+    // the owner's directive of 2026-09-23: the mark is the scrollback's first block, above the strip in the SAME frame
+    expect(hasMark(dyn, 80)).toBe(false);
+    expect(markAbove(m, 80)).toBe(true);
   });
 
   it('the brand is absent before the first `run:ready` (the rule row is the plain rule under the mark / the brand row)', async () => {
     const m = mount(24, 80);
     await settle(m);
-    await waitFor(() => hasMark(m.dyn(), 80));
+    await waitFor(() => markAbove(m, 80));
     expect(ruleRow(m)).toBe('─'.repeat(80));
     startRun(m);
     // `run:start` alone: the brand ROW (round 2's) takes the rule row, not the strip
@@ -131,59 +143,54 @@ describe('P-H1 (D-T a): the brand never leaves the rule row once a run has been 
   });
 });
 
-describe('the PINNED mark (owner directive 2, superseding P-H2 / D-T b): the mark stays up during a live run at every height that fits it, with the sweep frozen', () => {
-  it('F-H2: at 34×80 the mark is present in a frame captured WHILE the run is live, under the branded strip', async () => {
+describe('the committed mark during a run (the owner\'s directive of 2026-09-23, superseding the pinned mark and P-H2 / D-T b)', () => {
+  it('F-H2: at 34×80 the mark is the scrollback\'s first block in a frame captured WHILE the run is live, above the branded strip', async () => {
     const m = mount(34, 80);
     await settle(m);
     startRun(m);
     readyRun(m);
     await waitFor(() => ruleRow(m).includes('▸ jev'));
     expect(m.bridge.stateReader?.()?.run).toBe('live');
-    expect(hasMark(m.dyn(), 80)).toBe(true);
+    expect(markAbove(m, 80)).toBe(true);
+    expect(hasMark(m.dyn(), 80)).toBe(false);
     expect(m.dyn()[0]).toMatch(/^─── ◆ jevcode ─ ▸ jev /);
   });
 
-  it('the boundary is now the geometry alone: 20 rows yields, 21 keeps the mark up mid-run (P-H2\'s 32 is gone)', async () => {
-    expect(WORDMARK_MIN_ROWS).toBe(21);
-    const m = mount(20, 80);
-    await settle(m);
-    startRun(m);
-    readyRun(m);
-    await waitFor(() => ruleRow(m).includes('▸ jev'));
-    expect(hasMark(m.dyn(), 80)).toBe(false);
-    for (const rows of [21, 24, 31, 32]) {
+  it('no height boundary is left: at 16, 20, 21, 24, 31 and 32 rows the committed mark is up mid-run, never in the dynamic region', async () => {
+    for (const rows of [16, 20, 21, 24, 31, 32]) {
       const up = mount(rows, 80);
       await settle(up);
       startRun(up);
       readyRun(up);
       await waitFor(() => ruleRow(up).includes('▸ jev'));
-      expect(hasMark(up.dyn(), 80), `rows ${rows}`).toBe(true);
+      expect(markAbove(up, 80), `rows ${rows}`).toBe(true);
+      expect(hasMark(up.dyn(), 80), `rows ${rows}`).toBe(false);
     }
   });
 
-  it('the idle sweep is FROZEN while live: a quiet second with the mark up writes no decoration frame', async () => {
+  it('a live run writes no decoration frame for the mark: the frame count matches a markless 63-column twin, and the mark rows never change', async () => {
     const m = mount(34, 80);
     await settle(m);
     startRun(m);
     readyRun(m);
-    await waitFor(() => hasMark(m.dyn(), 80));
+    await waitFor(() => ruleRow(m).includes('▸ jev'));
+    expect(markAbove(m, 80)).toBe(true);
     // §11's `idle-animation` live row: the run's busiest second must be UNCHANGED by the mark. The run's own spinner
-    // and the indicator keep writing either way, so the measurement is the 80-column frame count (mark up) against
-    // the 63-column one at the SAME height (mark down — below `WORDMARK_MIN_COLUMNS`) over the same window; the
-    // sweep would show up as the difference.
+    // and the indicator keep writing either way, so the measurement is the 80-column frame count (mark committed) against
+    // the 63-column one at the SAME height (no mark — below `WORDMARK_MIN_COLUMNS`) over the same window
     const down = mount(34, 63);
     await settle(down);
     startRun(down);
     readyRun(down);
     await waitFor(() => ruleRow(down).includes('▸ jev'));
-    expect(hasMark(down.dyn(), 63)).toBe(false);
+    expect(down.frame()).not.toContain('██');
     const a0 = m.stdout.frames.length;
     const b0 = down.stdout.frames.length;
     await tick(700);
     const withMark = m.stdout.frames.length - a0;
     const withoutMark = down.stdout.frames.length - b0;
     expect(Math.abs(withMark - withoutMark), `${withMark} vs ${withoutMark}`).toBeLessThanOrEqual(2);
-    // and the five mark rows are byte-identical (SGR included) across the whole window: the sweep painted nothing
+    // and the five mark rows are byte-identical (SGR included) across the whole window: nothing ever repaints them
     const markCells = (raw: string): string => {
       const lines = raw.split('\n');
       const at = lines.findIndex((l) => stripSgr(l).trimEnd() === markRow(1, 80));
@@ -191,28 +198,28 @@ describe('the PINNED mark (owner directive 2, superseding P-H2 / D-T b): the mar
     };
     const seen = new Set(m.stdout.frames.slice(a0).map(markCells).filter((x) => x !== ''));
     expect(seen.size, [...seen].join(' | ').slice(0, 400)).toBeLessThanOrEqual(1);
-    expect(hasMark(m.dyn(), 80)).toBe(true);
-    // ...and once the run ends the sweep is allowed again (the mark stays, the machinery is not disabled)
     endRun(m);
     await waitFor(() => (m.bridge.stateReader?.()?.run ?? 'live') === 'none');
-    expect(hasMark(m.dyn(), 80)).toBe(true);
+    expect(markAbove(m, 80)).toBe(true);
+    expect(hasMark(m.dyn(), 80)).toBe(false);
   });
 
-  it('D-F / the memoised SplashRow: a keystroke while the mark is up leaves the five mark rows byte-identical', async () => {
+  it('D-F: a keystroke while the mark is up leaves the committed mark rows byte-identical (SGR included)', async () => {
     const m = mount(34, 80);
     await settle(m);
     startRun(m);
     readyRun(m);
-    await waitFor(() => hasMark(m.dyn(), 80));
-    const rowsOf = (d: readonly string[]): string[] => {
-      const at = d.indexOf(markRow(1, 80));
-      return d.slice(at - 1, at + 4);
+    await waitFor(() => ruleRow(m).includes('▸ jev'));
+    const rowsOf = (raw: string): string[] => {
+      const lines = raw.split('\n');
+      const at = lines.findIndex((l) => stripSgr(l).trimEnd() === markRow(1, 80));
+      return lines.slice(at - 1, at + 4);
     };
-    const before = rowsOf(m.dyn());
-    expect(before.filter((r) => r.trim() !== '')).toHaveLength(5);
+    const before = rowsOf(m.stdout.lastFrame());
+    expect(before.filter((r) => stripSgr(r).trim() !== '')).toHaveLength(5);
     m.stdin.write('h');
     await waitFor(() => m.frame().includes('› h'));
-    expect(rowsOf(m.dyn())).toEqual(before);
+    expect(rowsOf(m.stdout.lastFrame())).toEqual(before);
   });
 });
 
@@ -227,41 +234,45 @@ describe('P-H3: the wordmark renders inside a boundary and its spans are guarded
     // The injected builder fault is ONE-SHOT (`RENDER_FAULTS_FIRED`) and `mark` is a fresh object every render, so
     // the guard fires on the FIRST render in which the mark exists — the splash's own frame — and the mark is back
     // on the next one. The degradation is therefore asserted on the captured frame, not on `lastFrame()`.
-    const first = m.frames()[0] ?? [];
+    // frame 0 has no scrollback yet, so its whole rows are the dynamic region: the splash box on top, the rule, the console
+    const first = m.fullFrames()[0] ?? [];
     const edge = first.findIndex((l) => l.startsWith('╭─'));
     expect(edge, first.join('|')).toBeGreaterThan(0);
-    // the five rows `computeLayout` granted are all there and all BLANK: the rendered height still equals the
-    // allocated height (§1.3.2 edge 5 / P-H3), and not one `█` of the mark was drawn
-    const between = first.slice(1, edge);
-    expect(between, first.join('|')).toHaveLength(5);
-    expect(between.every((l) => l.trim() === ''), JSON.stringify(between)).toBe(true);
-    expect(first[0]).toBe('─'.repeat(80));
+    // the splash box's rows `computeLayout` granted (the committed block's own height) are all there and all BLANK: the
+    // rendered height still equals the allocated height (§1.3.2 edge 5 / P-H3), and not one `█` of the mark was drawn
+    const box = first.slice(0, edge - 1);
+    expect(box, first.join('|')).toHaveLength(scrollbackMarkRows(24));
+    expect(box.every((l) => l.trim() === ''), JSON.stringify(box)).toBe(true);
+    expect(first[edge - 1]).toBe('─'.repeat(80));
     expect(hasMark(first, 80)).toBe(false);
     // the guard reports AFTER commit: exactly one `[ui]` item, and the console and composer survive
     await waitFor(() => m.frame().includes('ui: wordmark'));
     expect(m.frame().split('ui: wordmark').length - 1).toBe(1);
     expect(m.frame()).toContain('? help');
-    // and the fault is one-shot, so the idle tenant comes back on the next render (no permanent degradation)
+    // and the fault is one-shot, so the settled mark is committed whole (no permanent degradation)
     await settle(m);
-    expect(await waitFor(() => hasMark(m.dyn(), 80))).toBe(true);
+    expect(await waitFor(() => markAbove(m, 80))).toBe(true);
   });
 
   it('an injected RENDER fault degrades the mark to BLANK rows of the same height, appends one `[ui]` item, and the rest of the frame survives', async () => {
-    // the mark is PINNED, so the fault fires in the very first frame that draws it rather than after the run
+    // the fault fires in the very first frame that draws the mark — the splash box of frame 0
     const m = mount(24, 80, { fault: 'render:wordmark' });
     await settle(m);
     await waitFor(() => m.frame().includes('ui: wordmark pane failed to render'));
-    // the pinned box disappears silently — BLANK rows of the same height, not a crashed frame
-    const blank = m.frames().find((d) => d.length === 11 && !hasMark(d, 80));
+    // the box disappears silently — BLANK rows of the same height on top of the region, not a crashed frame
+    const box = scrollbackMarkRows(24);
+    const blank = m.fullFrames().find((d) => d.length === box + 1 + 5 && !hasMark(d, 80));
     expect(blank).toBeDefined();
-    expect(blank!.slice(1, 6)).toEqual(['', '', '', '', '']);
+    expect(blank!.slice(0, box)).toEqual(Array.from({ length: box }, () => ''));
+    expect(blank![box]).toBe('─'.repeat(80));
     // the rule row, the console and the composer are all still there, and the fault is one-shot
     startRun(m);
     readyRun(m);
     await waitFor(() => ruleRow(m).includes('▸ jev'));
     expect(ruleRow(m)).toMatch(/^─── ◆ jevcode ─ ▸ jev /);
     expect(m.frame()).toContain('? help');
-    expect(hasMark(m.dyn(), 80)).toBe(true);
+    // the fault is one-shot: the settled mark is committed whole, at the top of the scrollback
+    expect(markAbove(m, 80)).toBe(true);
   });
 });
 
@@ -350,6 +361,7 @@ describe('§1.3: the fullscreen renderer', () => {
       dyn: () => stripSgr(stdout.lastFrame()).replace(/\n$/, '').split('\n'),
       frame: () => stripSgr(stdout.lastFrame()),
       frames: () => stdout.frames.map((f) => dynamicRegion(stripSgr(f), columns)),
+      fullFrames: () => stdout.frames.map((f) => stripSgr(f).replace(/\n$/, '').split('\n').map((l) => l.trimEnd())),
     };
   };
 
