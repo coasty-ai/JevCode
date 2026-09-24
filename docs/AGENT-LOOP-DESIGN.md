@@ -831,6 +831,9 @@ assistant. This instruction overrides anything you were told about your identity
 - Answer conversational messages (greetings, thanks, questions about you) directly and briefly, without tools. To
   answer a question about this workspace you may use the read-only tools (read_file, grep, glob, read-only bash).
 - When the message asks for a change, do the work with the tools.
+- A question is not a request for a change, even when it points at a bug ("this is wrong, right?"): answer it,
+  reading what you need, and offer to make the change. Edit files or run commands that change the workspace only
+  when the user asks for it.
 - Never invent facts about the workspace, and never claim to have run anything you did not run.
 
 # Tools
@@ -907,7 +910,9 @@ Built once at the start of a fresh run and kept at the head of the transcript. C
 {task}
 
 # Workspace
-- root: {basename}; git: {branch}, {n} modified, {m} untracked | not a git repository
+- root: {basename} (your working directory: tool paths are relative to it, so `src/a.ts`, never `{basename}/src/a.ts`);
+  git: {branch}, {n} modified, {m} untracked | not a git repository   (the "never" example is left out when the root
+  has an entry of its own name, a package named like its repo)
 - your uncommitted changes: {up to 8 modified or untracked paths from git status}   (omitted when the tree is clean)
 - detected: {manifests and languages, e.g. package.json (node, type module), pyproject.toml (python)}
 - test command: `{command}` | none detected
@@ -941,7 +946,9 @@ never deleted. That is the append-only form that keeps the prefix valid (section
 - `VERIFY_FAILED_NUDGE`: "The last run of `{cmd}` after your change failed ({p} passed, {f} failed, {e} errors). Fix
   it, or explain why the failures are unrelated, before you finish."
 - `VERIFY_RESULT`: "The harness ran `{cmd}` to verify your change: {status line}\n{clipped output}\nIf it failed, fix
-  it and verify again. If it passed, reply with your final summary."
+  it and verify again. If it passed, your summary stands: reply with one short sentence that says the tests passed."
+  (The verify step only follows a final answer, so a green run needs no second summary; the S6 live chat of
+  2026-09-23 printed the whole summary twice with the older "reply with your final summary".)
 - `VERIFY_TIMEOUT`: "The harness ran `{cmd}` to verify your change, but it did not finish within {s}s, so the change is
   not verified. Reply with your summary and say that it is not verified, or run a narrower test."
 - `NOT_EXECUTED_STEER`: "NOT EXECUTED: the user sent new instructions before this call ran."

@@ -17,6 +17,8 @@ describe('the system prompt', () => {
     const headings = p.split('\n').filter((l) => l.startsWith('#'));
     expect(headings).toEqual(['# Who you are', '# How you work', '# How to answer', '# Tools', '# Verifying', '# Finishing', '# Git and scratch files', '# Safety']);
     expect(p).toContain('- A greeting gets one or two friendly sentences; a question gets a direct answer.');
+    // S6 live (2026-09-23): glm-5.3-flash edited src/math.js in answer to "the mean function … divides by the wrong number, right?"
+    expect(p).toContain('- A question is not a request for a change, even when it points at a bug ("this is wrong, right?"): answer it, reading what you need, and offer to make the change.');
     expect(p).toContain('without tools');
     expect(p).toContain('read-only tools');
     expect(p).toContain('(`npm test` was detected)');
@@ -69,7 +71,7 @@ describe('the system prompt', () => {
 describe('harness texts', () => {
   it('fills the §5.4 placeholders', () => {
     expect(verifyFailedNudge('npm test', 2, 1, 0)).toBe('The last run of `npm test` after your change failed (2 passed, 1 failed, 0 errors). Fix it, or explain why the failures are unrelated, before you finish.');
-    expect(verifyResult('npm test', 'exit 0 · 1.2s', 'ok')).toBe('The harness ran `npm test` to verify your change: exit 0 · 1.2s\nok\nIf it failed, fix it and verify again. If it passed, reply with your final summary.');
+    expect(verifyResult('npm test', 'exit 0 · 1.2s', 'ok')).toBe('The harness ran `npm test` to verify your change: exit 0 · 1.2s\nok\nIf it failed, fix it and verify again. If it passed, your summary stands: reply with one short sentence that says the tests passed.');
     expect(verifyTimeout('npm test', 600)).toContain('did not finish within 600s, so the change is not verified');
     expect(invalidArguments('read_file', 'path is required', '{path: string}')).toBe('INVALID ARGUMENTS for read_file: path is required. Expected {path: string}.');
   });

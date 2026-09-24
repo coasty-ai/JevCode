@@ -104,6 +104,7 @@ export function buildAgentSystemPrompt(f: SystemPromptFacts): string {
       '- A greeting gets one or two friendly sentences; a question gets a direct answer.',
       '- Answer conversational messages (greetings, thanks, questions about you) directly and briefly, without tools. To answer a question about this workspace you may use the read-only tools (read_file, grep, glob, read-only bash).',
       '- When the message asks for a change, do the work with the tools.',
+      '- A question is not a request for a change, even when it points at a bug ("this is wrong, right?"): answer it, reading what you need, and offer to make the change. Edit files or run commands that change the workspace only when the user asks for it.',
       '- Never invent facts about the workspace, and never claim to have run anything you did not run.',
     ].join('\n'),
     [
@@ -154,7 +155,7 @@ export function verifyFailedNudge(cmd: string, p: number, f: number, e: number):
 }
 
 export function verifyResult(cmd: string, statusLine: string, output: string): string {
-  return `The harness ran \`${cmd}\` to verify your change: ${statusLine}\n${output}\nIf it failed, fix it and verify again. If it passed, reply with your final summary.`;
+  return `The harness ran \`${cmd}\` to verify your change: ${statusLine}\n${output}\nIf it failed, fix it and verify again. If it passed, your summary stands: reply with one short sentence that says the tests passed.`;
 }
 
 export function verifyTimeout(cmd: string, seconds: number): string {
