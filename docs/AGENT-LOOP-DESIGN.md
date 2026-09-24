@@ -219,7 +219,7 @@ The agent mode adds one branch next to the `jev-off` branch (`src/loop/engine.ts
   - `observe()` is wrapped. An exception becomes a transcript warning plus a stage failure (three in a row stop the run with `error`, `src/loop/engine.ts:321`), and the step still commits.
   - The driver updates its in-memory transcript before any I/O, so the call counts as resolved even when the disk append fails.
 - **Test results without Jev.** On a test-command run, the engine fills `draft.judge` with `codeJudge()`
-  (`src/jev-modes/stages/judge.ts:176`). `lastTests` and the `tests Np/Nf` segment keep working.
+  (`src/loop/judge-code.ts:79`). `lastTests` and the `tests Np/Nf` segment keep working.
 - **Discarded steps.** The engine can discard a step after `next()` has returned it. This happens in three places:
   the checkpoint-failure pane before execute (`src/loop/engine.ts:4603-4608`), a coordination discard (`:4613-4620`), and
   a pause-now under rule 1 (`:5738-5745`). The driver needs no hook for this.
@@ -396,7 +396,7 @@ The rules are evaluated in order. Their counters live in `AgentStateV1` and surv
 
 **Passing and `complete`.**
 - A *passing run* is a run of the detected test command that is **unscoped** (its normalised command equals `testCommand.command`, with no `workdir` or with `workdir: '.'`) and exits 0.
-- An exit-0 run whose output the parser cannot read resets `changedSinceVerify`. It never yields `complete`. It replaces today's `tests_pass_unparsed` question (`src/jev-modes/stages/complete.ts:282`).
+- An exit-0 run whose output the parser cannot read resets `changedSinceVerify`. It never yields `complete`. It replaces today's `tests_pass_unparsed` question (`src/jev-modes/stages/complete.ts:265`).
 - The engine stops with `complete` when the agent variant of `verifiedCompletion` holds. That means a `done` proposal plus a last test run that is the unscoped detected command, parsed, all passed and current (`lastChangeStep` < its step). Todo items left pending do not block it; the finish row lists them as a note.
 - Otherwise the stop is `generator_done`. Today's check also requires an empty plan and accepts scoped runs (`src/loop/engine.ts:5233-5238`, `isTestCommand` in `src/workspace/tests.ts:243-261`); the agent variant replaces both conditions.
 - **A reply** (§A1). A run whose every step is a `finish` with no call — the model answered in prose and never called a
@@ -1858,8 +1858,8 @@ code model, keeps its catalogue replies.
 Removed from the default mode:
 - intent (`src/jev-modes/stages/intent.ts:240`);
 - context Nouls (`src/jev-modes/stages/context.ts:181`);
-- the harm Scores (`src/jev-modes/stages/risk.ts:869`);
-- the record-only judge questions and `tests_pass_unparsed` (`src/jev-modes/stages/judge.ts:379`, `src/jev-modes/stages/complete.ts:282`);
+- the harm Scores (`src/jev-modes/stages/risk.ts:857`);
+- the record-only judge questions and `tests_pass_unparsed` (`src/jev-modes/stages/judge.ts:299`, `src/jev-modes/stages/complete.ts:265`);
 - the replan Choice (`src/jev-modes/stages/replan.ts:285`);
 - the synthesizer's localisation, ranking, guard and oracle questions (`src/jev-modes/synth/**`);
 - the fast path (`src/jev-modes/stages/fastpath.ts:181`);

@@ -56,7 +56,7 @@ Progress and the remaining steps are in [docs/RELEASE.md](docs/RELEASE.md).
 
 **Every channel** gives you the same `jevcode`:
 
-| | |
+| channel | command |
 | --- | --- |
 | npm | `npm i -g jevcode` |
 | run without installing | `npx jevcode` · `bunx jevcode` · `pnpm dlx jevcode` |
@@ -65,9 +65,9 @@ Progress and the remaining steps are in [docs/RELEASE.md](docs/RELEASE.md).
 | Nix | `nix run github:coasty-ai/JevCode` |
 | mise | `mise use -g npm:jevcode` |
 
-npm, the one-shot runners and mise open with the first release. Homebrew, the AUR and Nix also need a
-one-time setup by the maintainers (the tap, the AUR key, the first `flake.lock`), so they can come
-later; the [install guide](docs/getting-started/install.md#install-channels) says which ones are live.
+npm, the one-shot runners and mise open with the first release. Homebrew and the AUR also need a
+one-time setup by the maintainers (the tap, the AUR key), and Nix needs the first `flake.lock`, so
+they can come later; the [install guide](docs/getting-started/install.md#install-channels) says which ones are live.
 `jevcode upgrade` upgrades through whichever channel installed it (for mise, the AUR and Nix it
 prints the command instead).
 

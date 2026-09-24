@@ -49,7 +49,7 @@ flowchart LR
     STOPM["stop.ts — exitCodeFor"]
   end
   subgraph sg_jevmodes["the Jev-driven modes' stages — src/jev-modes"]
-    JSTAGES["stages/ — replan, intent, context, propose, risk, judge, complete"]
+    JSTAGES["stages/ — intent, context, propose, synth, fastpath, risk, judge, complete, replan, choose"]
   end
   subgraph sg_jev["decider — src/jev"]
     QUESTIONS["questions.ts — choice, noul, score, ESCAPE_KEY"]
