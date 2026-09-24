@@ -508,6 +508,24 @@ describe('§A5: a tool-less turn that failed or was stopped is a reply too', () 
   });
 });
 
+describe('§3.4: /undo finds a command step from its step record (S6 live: /undo after a discard)', () => {
+  it('a discard whose outcome event listed no file but whose record lists the files it put back is the /undo target', async () => {
+    // the engine's `outcome` event lists the workspace's changed files (none after `git reset --hard`); the step record then carries
+    // the per-step change set — the files the command put back
+    const outcome: EngineEvent = { type: 'outcome', step: 1, outcome: { status: 'executed', summary: 'exit 0', changedFiles: [] } };
+    const record = { step: 1, startedAt: '2026-09-23T00:00:00.000Z', intent: null, intentAnswer: null, contextFiles: [], proposal: null, risk: null, outcome: { status: 'executed', summary: 'exit 0', changedFiles: ['README.md', 'notes.txt'] }, judge: null, completion: null, decisions: [], jevRequests: [], usage: { generator: { inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 0 }, jev: { inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 0 } }, timing: { jevMs: 0, generatorMs: 0, execMs: 0, harnessMs: 0 }, loopSignatures: [] };
+    const stepEnd = { type: 'step:end', record } as unknown as EngineEvent;
+    const h = await build({ ...AGENT, script: () => ({ events: [toolCall('c1'), outcome, stepEnd], stop: 'complete', steps: 2 }) });
+    void h.controller.run();
+    await h.ready();
+    await h.submit('discard all local changes with git reset --hard and git clean -fd');
+    await tick(0);
+    expect(h.controller.host.dispatchContext().changedSteps).toEqual([1]);
+    await h.command('/undo');
+    expect(h.renderer.notes.map((n) => n.text)).not.toContain('nothing to undo — the last run changed no files');
+  });
+});
+
 describe('§A5: /new and /status count replies as replies', () => {
   it('hi, fix, thanks → `1 run, 2 replies`', async () => {
     const h = await build({ ...AGENT, script: agentScript });

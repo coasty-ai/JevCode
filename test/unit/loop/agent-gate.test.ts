@@ -13,6 +13,7 @@ import { readPostImages } from '../../../src/checkpoint/images.js';
 import { openLedger, type LedgerHandle } from '../../../src/coordination/index.js';
 import { sha256Hex } from '../../../src/core/hash.js';
 import type { ActionOutcome, AgentGate, GitState } from '../../../src/core/types.js';
+import { SandboxError } from '../../../src/errors.js';
 import { AGENT_MAX_BLOCKS, AGENT_MAX_BLOCKS_LINE, destructiveCoverage, destructiveNote, isAgentRefusal, ruleRiskAssessment } from '../../../src/loop/stages/agent.js';
 import { DEV_B, makeHeartbeat, makeLease, putHeartbeat, putLease, runId as peerRunId, tempHome } from '../coordination/helpers.js';
 import type { AgentHarness, Harness, ScriptedCall, ToolTurn } from './fakes.js';
@@ -184,6 +185,21 @@ describe('§A2 full autonomy never refuses and never asks; §A5 the note tells t
     if (post.ok) expect(post.image.files['src/a.py']).toMatchObject({ source: 'run', preImage: true });
     // the pre copy holds the human's bytes, which is what /undo puts back
     expect(readFileSync(join(root, FIXED_RUN_ID, 'pre', '1', sha256Hex('src/a.py')), 'utf8')).toBe(local);
+  });
+
+  it('a destructive command whose process never ran (the sandbox failed before spawn) leaves no "ran" note (S6 live: a missing cwd)', async () => {
+    const h = await agent([bash('git reset --hard'), { text: 'It failed.' }], {
+      sandbox: {
+        ...createFakeSandbox(),
+        async run() {
+          throw new SandboxError('cwd "demo" is not a directory (it does not exist)');
+        },
+      },
+      driver: { gate: gateFor(/reset --hard/, { verdict: 'ok', reason: 'git reset --hard discards uncommitted changes', rule: 'git_discard' }) },
+    });
+    await h.engine.run();
+    expect(h.store.steps[0]!.outcome?.status).toBe('failed');
+    expect(noteLines(h)).toEqual([]);
   });
 
   it('anything not provably covered says "/undo may not restore this": ignored files (clean -x), a stash, rm outside, a moved HEAD', async () => {

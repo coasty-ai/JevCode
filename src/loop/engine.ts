@@ -3956,7 +3956,17 @@ class EngineImpl implements Engine {
       this.emit({ type: 'transcript', step, level: 'warn', text: `per-step change set unavailable: ${e instanceof Error ? this.redact(e.message) : String(e)}` });
     }
     const gate = draft.agentGate;
-    if (draft.executeStarted && gate !== null && gate.rule !== null && action.kind === 'run') this.noteDestructive(draft, action.command, gate.rule, images, post, changed);
+    // §A5: the note says `ran`, so it is written only for a command whose process ran (a cwd that does not exist fails before spawn)
+    const ran = draft.outcome?.status === 'executed' || draft.outcome?.status === 'interrupted';
+    if (draft.executeStarted && ran && gate !== null && gate.rule !== null && action.kind === 'run') this.noteDestructive(draft, action.command, gate.rule, images, post, changed);
+    // §3.4 / §A5: a command's outcome lists the workspace's changed files, which misses what it put BACK — a file `git reset --hard`
+    // returned to HEAD, an untracked file `git clean` removed. The per-step change set (pre- and post-images) has them, and the
+    // step record carries them, so `/undo` finds the step: the S6 live `/undo` after a discard answered "the last run changed no files"
+    if (action.kind === 'run' && draft.outcome?.status === 'executed') {
+      const listed = new Set(draft.outcome.changedFiles);
+      const missed = changed.filter((p) => !listed.has(p));
+      if (missed.length > 0) draft.outcome = { ...draft.outcome, changedFiles: [...draft.outcome.changedFiles, ...missed] };
+    }
     const outcome: ActionOutcome = draft.outcome ?? { status: 'failed', error: draft.error !== null ? `${draft.error.stage}: ${draft.error.code}` : 'no outcome' };
     const observation: AgentObservation = { step, outcome, output: draft.output, changedFiles: changed, tests: draft.tests, error: draft.error !== null ? { code: draft.error.code, message: draft.error.message } : null };
     const { loopTrip: plannedTrip, ...summary } = next.summary;

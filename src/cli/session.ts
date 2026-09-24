@@ -1940,6 +1940,13 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         if (current) {
           current.records.push(e.record);
           current.steps = Math.max(current.steps, e.record.step);
+          // AGENT-LOOP-DESIGN §3.4: an agent command's record adds the files it put back (a discard) to its outcome after the
+          // `outcome` event, so the record is read too — `/undo` and `/rewind` pick the step
+          const o = e.record.outcome;
+          if (o !== null && o.status === 'executed' && o.changedFiles.length > 0) {
+            for (const f of o.changedFiles) if (!current.changedFiles.includes(f)) current.changedFiles.push(f);
+            if (!current.changedSteps.includes(e.record.step)) current.changedSteps.push(e.record.step);
+          }
         }
         // TUI-DESIGN-2 §3.5 `last_tests`: the newest parsed test run of the session
         if (e.record.judge?.tests && e.record.judge.tests.source === 'parsed') {

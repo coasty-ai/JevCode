@@ -19,6 +19,7 @@ import type { AgentMessage, EngineEvent, GenerateRequest, MockTurn } from '../..
 import { createAbsentDecider } from '../../../src/jev/absent.js';
 import { createEngine } from '../../../src/loop/engine.js';
 import { createMockProvider, type MockProvider } from '../../../src/provider/mock.js';
+import { applyUndo, prepareUndo } from '../../../src/undo/apply.js';
 import { DEFAULT_LIMITS, alwaysDecline, createFakeMeter, everyToolUsePaired } from './fakes.js';
 
 const roots: string[] = [];
@@ -152,6 +153,44 @@ describe('the agent loop end to end: real engine, real driver, mock provider, a 
       expect(Date.parse(r.at), r.at).toBeGreaterThanOrEqual(t0 - 1_000);
       expect(Date.parse(r.at), r.at).toBeLessThanOrEqual(Date.now() + 1_000);
     }
+  }, 60_000);
+
+  it('§A2 / §A5 git_discard under full autonomy: the discard runs, its note is true, its step lists the files it put back, and /undo restores the modified AND the untracked file (S6 live L7c)', async () => {
+    const { root, ws } = failingNodeWorkspace();
+    // HEAD's tests pass, so the harness verify is green and the run completes; then the user's own uncommitted work
+    const git = (...args: string[]): string => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'commit.gpgsign=false', ...args], { cwd: ws, encoding: 'utf8' });
+    writeFileSync(join(ws, 'src', 'math.js'), BUGGY.replace('(xs.length - 1)', 'xs.length'));
+    git('commit', '-q', '-am', 'fix');
+    writeFileSync(join(ws, 'src', 'math.js'), `${BUGGY.replace('(xs.length - 1)', 'xs.length')}// my local note\n`);
+    writeFileSync(join(ws, 'notes.txt'), 'my untracked notes\n');
+    const turns: MockTurn[] = [
+      { text: 'Discarding the local changes.\n', toolCalls: [call('call_discard', 'bash', { command: 'git reset --hard && git clean -fd', description: 'discard' })], usage: USAGE, stopReason: 'tool_use' },
+      { text: 'Discarded: the edit to src/math.js and the untracked notes.txt.', usage: USAGE, stopReason: 'end_turn' },
+      { text: 'The tests passed.', usage: USAGE, stopReason: 'end_turn' },
+    ];
+    const { result, events } = await run(ws, root, 'discard all local changes with git reset --hard and git clean -fd', turns);
+    expect(result.stopReason).toBe('complete');
+    expect(readFileSync(join(ws, 'src', 'math.js'), 'utf8')).not.toContain('my local note');
+    expect(() => readFileSync(join(ws, 'notes.txt'), 'utf8')).toThrow();
+
+    // nothing refused or asked; the note says what /undo can do, and it is true
+    const notes = of(events, 'transcript').map((e) => e.text).filter((t) => t.startsWith('destructive'));
+    expect(notes).toEqual(['destructive · ran git reset --hard && git clean -fd (rule git_discard) — /undo restores the workspace']);
+    // the step's outcome lists what the command put back — /undo and /rewind pick the step from it (it was [] before S6c)
+    const discard = of(events, 'step:end').map((e) => e.record).find((r) => r.proposal?.action.kind === 'run' && r.proposal.action.command.startsWith('git reset'))!;
+    expect(discard.outcome?.status).toBe('executed');
+    expect(discard.outcome?.status === 'executed' ? [...discard.outcome.changedFiles].sort() : []).toEqual(['notes.txt', 'src/math.js']);
+
+    // /undo of that step brings both back
+    const runDir = join(root, 'runs', result.runId);
+    const head = git('rev-parse', 'HEAD').trim();
+    const prepared = await prepareUndo(runDir, discard.step, { root: ws, headOid: head, git: true });
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) return;
+    const undone = await applyUndo(prepared.plan, { runDir, runId: result.runId, root: ws });
+    expect([...undone.restored].sort()).toEqual(['notes.txt', 'src/math.js']);
+    expect(readFileSync(join(ws, 'src', 'math.js'), 'utf8')).toContain('// my local note');
+    expect(readFileSync(join(ws, 'notes.txt'), 'utf8')).toBe('my untracked notes\n');
   }, 60_000);
 
   it('a greeting is one prose-only turn: stop `answered` (exit 0) in one step, no tool call, no sandbox command, no jev:request', async () => {
