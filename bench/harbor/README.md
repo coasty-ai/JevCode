@@ -50,14 +50,14 @@ Import path for `harbor run -a`: `bench.harbor.jevcode_agent:JevCodeAgent`, run 
 
 Two supported routes; pick with an option (`--ak install_mode=bundle|npm`, default `bundle`):
 
-1. **bundle** (no registry dependency; what "copy the bundle" means): on the host, `npm run build && npm pack` produces `coasty-ai-jevcode-<version>.tgz` containing `bin/jevcode.js`, `dist/jevcode.mjs` and `package.json`. In `install()`:
+1. **bundle** (no registry dependency; what "copy the bundle" means): on the host, `npm run build && npm pack` produces `coasty-jevcode-<version>.tgz` containing `bin/jevcode.js`, `dist/jevcode.mjs` and `package.json`. In `install()`:
    ```python
    await self.exec_as_root(environment, command="apt-get update && apt-get install -y curl ca-certificates git")  # or SYSTEM_PACKAGES + ensure_system_dependencies()
    await environment.upload_file(local_tgz, "/tmp/jevcode.tgz")
    await self.exec_as_root(environment, command=nvm_node_install_snippet(22) + " && npm install -g /tmp/jevcode.tgz && ln -sf \"$(command -v jevcode)\" /usr/local/bin/jevcode")
    ```
    The `ln -sf` matters: nvm puts `jevcode` under `~/.nvm/versions/node/v22.x/bin`, which is on `PATH` only in the shell that sourced nvm; `exec_as_agent` starts fresh shells (and may run as a different user), so expose a fixed path.
-2. **npm**: same, with `npm install -g @coasty-ai/jevcode@<version>` — only once the package is published (it still installs the command `jevcode`).
+2. **npm**: same, with `npm install -g @coasty/jevcode@<version>` — only once the package is published (it still installs the command `jevcode`).
 
 `nvm_node_install_snippet(22)` matches the repo's `.nvmrc`/`engines` (`>=22.12.0 <27`); TB images are Debian/Ubuntu/python/node based, all of which the nvm installer supports. Images that already ship Node (`node:20-slim` in `react-lead-form`) still get Node 22 via nvm so JevCode's engine range is met without touching the task's own toolchain.
 
@@ -149,5 +149,5 @@ bench/results/harbor/jevcode-tb4/
 
 1. Confirm on an installed `harbor==0.23.0` whether `options_model`/`AgentOptions` validation exists in the wheel (research §7 item 8) — otherwise read `--ak` kwargs from `**kwargs` in `__init__`.
 2. Confirm `exec_as_agent` user semantics per environment (some TB images set `USER agent`, e.g. `rs-archive-clone`); the `ln -sf /usr/local/bin/jevcode` step assumes root during `install()`.
-3. Decide whether to publish `@coasty-ai/jevcode` to npm (route 2) or keep uploading the `npm pack` tarball (route 1).
+3. Decide whether to publish `@coasty/jevcode` to npm (route 2) or keep uploading the `npm pack` tarball (route 1).
 4. ATIF trajectory export from `steps.jsonl` (optional; only needed for `--upload` with trajectories).

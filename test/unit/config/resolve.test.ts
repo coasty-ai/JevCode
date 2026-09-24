@@ -364,7 +364,7 @@ describe('resolveConfig files, paths and secrets', () => {
 
 describe('detectPackageRoot', () => {
   it('finds the jevcode package.json from a nested directory and returns null elsewhere', async () => {
-    await writeFile(join(pkg, 'package.json'), '{"name":"@coasty-ai/jevcode"}');
+    await writeFile(join(pkg, 'package.json'), '{"name":"@coasty/jevcode"}');
     await mkdir(join(pkg, 'dist'));
     expect(detectPackageRoot(join(pkg, 'dist'))).toBe(pkg);
     // a checkout from before the npm scope still counts; another package does not

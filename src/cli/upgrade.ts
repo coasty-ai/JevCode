@@ -1,7 +1,7 @@
 /**
  * `jevcode upgrade [<version>|latest|next] [--check] [--method <m>] [--write-cache]` (TUI-DESIGN §17 items 5–6, D14):
  * delegates to the package manager detected from the install path — npx → nothing to upgrade; Homebrew; bun; pnpm;
- * yarn; else `npm install -g @coasty-ai/jevcode@<v>` (never `npm update -g`) — after printing the exact command it is
+ * yarn; else `npm install -g @coasty/jevcode@<v>` (never `npm update -g`) — after printing the exact command it is
  * about to run (the dry-run line). An install that nix, pacman (AUR) or mise owns is never mutated: the command only
  * prints the owner's upgrade command and exits 0. `--check` asks the registry (2 s timeout) whether a newer version exists and, with
  * `--write-cache`, records the answer in `${XDG_CACHE_HOME:-~/.cache}/jevcode/update-check.json` for the post-run
@@ -24,7 +24,7 @@ export const PACKAGE_NAME = 'jevcode';
 /** the npm package is scoped: npm refused the unscoped `jevcode` (very likely its name-similarity rule) */
 export const NPM_PACKAGE = NPM_PACKAGE_NAME;
 /** the packument; the scope's slash is encoded, as npm itself requests it */
-export const REGISTRY_URL = 'https://registry.npmjs.org/@coasty-ai%2fjevcode';
+export const REGISTRY_URL = 'https://registry.npmjs.org/@coasty%2fjevcode';
 /** the flake: `nix run github:coasty-ai/JevCode` */
 export const FLAKE_REF = 'github:coasty-ai/JevCode';
 /** the `nix profile` element name nix derives from a github flake ref (the repository name) */
@@ -56,13 +56,13 @@ export function pacmanPackage(entries: readonly string[]): string | null {
 }
 
 /**
- * mise's npm backend installs `npm:@coasty-ai/jevcode` under
+ * mise's npm backend installs `npm:@coasty/jevcode` under
  * `${MISE_DATA_DIR:-~/.local/share/mise}/installs/<dir>/<version>/`. The directory name mise derives from a scoped
  * name is not pinned down, so every plausible spelling counts:
- * `npm-coasty-ai-jevcode` (kebab-cased), `npm-@coasty-ai-jevcode`, `npm-@coasty-ai/jevcode` (nested) and the
+ * `npm-coasty-jevcode` (kebab-cased), `npm-@coasty-jevcode`, `npm-@coasty/jevcode` (nested) and the
  * unscoped `npm-jevcode` of an older install.
  */
-const MISE_INSTALL_DIR = /^installs\/npm-(?:@?coasty-ai-|@coasty-ai\/)?jevcode\//;
+const MISE_INSTALL_DIR = /^installs\/npm-(?:@?coasty-|@coasty\/)?jevcode\//;
 function isMiseInstall(p: string, env: NodeJS.ProcessEnv): boolean {
   const i = p.indexOf('/mise/installs/');
   if (i >= 0 && MISE_INSTALL_DIR.test(p.slice(i + '/mise/'.length))) return true;
@@ -70,12 +70,12 @@ function isMiseInstall(p: string, env: NodeJS.ProcessEnv): boolean {
   return data !== undefined && data !== '' && p.startsWith(`${data}/`) && MISE_INSTALL_DIR.test(p.slice(data.length + 1));
 }
 
-/** pacman (AUR) installs the npm package under `/usr/lib/node_modules/@coasty-ai/jevcode/`; the unscoped path is a pre-scope build */
-const AUR_INSTALL_RE = /^\/usr\/lib\/node_modules\/(?:@coasty-ai\/)?jevcode\//;
+/** pacman (AUR) installs the npm package under `/usr/lib/node_modules/@coasty/jevcode/`; the unscoped path is a pre-scope build */
+const AUR_INSTALL_RE = /^\/usr\/lib\/node_modules\/(?:@coasty\/)?jevcode\//;
 
 /**
  * TUI-DESIGN §17 item 5: the manager from `realpath(process.argv[1])` (and the env for npx and mise). D11: a nix store
- * path, a mise install dir and a pacman-owned `/usr/lib/node_modules/@coasty-ai/jevcode` are their own kinds; pacman's
+ * path, a mise install dir and a pacman-owned `/usr/lib/node_modules/@coasty/jevcode` are their own kinds; pacman's
  * database is read only for that last path.
  */
 export function detectPackageManager(realArgv1: string, env: NodeJS.ProcessEnv, pacmanDb: PacmanDb = readPacmanDb): PackageManager {

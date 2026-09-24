@@ -57,8 +57,8 @@ The task, the exact commands, the machine and the one-line fix both runs landed 
 ## Install
 
 ```sh
-npm install -g @coasty-ai/jevcode     # once the first release is on npm
-npx @coasty-ai/jevcode                # same, without installing
+npm install -g @coasty/jevcode     # once the first release is on npm
+npx @coasty/jevcode                # same, without installing
 ```
 
 <details>
@@ -66,7 +66,7 @@ npx @coasty-ai/jevcode                # same, without installing
 
 <br>
 
-The first release has not shipped, so `registry.npmjs.org/@coasty-ai%2fjevcode` is still a 404. Until it lands,
+The first release has not shipped, so `registry.npmjs.org/@coasty%2fjevcode` is still a 404. Until it lands,
 this is the line that runs:
 
 ```sh
@@ -85,10 +85,10 @@ Progress and the remaining steps are in [docs/RELEASE.md](docs/RELEASE.md).
 
 ```sh
 brew install coasty-ai/jevcode/jevcode   # tap; lands with the first release
-mise use -g npm:@coasty-ai/jevcode                  # any OS, via mise's npm backend
-pnpm add -g @coasty-ai/jevcode
+mise use -g npm:@coasty/jevcode                  # any OS, via mise's npm backend
+pnpm add -g @coasty/jevcode
 bun  install -g jevcode
-yarn global add @coasty-ai/jevcode
+yarn global add @coasty/jevcode
 ```
 
 `jevcode upgrade` detects which of these installed it and delegates to that one, so `brew` and
@@ -236,7 +236,7 @@ under it.
   [Iterations 1–4](docs/measurements/iterations.md) ·
   [Out of sample](docs/measurements/out-of-sample.md)
 - **It installs as one bundled JavaScript file plus a two-line launcher and starts instantly.** Zero
-  runtime dependencies — Ink and React are compiled in, and `npm install @coasty-ai/jevcode` adds exactly one
+  runtime dependencies — Ink and React are compiled in, and `npm install @coasty/jevcode` adds exactly one
   package — a tarball of about 1 MB, and a first frame in about 130 ms in a real terminal with the
   network untouched, against a design budget of 300 ms.
   [Install](docs/getting-started/install.md) ·

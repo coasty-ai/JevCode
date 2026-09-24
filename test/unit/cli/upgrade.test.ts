@@ -9,7 +9,7 @@ import { EXIT_MANAGER_FAILED, REGISTRY_URL, checkRegistry, commandUpgrade, compa
 function io(over: Partial<UpgradeIo> = {}): UpgradeIo & { out: string[]; err: string[] } {
   const out: string[] = [];
   const err: string[] = [];
-  return { stdout: { write: (s) => out.push(s) }, stderr: { write: (s) => err.push(s) }, env: {}, home: '/home/me', argv1: '/usr/local/lib/node_modules/@coasty-ai/jevcode/bin/jevcode.js', dryRun: true, current: '0.1.0', out, err, ...over };
+  return { stdout: { write: (s) => out.push(s) }, stderr: { write: (s) => err.push(s) }, env: {}, home: '/home/me', argv1: '/usr/local/lib/node_modules/@coasty/jevcode/bin/jevcode.js', dryRun: true, current: '0.1.0', out, err, ...over };
 }
 
 const fetchJson = (status: number, body: unknown): typeof fetch => (async () => ({ ok: status < 400, status, json: async () => body })) as unknown as typeof fetch;
@@ -17,20 +17,20 @@ const fetchJson = (status: number, body: unknown): typeof fetch => (async () => 
 describe('detectPackageManager / upgradeArgv (§17 item 5)', () => {
   it('detects brew, bun, pnpm, yarn, npx and defaults to npm', () => {
     expect(detectPackageManager('/opt/homebrew/Cellar/jevcode/0.1.0/libexec/bin/jevcode.js', {})).toBe('brew');
-    expect(detectPackageManager('/Users/me/.bun/install/global/node_modules/@coasty-ai/jevcode/bin/jevcode.js', {})).toBe('bun');
-    expect(detectPackageManager('/Users/me/Library/pnpm/global/5/node_modules/@coasty-ai/jevcode/bin/jevcode.js', {})).toBe('pnpm');
+    expect(detectPackageManager('/Users/me/.bun/install/global/node_modules/@coasty/jevcode/bin/jevcode.js', {})).toBe('bun');
+    expect(detectPackageManager('/Users/me/Library/pnpm/global/5/node_modules/@coasty/jevcode/bin/jevcode.js', {})).toBe('pnpm');
     expect(detectPackageManager('/Users/me/.yarn/bin/jevcode', {})).toBe('yarn');
-    expect(detectPackageManager('/Users/me/.npm/_npx/abc/node_modules/@coasty-ai/jevcode/bin/jevcode.js', {})).toBe('npx');
+    expect(detectPackageManager('/Users/me/.npm/_npx/abc/node_modules/@coasty/jevcode/bin/jevcode.js', {})).toBe('npx');
     expect(detectPackageManager('/x/jevcode.js', { npm_command: 'exec' })).toBe('npx');
-    expect(detectPackageManager('/usr/local/lib/node_modules/@coasty-ai/jevcode/bin/jevcode.js', {})).toBe('npm');
+    expect(detectPackageManager('/usr/local/lib/node_modules/@coasty/jevcode/bin/jevcode.js', {})).toBe('npm');
   });
   it('builds the install command per manager; npx has nothing to upgrade', () => {
-    expect(upgradeArgv('npm', 'latest')).toEqual(['npm', 'install', '-g', '@coasty-ai/jevcode@latest']);
-    expect(upgradeArgv('npm', '1.2.3')).toEqual(['npm', 'install', '-g', '@coasty-ai/jevcode@1.2.3']);
+    expect(upgradeArgv('npm', 'latest')).toEqual(['npm', 'install', '-g', '@coasty/jevcode@latest']);
+    expect(upgradeArgv('npm', '1.2.3')).toEqual(['npm', 'install', '-g', '@coasty/jevcode@1.2.3']);
     expect(upgradeArgv('brew', 'latest')).toEqual(['brew', 'upgrade', 'jevcode']);
-    expect(upgradeArgv('bun', 'next')).toEqual(['bun', 'install', '-g', '@coasty-ai/jevcode@next']);
-    expect(upgradeArgv('pnpm', 'latest')).toEqual(['pnpm', 'add', '-g', '@coasty-ai/jevcode@latest']);
-    expect(upgradeArgv('yarn', 'latest')).toEqual(['yarn', 'global', 'add', '@coasty-ai/jevcode@latest']);
+    expect(upgradeArgv('bun', 'next')).toEqual(['bun', 'install', '-g', '@coasty/jevcode@next']);
+    expect(upgradeArgv('pnpm', 'latest')).toEqual(['pnpm', 'add', '-g', '@coasty/jevcode@latest']);
+    expect(upgradeArgv('yarn', 'latest')).toEqual(['yarn', 'global', 'add', '@coasty/jevcode@latest']);
     expect(upgradeArgv('npx', 'latest')).toBeNull();
   });
   it('compareVersions orders releases and pre-releases', () => {
@@ -54,7 +54,7 @@ describe('checkRegistry (§17 item 5)', () => {
     expect((await checkRegistry('latest', { fetch: failing, current: '0.1.0' })).error).toMatch(/^registry unreachable: Error: getaddrinfo/);
   });
   it('asks for the scoped package: the slash-encoded packument path plus the dist-tag', async () => {
-    expect(REGISTRY_URL).toBe('https://registry.npmjs.org/@coasty-ai%2fjevcode');
+    expect(REGISTRY_URL).toBe('https://registry.npmjs.org/@coasty%2fjevcode');
     const urls: string[] = [];
     const f: typeof fetch = (async (u: unknown) => {
       urls.push(String(u));
@@ -62,7 +62,7 @@ describe('checkRegistry (§17 item 5)', () => {
     }) as unknown as typeof fetch;
     await checkRegistry('latest', { fetch: f, current: '0.1.0' });
     await checkRegistry('next', { fetch: f, current: '0.1.0' });
-    expect(urls).toEqual(['https://registry.npmjs.org/@coasty-ai%2fjevcode/latest', 'https://registry.npmjs.org/@coasty-ai%2fjevcode/next']);
+    expect(urls).toEqual(['https://registry.npmjs.org/@coasty%2fjevcode/latest', 'https://registry.npmjs.org/@coasty%2fjevcode/next']);
   });
   it('the fetch carries a 2 s timeout signal', async () => {
     let seen: RequestInit | undefined;
@@ -97,16 +97,16 @@ describe('commandUpgrade (§17 items 5–6)', () => {
   it('prints the delegated command (dry run) and respects --method; an unknown method is exit 2; npx has nothing to do', async () => {
     const i = io();
     expect(await commandUpgrade({ command: 'upgrade' }, i)).toBe(0);
-    expect(i.out.join('')).toBe('upgrade via npm: npm install -g @coasty-ai/jevcode@latest\n');
+    expect(i.out.join('')).toBe('upgrade via npm: npm install -g @coasty/jevcode@latest\n');
     const brew = io({ argv1: '/opt/homebrew/Cellar/jevcode/0.1.0/libexec/bin/jevcode.js' });
     await commandUpgrade({ command: 'upgrade', upgradeTarget: 'next' }, brew);
     expect(brew.out.join('')).toBe('upgrade via brew: brew upgrade jevcode\n');
     const forced = io();
     await commandUpgrade({ command: 'upgrade', method: 'pnpm', upgradeTarget: '1.2.3' }, forced);
-    expect(forced.out.join('')).toBe('upgrade via pnpm: pnpm add -g @coasty-ai/jevcode@1.2.3\n');
+    expect(forced.out.join('')).toBe('upgrade via pnpm: pnpm add -g @coasty/jevcode@1.2.3\n');
     const badMethod = io();
     expect(await commandUpgrade({ command: 'upgrade', method: 'apt' }, badMethod)).toBe(2);
-    const npx = io({ argv1: '/Users/me/.npm/_npx/abc/node_modules/@coasty-ai/jevcode/bin/jevcode.js' });
+    const npx = io({ argv1: '/Users/me/.npm/_npx/abc/node_modules/@coasty/jevcode/bin/jevcode.js' });
     expect(await commandUpgrade({ command: 'upgrade' }, npx)).toBe(0);
     expect(npx.out.join('')).toMatch(/nothing installed to upgrade/);
   });
@@ -120,7 +120,7 @@ describe('commandUpgrade (§17 items 5–6)', () => {
       },
     });
     expect(await commandUpgrade({ command: 'upgrade' }, ok)).toBe(0);
-    expect(ran).toEqual([['npm', 'install', '-g', '@coasty-ai/jevcode@latest']]);
+    expect(ran).toEqual([['npm', 'install', '-g', '@coasty/jevcode@latest']]);
     const failed = io({ dryRun: false, spawn: async () => ({ exitCode: 1, error: null }) });
     expect(await commandUpgrade({ command: 'upgrade' }, failed)).toBe(EXIT_MANAGER_FAILED);
     const missing = io({ dryRun: false, spawn: async () => ({ exitCode: null, error: 'spawn npm ENOENT' }) });

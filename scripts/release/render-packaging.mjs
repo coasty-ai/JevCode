@@ -49,7 +49,7 @@ function replaceOne(lines, re, line, label) {
 
 export function renderFormula(template, { version, sha256, url }) {
   const lines = stripRepoOnly(template);
-  const u = url || `https://registry.npmjs.org/@coasty-ai/jevcode/-/jevcode-${version}.tgz`;
+  const u = url || `https://registry.npmjs.org/@coasty/jevcode/-/jevcode-${version}.tgz`;
   replaceOne(lines, /^ {2}url "[^"]*"/, `  url "${u}"`, 'formula url');
   replaceOne(lines, /^ {2}sha256 "[^"]*"/, `  sha256 "${sha256}"`, 'formula sha256');
   return lines.join('\n');

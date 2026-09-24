@@ -8,7 +8,7 @@ set -euo pipefail
 : "${VERSION:?}" "${DIST_TAG:?}" "${PRERELEASE:?}"
 SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/stderr}"
 SCRATCH="$(mktemp -d)"
-PKG=@coasty-ai/jevcode
+PKG=@coasty/jevcode
 
 # npx from an empty directory, so the registry and not this checkout answers.
 NPM_OK=false

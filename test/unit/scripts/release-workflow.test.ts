@@ -84,7 +84,7 @@ describe('.github/workflows/release.yml runs the Jev contract lint before it bui
 });
 
 describe('release.yml refuses a README that names the unscoped npm package', () => {
-  // README.md ships in the tarball and is the @coasty-ai/jevcode package page; npm refused the unscoped name, so
+  // README.md ships in the tarball and is the @coasty/jevcode package page; npm refused the unscoped name, so
   // `npx jevcode` there installs nothing. ci.yml cannot carry this check until the README (another session's file)
   // is scoped, and gates must mirror ci.yml, so it runs in the validate job, before anything is built or published.
   const yaml = readFileSync(WORKFLOW, 'utf8');
@@ -106,8 +106,8 @@ describe('release.yml refuses a README that names the unscoped npm package', () 
   });
 
   it.each([
-    'npm i -g @coasty-ai/jevcode', 'npx @coasty-ai/jevcode', 'bunx @coasty-ai/jevcode@next', 'mise use -g npm:@coasty-ai/jevcode',
-    'registry.npmjs.org/@coasty-ai%2fjevcode', 'https://www.npmjs.com/package/@coasty-ai/jevcode', '`npm install @coasty-ai/jevcode` adds one',
+    'npm i -g @coasty/jevcode', 'npx @coasty/jevcode', 'bunx @coasty/jevcode@next', 'mise use -g npm:@coasty/jevcode',
+    'registry.npmjs.org/@coasty%2fjevcode', 'https://www.npmjs.com/package/@coasty/jevcode', '`npm install @coasty/jevcode` adds one',
     'brew install coasty-ai/jevcode/jevcode', 'yay -S jevcode', 'nix run github:coasty-ai/JevCode', 'run jevcode upgrade',
   ])('accepts %s', (line) => {
     expect(hits(line)).toBe(0);

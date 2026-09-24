@@ -226,8 +226,8 @@ describe('design-doc claims match main', () => {
     // Job summaries point at one-time steps by number: npm 5, Homebrew 6, AUR 7, Nix 8.
     for (const step of ['### 5. npm', '### 6. Homebrew tap', '### 7. AUR', '### 8. Nix lock']) expect(release).toContain(step);
     for (const cmd of [
-      'npm i -g @coasty-ai/jevcode', 'npx @coasty-ai/jevcode', 'bunx @coasty-ai/jevcode', 'pnpm dlx @coasty-ai/jevcode', 'yarn dlx @coasty-ai/jevcode',
-      'mise use -g npm:@coasty-ai/jevcode', 'brew install coasty-ai/jevcode/jevcode', 'yay -S jevcode', 'nix run github:coasty-ai/JevCode',
+      'npm i -g @coasty/jevcode', 'npx @coasty/jevcode', 'bunx @coasty/jevcode', 'pnpm dlx @coasty/jevcode', 'yarn dlx @coasty/jevcode',
+      'mise use -g npm:@coasty/jevcode', 'brew install coasty-ai/jevcode/jevcode', 'yay -S jevcode', 'nix run github:coasty-ai/JevCode',
     ]) {
       expect(release, `RELEASE.md channel table: ${cmd}`).toContain(cmd);
       expect(install, `install.md channel table: ${cmd}`).toContain(cmd);

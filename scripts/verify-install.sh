@@ -120,10 +120,10 @@ JSON
 if [ -n "$TGZ" ]; then
   if INSTALL_OUT="$(cd "$PROJ" && npm install --no-audit --no-fund --offline "$TGZ" 2>&1)"; then
     INSTALLED="$(installed_packages "$PROJ/node_modules")"
-    if [ "$INSTALLED" = "@coasty-ai/jevcode" ]; then
-      pass "npm install <tgz> into a clean project -> exactly 1 package (@coasty-ai/jevcode), no network"
+    if [ "$INSTALLED" = "@coasty/jevcode" ]; then
+      pass "npm install <tgz> into a clean project -> exactly 1 package (@coasty/jevcode), no network"
     else
-      fail "npm install should add exactly 1 package, @coasty-ai/jevcode" "${INSTALLED:-(none)}"
+      fail "npm install should add exactly 1 package, @coasty/jevcode" "${INSTALLED:-(none)}"
     fi
   else
     fail "npm install <tgz> into a clean project" "$(printf '%s' "$INSTALL_OUT" | tail -20)"

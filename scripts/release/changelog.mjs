@@ -60,7 +60,7 @@ export function notes(text, version) {
   if (section === null) fail(`CHANGELOG.md has no "## [${version}]" section`);
   if (section.body === '') fail(`CHANGELOG.md's "## [${version}]" section is empty`);
   const stable = !version.includes('-');
-  const install = [`- npm: \`npm i -g @coasty-ai/jevcode@${version}\``];
+  const install = [`- npm: \`npm i -g @coasty/jevcode@${version}\``];
   if (stable) {
     install.push('- Homebrew: `brew install coasty-ai/jevcode/jevcode`');
     install.push('- AUR: `yay -S jevcode`');

@@ -53,7 +53,7 @@ except ImportError:  # pragma: no cover
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PACKAGE_VERSION = json.loads((REPO_ROOT / "package.json").read_text()).get("version", "0.1.0") if (REPO_ROOT / "package.json").exists() else "0.1.0"
 # the npm package is scoped; the command it installs is still `jevcode`
-NPM_PACKAGE = "@coasty-ai/jevcode"
+NPM_PACKAGE = "@coasty/jevcode"
 NODE_MAJOR = 22
 DEFAULT_MODEL = "anthropic/claude-sonnet-5"
 DEFAULT_MAX_WALL = "7h30m"  # below TB 4.0's flat 8 h agent timeout so JevCode stops itself
@@ -133,10 +133,10 @@ class JevCodeAgent(BaseInstalledAgent):
         if self.tarball:
             p = Path(self.tarball).expanduser().resolve()
         else:
-            # `npm pack` names the scoped package's tarball coasty-ai-jevcode-<version>.tgz; a release asset is jevcode-<version>.tgz
-            candidates = sorted(REPO_ROOT.glob("coasty-ai-jevcode-*.tgz")) or sorted(REPO_ROOT.glob("jevcode-*.tgz"))
+            # `npm pack` names the scoped package's tarball coasty-jevcode-<version>.tgz; a release asset is jevcode-<version>.tgz
+            candidates = sorted(REPO_ROOT.glob("coasty-jevcode-*.tgz")) or sorted(REPO_ROOT.glob("jevcode-*.tgz"))
             if not candidates:
-                raise FileNotFoundError("no coasty-ai-jevcode-<version>.tgz in the repo root; run `npm run build && npm pack` first (or --ak install_mode=npm)")
+                raise FileNotFoundError("no coasty-jevcode-<version>.tgz in the repo root; run `npm run build && npm pack` first (or --ak install_mode=npm)")
             p = candidates[-1]
         if not p.is_file():
             raise FileNotFoundError(f"tarball not found: {p}")

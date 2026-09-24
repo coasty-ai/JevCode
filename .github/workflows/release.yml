@@ -62,13 +62,13 @@ jobs:
           PACKAGING_REF: ${{ inputs.packaging_ref }}
         run: node scripts/release/version.mjs check >> "$GITHUB_OUTPUT"
 
-      # README.md ships in the tarball and is the npm package page. The package is @coasty-ai/jevcode (npm refused
+      # README.md ships in the tarball and is the npm package page. The package is @coasty/jevcode (npm refused
       # the unscoped name), so an unscoped npm command there installs nothing or someone else's package. Release-only:
       # the gates job mirrors ci.yml's check job exactly.
       - name: README names the scoped npm package
         run: |
           if grep -nE '(npm i(nstall)?( -g)?|npx( -y)?|bunx|pnpm dlx|pnpm add -g|yarn dlx|bun i -g|npm view|npm dist-tag add|npm deprecate) jevcode([^-_./[:alnum:]]|$)|npm:jevcode([^-_./[:alnum:]]|$)|registry\.npmjs\.org/jevcode([^-_[:alnum:]]|$)|npmjs\.com/package/jevcode([^-_[:alnum:]]|$)' README.md; then
-            echo "::error file=README.md::unscoped npm name in the README; the package is @coasty-ai/jevcode (npm i -g @coasty-ai/jevcode, npx @coasty-ai/jevcode, mise use -g npm:@coasty-ai/jevcode)" >&2
+            echo "::error file=README.md::unscoped npm name in the README; the package is @coasty/jevcode (npm i -g @coasty/jevcode, npx @coasty/jevcode, mise use -g npm:@coasty/jevcode)" >&2
             exit 1
           fi
 
@@ -172,12 +172,12 @@ jobs:
       - name: Pack the release tarball
         run: npm pack --ignore-scripts
 
-      # npm names the scoped package's tarball coasty-ai-jevcode-<version>.tgz. This is the one rename: SHA256SUMS,
+      # npm names the scoped package's tarball coasty-jevcode-<version>.tgz. This is the one rename: SHA256SUMS,
       # the release artifact, npm-publish.sh, the GitHub Release asset and the tap and AUR jobs use jevcode-<version>.tgz.
       - name: Name the tarball jevcode-<version>.tgz
         env:
           VERSION: ${{ needs.validate.outputs.version }}
-        run: mv "coasty-ai-jevcode-$VERSION.tgz" "jevcode-$VERSION.tgz"
+        run: mv "coasty-jevcode-$VERSION.tgz" "jevcode-$VERSION.tgz"
 
       - name: SHA256SUMS
         env:
@@ -206,7 +206,7 @@ jobs:
     timeout-minutes: 20
     environment:
       name: release
-      url: https://www.npmjs.com/package/@coasty-ai/jevcode/v/${{ needs.validate.outputs.version }}
+      url: https://www.npmjs.com/package/@coasty/jevcode/v/${{ needs.validate.outputs.version }}
     permissions:
       contents: read
       id-token: write # npm trusted publishing (OIDC) and provenance
@@ -400,7 +400,7 @@ jobs:
           node-version: '22'
           package-manager-cache: false
 
-      - name: npx @coasty-ai/jevcode@<version> --version, provenance, channel table
+      - name: npx @coasty/jevcode@<version> --version, provenance, channel table
         env:
           VERSION: ${{ needs.validate.outputs.version }}
           DIST_TAG: ${{ needs.validate.outputs.dist_tag }}
