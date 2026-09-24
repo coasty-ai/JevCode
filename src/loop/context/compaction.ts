@@ -294,7 +294,7 @@ export function rankKeptCode(candidates: readonly KeptItem[], max: number = KEPT
 
 /**
  * A CONTENT-derived option key (REPORT §10: an order-only key such as `keep_1` carries a position prior and collapses;
- * `src/synth/llm/rank.ts patchKey` takes the same route). `sha12` is over the item, so the same candidate gets the same
+ * `src/jev-modes/synth/llm/rank.ts patchKey` takes the same route). `sha12` is over the item, so the same candidate gets the same
  * key in every request and two runs are comparable.
  */
 export function keptKey(item: KeptItem, taken: ReadonlySet<string>): string {

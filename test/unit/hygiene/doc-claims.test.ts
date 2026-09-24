@@ -86,7 +86,7 @@ const CLOSED: readonly { id: string; file: string; symbol: string; definedIn: st
     id: 'LLM-LOOP §1.8 / §6 row 15 — runFactsRef is gone',
     file: 'docs/LLM-LOOP-DESIGN.md',
     symbol: 'RUN_FACTS_MAX',
-    definedIn: 'src/synth/introspect/facts.ts',
+    definedIn: 'src/jev-modes/synth/introspect/facts.ts',
     staleTexts: ['`runFactsRef` is process-global'],
   },
   {
@@ -100,7 +100,7 @@ const CLOSED: readonly { id: string; file: string; symbol: string; definedIn: st
     id: 'LLM-JEV §0 — the warm plane no longer defaults on',
     file: 'docs/LLM-JEV.md',
     symbol: 'warmRequested',
-    definedIn: 'src/synth/warm/plane.ts',
+    definedIn: 'src/jev-modes/synth/warm/plane.ts',
     staleTexts: ['`warmModeFor` defaults the plane on for every\n`quixbugs` and `pytest` runner.'],
   },
   {
@@ -249,6 +249,6 @@ describe('design-doc claims match main', () => {
     }
     expect(d, 'the S2 deferral names finishing-pass F05 as its owner').toMatch(/F05/);
     // Both refusals are real code, not prose: T1's warm gate is unconditional.
-    expect(readFileSync(join(ROOT, 'src/loop/stages/fastpath.ts'), 'utf8')).toContain("if (i.warmEnabled) return 'warm_plane';");
+    expect(readFileSync(join(ROOT, 'src/jev-modes/stages/fastpath.ts'), 'utf8')).toContain("if (i.warmEnabled) return 'warm_plane';");
   });
 });

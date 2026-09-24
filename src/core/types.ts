@@ -295,7 +295,7 @@ export type StageName = 'replan' | 'intent' | 'context' | 'propose' | 'risk' | '
 export type EngineRunPhase = 'starting' | 'running' | 'pausing' | 'paused' | 'blocked' | 'aborting' | 'ended';
 
 /**
- * The verdict written on a resolved Choice (loop/stages/choose.ts): `chosen` = Jev's answer with its paired Noul >= floor,
+ * The verdict written on a resolved Choice (jev-modes/stages/choose.ts): `chosen` = Jev's answer with its paired Noul >= floor,
  * `overridden` = a stronger paired Noul won, `fallback` = the stage's safe default; `code` (docs/LLM-JEV-DESIGN.md §3 row 2,
  * §9.3) = no Choice was asked and code derived the value (the llm-jev intent from the proposal kind).
  */
@@ -560,7 +560,7 @@ export interface StepRecord {
   /**
    * docs/LLM-JEV-DESIGN.md §9.2 stage 1 / §9.3 (llm-jev): the synthesizer's per-step verification counts. The type is the
    * contract; the plumbing (the synthesizer reports them, the engine copies them onto the record) is stage 4
-   * (`src/synth/search/index.ts`, `SynthesisContext`) — absent until then.
+   * (`src/jev-modes/synth/search/index.ts`, `SynthesisContext`) — absent until then.
    */
   verify?: StepVerifySummary;
   /** docs/research/llm-jev/oos-analysis-2026-09-22.md ranked change 2 (contract 1.2, llm-jev, additive): requests this step
@@ -587,7 +587,7 @@ export interface StepRecord {
    * contract 1.9 (Fastlane) §2: the router table's outcome for this step; bounded at 12 rows. Absent = no router ran.
    *
    * WRITER (with `StepTiming.routerWaitMs`, `riskSource` and `jevUnavailable` below): the §7.5 engine seam (c),
-   * `Engine.commit`. `src/loop/routers.ts` builds the ledger and `src/loop/stages/risk.ts` returns the other two;
+   * `Engine.commit`. `src/loop/routers.ts` builds the ledger and `src/jev-modes/stages/risk.ts` returns the other two;
    * the engine folds all four into the record at step commit, and writes none of them with the routers off.
    */
   router?: StepRouter;
@@ -786,7 +786,7 @@ export interface StepVerifySummary {
 
 /**
  * docs/HARNESS-NEXT-DESIGN.md §9.2.1: one step's warm-plane counters, summed over every sieve
- * batch of the step (`WarmStats`, `src/synth/warm/plane.ts`). Iteration 2 could not audit its own
+ * batch of the step (`WarmStats`, `src/jev-modes/synth/warm/plane.ts`). Iteration 2 could not audit its own
  * warm A/B from the committed artefacts because these numbers existed only as free text in the
  * sieve's `synth · verify` event and `--archive-runs` does not copy `transcript.log`; they are
  * recorded here so `steps.jsonl` carries them.
@@ -927,7 +927,7 @@ export interface GenerateProviderPrefs {
   requireParameters: boolean;
   /**
    * contract 1.9 (Fastlane) §3.2: the upstream providers to try, in order (OpenRouter `provider.order`). The hedge
-   * twin of `src/synth/llm/source.ts` sends the same list ROTATED, so a 429 or a stall on the original's first
+   * twin of `src/jev-modes/synth/llm/source.ts` sends the same list ROTATED, so a 429 or a stall on the original's first
    * upstream leaves the twin pointed at a different one. Absent = the parameter is not sent and the router picks,
    * which is what every call does today.
    */
@@ -1911,7 +1911,7 @@ export interface EngineOptions {
    * contract 1.9 (Fastlane) §0.3: the bounded sieve fast path (route R9). Absent resolves to `'auto'` under `jev-on`
    * and to `'off'` under every other mode; the engine derives it, so no `src/config` and no `src/cli` change exists. Env
    * override: `JEVCODE_FASTPATH=off|auto`, read inside `src/loop` exactly as `JEVCODE_WARM` is read in
-   * `src/synth/warm/plane.ts`. `'off'` is byte-identical to today's `jev-on` (I2).
+   * `src/jev-modes/synth/warm/plane.ts`. `'off'` is byte-identical to today's `jev-on` (I2).
    */
   fastPath?: 'auto' | 'off';
   /** injectable clock for perf/unit tests */
@@ -2015,7 +2015,7 @@ export interface EngineOptions {
    * `view: 'legacy'` prompt golden and `router-golden.test.ts` valid without a re-capture.
    *
    * **This member beats `JEVCODE_S2`**, in both directions; the env var only fills an ABSENT option, exactly as
-   * `routers` beats `JEVCODE_ROUTERS` (`s2Enabled`, `src/synth/llm/hedge.ts`). It exists because without it the
+   * `routers` beats `JEVCODE_ROUTERS` (`s2Enabled`, `src/jev-modes/synth/llm/hedge.ts`). It exists because without it the
    * bench could not pin S2 per arm: `armMechanisms('jev-on-next')` recorded `s2: true` while nothing set the
    * variable, and an exported `JEVCODE_S2=on` armed the plain `jev-on` CONTROL arm while its row said `false`.
    */
@@ -2059,7 +2059,7 @@ export interface SampleOptions {
 /**
  * contract 1.4 (W3) (COORDINATION-DESIGN §6, §3.3; W3 item 28): the sub-work the heartbeat carries, as the synthesizer
  * produces it. The heartbeat has had `subwork` rows (≤ 16, `subworkStarted` / `subworkEnded` on `CoordinationRuntime`)
- * since W2b and nothing under `src/synth/**` wrote one; this is the seam that fills them — an llm-jev sample
+ * since W2b and nothing under `src/jev-modes/synth/**` wrote one; this is the seam that fills them — an llm-jev sample
  * (`sample`, id `goalId:round:sampleIx`), a sieve lane run (`lane`, id the lane's key) and a perturbation probe
  * (`probe`). It is OPTIONAL and undefined whenever coordination is off, which is what makes it free: a producer
  * writes `ctx.coordination?.subworkStarted(...)`, so a non-coordinating run allocates nothing and calls nothing.
@@ -2140,7 +2140,7 @@ export type SynthesizerArmMode = 'jev-only' | 'llm-jev' | 'llm-sieve';
 /**
  * docs/LLM-JEV-DESIGN.md §4.6, §4.8, §4.12 / §10.1: the generation parameters the synthesizer's LLM source sends on every
  * sample, pinned by the caller (the bench arms) so the record and the requests share one object; absent = the source's own
- * defaults (`src/synth/llm/source.ts LLM_DEFAULT_GENERATION`). The synthesizer echoes what it runs with (`Synthesizer.generation`).
+ * defaults (`src/jev-modes/synth/llm/source.ts LLM_DEFAULT_GENERATION`). The synthesizer echoes what it runs with (`Synthesizer.generation`).
  */
 export interface SynthesizerGeneration {
   /** sent verbatim on every sample; null = the parameter is not sent (the model's default) */
@@ -3158,7 +3158,7 @@ export type BenchStopReason = StopReason | 'not_run';
  *
  * The §3 S2 generation mechanisms are NOT among them, and this block used to say they were (F05). They live on the
  * `llm-jev` sample path, which `jev-on` never enters: nothing sets `PromptInput.prefixOrder`, `onFirstByte` is
- * forwarded only from that path, and hedging plus the §3.4 reasoning cap are in `src/synth/llm/source.ts`. So
+ * forwarded only from that path, and hedging plus the §3.4 reasoning cap are in `src/jev-modes/synth/llm/source.ts`. So
  * `armMechanisms` clamps a pinned `s2` to `'off'` outside `llm-jev` and records what the run reported instead;
  * wiring the mechanisms onto `jev-on` is F17 in docs/LLM-LOOP-DESIGN.md §9.1, not a claim this type may make.
  */

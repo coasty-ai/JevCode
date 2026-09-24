@@ -14,7 +14,7 @@
  */
 import { clip } from '../../core/text.js';
 import { AGENT_TASK_CHARS, OWN_GLOBS_MAX } from '../../core/limits.js';
-import { annotateChoiceRows, resolveChoice, type ChoiceResolution } from '../../loop/stages/choose.js';
+import { annotateChoiceRows, resolveChoice, type ChoiceResolution } from '../../jev-modes/stages/choose.js';
 import { disjoint, parseOwnGlob, validateOwnList, type OwnGlob } from './globs.js';
 import { hasDependencyCycle, mergeAgentFields } from './normalize.js';
 import { SPLIT_ESCAPE, SPLIT_KIND_OF, WHICH_SPLIT, buildDecomposeState, optionKeyOf, planDecomposeQuestions, selfContainedId } from './questions.js';

@@ -2,7 +2,7 @@
  * The sieve at the gold site, for the two cheapest issue oracles (django-15315: 0.4 s, sympy-12096:
  * 0.25 s): every candidate the SEEDS sources enumerate at the gold site(s) (ENUMERATE_CAP 254 per
  * source, engine corpus) is applied to a private worktree lane and the issue-oracle script is run
- * with the oracle's own runner (src/synth/oracle/runner.ts runRepro + evaluateCriterion). Counts
+ * with the oracle's own runner (src/jev-modes/synth/oracle/runner.ts runRepro + evaluateCriterion). Counts
  * passers, failures, syntax errors and timeouts: what the design's SIEVE mode (§2.4) would face and
  * find at the gold site. $0.00 Jev.
  *
@@ -13,17 +13,17 @@ import { execFile } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createDonorSource } from '../../src/synth/donor/index.ts';
-import { createMutationSource } from '../../src/synth/mutate/index.ts';
-import { chunksWithContext, evaluateCriterion, extractBlocks, runRepro } from '../../src/synth/oracle/index.ts';
-import type { Criterion, ReproRunOptions } from '../../src/synth/oracle/index.ts';
-import { createCompositeSource } from '../../src/synth/search/composite.ts';
-import { ENUMERATE_CAP, isTestPath, taskIdentifiers, testLiterals } from '../../src/synth/search/subgoal.ts';
-import { canonicalText } from '../../src/synth/sieve/queue.ts';
-import { createTemplateSource } from '../../src/synth/templates/index.ts';
-import type { Candidate, EnumerateOptions, FailureView, SourceFile } from '../../src/synth/types.ts';
-import { applyCandidate } from '../../src/synth/verify/apply.ts';
-import type { VerifyRunFn } from '../../src/synth/verify/types.ts';
+import { createDonorSource } from '../../src/jev-modes/synth/donor/index.ts';
+import { createMutationSource } from '../../src/jev-modes/synth/mutate/index.ts';
+import { chunksWithContext, evaluateCriterion, extractBlocks, runRepro } from '../../src/jev-modes/synth/oracle/index.ts';
+import type { Criterion, ReproRunOptions } from '../../src/jev-modes/synth/oracle/index.ts';
+import { createCompositeSource } from '../../src/jev-modes/synth/search/composite.ts';
+import { ENUMERATE_CAP, isTestPath, taskIdentifiers, testLiterals } from '../../src/jev-modes/synth/search/subgoal.ts';
+import { canonicalText } from '../../src/jev-modes/synth/sieve/queue.ts';
+import { createTemplateSource } from '../../src/jev-modes/synth/templates/index.ts';
+import type { Candidate, EnumerateOptions, FailureView, SourceFile } from '../../src/jev-modes/synth/types.ts';
+import { applyCandidate } from '../../src/jev-modes/synth/verify/apply.ts';
+import type { VerifyRunFn } from '../../src/jev-modes/synth/verify/types.ts';
 import { loadFile, parseHunks, privateWorktree, replaceSiteAt, sh, venvPython } from './lib.mts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));

@@ -252,7 +252,7 @@ export async function routeSpeculative<T>(input: RouteInput<T>): Promise<RouteRe
 
 /**
  * §0.3: `routers` is an `EngineOptions` member with an env **default** read inside the loop, exactly as
- * `JEVCODE_WARM` is read in `src/synth/warm/plane.ts`. The default is **off** in every mode on `main`; only the
+ * `JEVCODE_WARM` is read in `src/jev-modes/synth/warm/plane.ts`. The default is **off** in every mode on `main`; only the
  * bench arm turns it on. An unset or unrecognised value is off, so nothing about a user run changes by accident.
  *
  * **The explicit option wins; the env only fills an ABSENT option** (§7.5 seam (b)). This used

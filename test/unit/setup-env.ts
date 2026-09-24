@@ -4,16 +4,16 @@
  *
  * The engine resolves these names BEFORE its options — `resolveFastPathOption` (src/loop/engine.ts) reads
  * `JEVCODE_FASTPATH` when the option is absent, `routersEnabled` (src/jev/router.ts) reads `JEVCODE_ROUTERS`,
- * `src/jev/off.ts` reads `JEVCODE_JEV`, `hedgeEnabled` and `deadlineGrowthFrom` (src/synth/llm/source.ts) read
+ * `src/jev/off.ts` reads `JEVCODE_JEV`, `hedgeEnabled` and `deadlineGrowthFrom` (src/jev-modes/synth/llm/source.ts) read
  * `JEVCODE_HEDGE` and `JEVCODE_DEADLINE_GROWTH`, and the rest are read the same way deeper in. A developer who
  * exported one of them for a bench arm, a `--jev off` replay or a trace capture and then ran `npm test` in the
  * same shell was measuring a different tree from the one the merge message claims: before this file only three
- * of 543 unit files defended themselves (test/unit/loop/fastpath.test.ts, router.test.ts, router-golden.test.ts).
+ * of 543 unit files defended themselves (test/unit/jev-modes/stages/fastpath.test.ts, router.test.ts, router-golden.test.ts).
  *
  * THE LIST IS INVERTED, and that is the point. The first version deleted nine audited names; `grep -rhoE
  * 'JEVCODE_[A-Z0-9_]+' src/ scripts/ bin/` yields ~87, and two of the ones it missed are documented arm
  * mechanisms that deterministically red the suite: `JEVCODE_DEADLINE_GROWTH=served JEVCODE_HEDGE=on npx vitest
- * run --project unit test/unit/synth/llm` was 3 files / 6 tests red (source-backoff.test.ts, deadline-growth.
+ * run --project unit test/unit/jev-modes/synth/llm` was 3 files / 6 tests red (source-backoff.test.ts, deadline-growth.
  * test.ts), and `JEVCODE_MOCK_STEP_MS=5` reds test/unit/cli/mock-trajectory.test.ts. A per-name list cannot be
  * kept complete by hand — every new switch is a silent hole until someone remembers this file. So every
  * `JEVCODE_*` name in the environment is deleted EXCEPT an explicit keep-list, which is drift-proof by
@@ -35,7 +35,7 @@
  * Nothing is imported here, and nothing may be. setupFiles share the test file's module registry, so a value
  * import is paid once per unit file: the first version imported `src/bench/conditions.js` (to keep the list from
  * drifting from `MECHANISM_ENV_VARS`), whose value closure reaches 60 modules — src/jev/mock.ts, src/provider/
- * sse.ts, src/synth/verify/pytest.ts, src/synth/oracle/*, src/loop/stages/propose.ts … Measured on the 61 files
+ * sse.ts, src/jev-modes/synth/verify/pytest.ts, src/jev-modes/synth/oracle/*, src/jev-modes/stages/propose.ts … Measured on the 61 files
  * of test/unit/loop at 2 workers: with the import the run reports a `setup` bucket at 7 % of 16.98 s; without it
  * there is no setup bucket to report (16.89 s). The wall barely moves at that width because the setup of one
  * worker overlaps the tests of the other — the CPU does not, and it is paid 543 times. The sweep needs no list,

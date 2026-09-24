@@ -7,8 +7,8 @@ import { buildRecord } from '../../../src/bench/runner.js';
 import { STUB_DECIDER_MODEL, STUB_NOUL, createStubDecider, stubAnswer } from '../../../src/bench/stub-decider.js';
 import type { Answer, Question, Synthesizer } from '../../../src/core/types.js';
 import { normaliseModelId } from '../../../src/jev/client.js';
-import { NOUL_ABSENT_THRESHOLD, noulsFlagAbsent } from '../../../src/synth/rank/index.js';
-import { OVERRIDE_HIGH, OVERRIDE_LOW, SUSPECT_NOUL_MAX } from '../../../src/synth/search/guard.js';
+import { NOUL_ABSENT_THRESHOLD, noulsFlagAbsent } from '../../../src/jev-modes/synth/rank/index.js';
+import { OVERRIDE_HIGH, OVERRIDE_LOW, SUSPECT_NOUL_MAX } from '../../../src/jev-modes/synth/search/guard.js';
 import { makeEngine, type FakeDecider, type Harness } from '../loop/fakes.js';
 import { syntheticSource } from './helpers.js';
 

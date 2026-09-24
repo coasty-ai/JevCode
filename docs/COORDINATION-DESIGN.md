@@ -1038,7 +1038,7 @@ shell.
 ## 6. Sub-agent and lane coordination inside the engine
 
 The engine's parallel work today — the llm-jev sample round (one shared AbortSignal, per-sample wakers, `engine.ts:570`,
-`:976-988`) and the sieve lane pool (`<runDir>/tmp/synth/lane<k>`, `src/synth/sieve/lanes.ts:35`, `:188`, `:213-214`,
+`:976-988`) and the sieve lane pool (`<runDir>/tmp/synth/lane<k>`, `src/jev-modes/synth/sieve/lanes.ts:35`, `:188`, `:213-214`,
 `:311-312`) — is invisible outside `synth` transcript lines, not resumable, and its stale worktrees are pruned only by the same run.
 It joins the same registry.
 
@@ -1074,7 +1074,7 @@ It joins the same registry.
    `LlmSource` has no run dir or fs access; its `settle()` only calls `deps.onSample(a)` (`source.ts:635-640`) — through a new
    `store.writeCache(rel, json)` (per-file chain, `store.ts:264`), ≤ 32 files per run LRU. The engine cannot reach that wiring by
    itself: the `LlmSource` is created **inside** the synthesizer with its own `onSample`
-   (`src/synth/search/llm.ts:416-431`, `:426` — the synth owns the deps), and `SynthesisContext` (`src/core/types.ts:1262-1306`)
+   (`src/jev-modes/synth/search/llm.ts:416-431`, `:426` — the synth owns the deps), and `SynthesisContext` (`src/core/types.ts:1262-1306`)
    has `runDir` / `emit` / `generate` / `reportVerify` but no cache or round hook, so `llmRound` and `PausePoint.round` could not
    be produced from the frozen shapes. W0 item 1 therefore adds
    `SynthesisContext.cache?: { writeSample(goalId, round, sample, json): void; readRound(goalId, round): SampleArrival[] }` and
@@ -1582,7 +1582,7 @@ analogue).
 
 ### 8.8 What the generator sees per step
 
-| Section | `jev-on` | `jev-off` | `llm-jev` (per-goal sample prompt, `src/synth/llm`) |
+| Section | `jev-on` | `jev-off` | `llm-jev` (per-goal sample prompt, `src/jev-modes/synth/llm`) |
 | --- | --- | --- | --- |
 | task, plan, directives, kept | yes | yes | task + goal + directives + kept |
 | `## Files in view` | Jev's ≤ 12 context files first, then the cache, de-duplicated | cache | the goal's target files (already whole) + cache entries that intersect the goal's paths, through `SynthesisContext.contextText?` (additive; ≤ 40 % of the sample budget) |
@@ -2005,7 +2005,7 @@ the harness rebases its `types.ts` edits onto the commit that lands round 3 and 
 
 | Owner | Code | On disk | Also (r3 record, unchanged from the paragraph below) |
 | --- | --- | --- | --- |
-| **harness session** | `src/coordination/**` (new), `src/loop/**`, `src/checkpoint/**`, `src/core/types.ts` (additive, after the round-3 contract line), the **context policy inside the step loop** (`src/loop/history.ts`, `src/loop/context-cache.ts`, `src/loop/compaction.ts`, the prompt sections of `src/provider/prompts.ts`, §8) | `~/.jevcode/coordination/**` (the ledger and its identity files, §12.0.4), `<runDir>/{cache,outputs,context}/` | `src/errors.ts`, `src/core/limits.ts`, `src/synth/**`, `src/bench/**`, `src/workspace/**`, `src/sandbox/**` |
+| **harness session** | `src/coordination/**` (new), `src/loop/**`, `src/checkpoint/**`, `src/core/types.ts` (additive, after the round-3 contract line), the **context policy inside the step loop** (`src/loop/history.ts`, `src/loop/context-cache.ts`, `src/loop/compaction.ts`, the prompt sections of `src/provider/prompts.ts`, §8) | `~/.jevcode/coordination/**` (the ledger and its identity files, §12.0.4), `<runDir>/{cache,outputs,context}/` | `src/errors.ts`, `src/core/limits.ts`, `src/jev-modes/synth/**`, `src/bench/**`, `src/workspace/**`, `src/sandbox/**` |
 | **TUI session** | `src/session/**` (`lock.ts`, `index.ts`, `picker-lines.ts`, `seed.ts`, `export.ts`), `src/cli/**`, `src/tui/**`, `src/config/**`, docs for the surface (`docs/COMMANDS.md`, `docs/KEYS.md`, TD §8 / §24 additions, the §7.6 strings) | `~/.jevcode/sessions/**` (incl. `index.jsonl`), `<runDir>/ui.json`, `~/.jevcode/{trust.json,keybindings.json,history.jsonl,exports/}` as today | `src/chat/**`, `src/perf/**`, `test/pty/**` |
 
 Rules. (1) `src/coordination/**` imports nothing from `src/session/**`, `src/cli/**`, `src/tui/**` or `src/config/**`: it receives `home`
@@ -2993,8 +2993,8 @@ Every agreed case maps to §11 rows (rows 45–50 are added there for the cases 
 
 §12.0.1 is the normative ownership statement; this paragraph is the round-3 record it extends. Owners follow the brief and the round-3 record: the **harness session** owns `src/coordination/**` (new), `src/loop/**`,
 `src/checkpoint/**`, `src/core/**` (`types.ts` additive only, `limits.ts` new), `src/errors.ts`, plus — per
-`docs/research/tui/workflows/r3-implement.js:16` ("a peer session owns src/loop/**, src/synth/**, src/provider/**, src/bench/**") —
-`src/provider/prompts.ts`, `src/synth/**`, `src/bench/**` and `src/workspace/**`; the **TUI session** owns `src/session/**`,
+`docs/research/tui/workflows/r3-implement.js:16` ("a peer session owns src/loop/**, src/jev-modes/synth/**, src/provider/**, src/bench/**") —
+`src/provider/prompts.ts`, `src/jev-modes/synth/**`, `src/bench/**` and `src/workspace/**`; the **TUI session** owns `src/session/**`,
 `src/cli/**`, `src/tui/**`, `src/config/**`, `src/chat/**`, `test/pty/**`, `src/perf/**` and docs. `src/session/**` was read-only
 for TUI slots in round 3 (TD3:1562); this round assigns it to the TUI session explicitly (§14 Q6). Every `types.ts` change is
 additive. LOC are new / changed lines excluding tests; tests roughly equal. Each wave lands only when `npm run typecheck` (tsc +
@@ -3101,7 +3101,7 @@ context** (today it asserts only id uniqueness, `:29-40`); pty `.steps` for the 
 | 25 | harness | `src/coordination/mailbox.ts` (new) | send (`<deviceId>-<actor8>-<seq>` ids) / inbox fold / **`purgeInbox`** (foreign messages marked seen, only our own sent files deleted — §12.0.4) / per-CONSUMER acks / `inbox/seen/<deviceId>/<consumerId>.json` / targeted-vs-broadcast GC / expiry / mute; automatic `heads-up` / `handoff` (`subject120`) / `note` producers; `request-release` as a fact (advisory) or a bounded hold (strict); HEAD watcher via `readHead` | ~340 |
 | 26 | harness | `src/coordination/sync-shared-dir.ts` (new) | **the mirror projection of §9.3 (the only thing copied; `syncRuns:'with-bodies'` disables it)**, the signed **`claims.json`** projection written at every `claims[]` mint and whenever `forked` / `ended` changes (revision 5), the **mirror-root realpath check** (must not equal, contain or be contained by the coordination root — at configure time and at every `open()`, §10.1), mirror copy on the ledger chain, incremental `steps.jsonl` mirror, lag measurement from our own subtree in the mirror (never folded as records), `.icloud` handling, offline state, essential-set mirror + import (trusted sources only, explicit `[i]`, row-count / `post/<step>.json` preconditions, claim-ordered, `forked` tails, `undoUnavailableBelow`) + takeover, `sync disable` self-removal refused while a run is live | ~420 |
 | 27 | harness | `src/coordination/worktree.ts` (new) | the facade's `createWorktree` / `listWorktrees` / `removeWorktree` / `sweep` (§12.0.4) over `worktree add --lock --reason jevcode:<runId>:<sessionId> -b jevcode/<slug>`, metadata under `coordination/devices/<hostKey>/worktrees/`, dirty-set sync (`lanes.ts:45` rule; ignored files listed in metadata), the §6.6 guards **plus the six lane-sweep guards of §6.2** (`LANE_DIR_RE`, local-subtree-only, `resolveRunDir` containment, `lstat` per component, gitdir inside a matching repo, realpath inside `<runDir>/tmp/synth/`) | ~300 |
-| 28 | harness | `src/synth/llm/source.ts`, `src/synth/sieve/lanes.ts`, `src/synth/search/index.ts`, `src/synth/search/llm.ts` | `CancelReason` + `'pause'` (:118); `LlmSourceDeps.replay?` consulted before dispatch (:364-380, :373 comment); the synthesizer calls `SynthesisContext.cache?.writeSample` from its own `onSample` (`llm.ts:416-431`) and `onRound?` at each fire, so the engine can write `cache/llm/**` and fill `PausePoint.llm` with the **real** `round` / `arrived` (§6.4, §12.0.2 P3); `replay` **reads the round DIRECTORY** (`cache.readRound(goalId, round)` over `cache/llm/<goalId>/<round>/`) and never trusts `cache/step-n.json.llmRound`, because `writeSample` is `void` and a lost write would otherwise make the engine re-use a sample it does not have (§14 item 16(c)); `LaneContext.coordination?` hook called after `worktree add` (:214) and in `disposeLanes` (:302-322); `LaneContext.disposeSignal?` used when `ctx.signal.aborted`; the synthesizer's abort path disposes lanes; `subwork` events | ~220 |
+| 28 | harness | `src/jev-modes/synth/llm/source.ts`, `src/jev-modes/synth/sieve/lanes.ts`, `src/jev-modes/synth/search/index.ts`, `src/jev-modes/synth/search/llm.ts` | `CancelReason` + `'pause'` (:118); `LlmSourceDeps.replay?` consulted before dispatch (:364-380, :373 comment); the synthesizer calls `SynthesisContext.cache?.writeSample` from its own `onSample` (`llm.ts:416-431`) and `onRound?` at each fire, so the engine can write `cache/llm/**` and fill `PausePoint.llm` with the **real** `round` / `arrived` (§6.4, §12.0.2 P3); `replay` **reads the round DIRECTORY** (`cache.readRound(goalId, round)` over `cache/llm/<goalId>/<round>/`) and never trusts `cache/step-n.json.llmRound`, because `writeSample` is `void` and a lost write would otherwise make the engine re-use a sample it does not have (§14 item 16(c)); `LaneContext.coordination?` hook called after `worktree add` (:214) and in `disposeLanes` (:302-322); `LaneContext.disposeSignal?` used when `ctx.signal.aborted`; the synthesizer's abort path disposes lanes; `subwork` events | ~220 |
 | 29 | harness | `src/bench/runner.ts` | `bench.lock` (`acquireRunLock` recipe); one `kind:'bench'` presence heartbeat per process; `coordination.enabled:false` for its engines; `IN_PROGRESS` + `complete` state → record | ~90 |
 | 30 | harness | `src/sandbox/seatbelt.ts` | `sharedDir`, the git transport dir and the **resolved** `coordinationRoot(jevcodeDir(env, home, cwd))` in the read-deny list (:157-161 pattern) — passed in, not re-derived from `join(home, '.jevcode')` (:169), so a `JEVCODE_HOME` ledger is denied too (§10.1) | ~35 |
 | 31 | TUI | `src/cli/session.ts`, `src/tui/**` | `/spawn` child-run flow (own `sessionId` + `parentSessionId`), `/worktree`, `/merge <slug>` (a task, never a git write), `sessions gc` output, sync enable warning text | ~200 |
@@ -3114,8 +3114,8 @@ ones.
 sync: the projection carries no `proposal`, no `rawText`, no `partial.text`, no `ui.json`, no absolute `workspace`, no `config`;
 an import from an untrusted subtree is refused without `[i]`; an import with a missing `post/<step>.json` retries; a
 `sharedDir` symlinked inside the coordination root is a `ConfigError` at configure and `offline` at `open()`.
-worktree: `laneDir:'post'`, `'.'`, a symlinked component and a foreign lease are all skipped and counted), `test/unit/synth/llm-round-cache.test.ts` (engine-side cache + `replay` dep),
-`test/unit/synth/lanes-leases.test.ts` (hook calls; dispose after an aborted signal), `test/unit/bench/{runner-lock,runner-presence}.test.ts`,
+worktree: `laneDir:'post'`, `'.'`, a symlinked component and a foreign lease are all skipped and counted), `test/unit/jev-modes/synth/llm-round-cache.test.ts` (engine-side cache + `replay` dep),
+`test/unit/jev-modes/synth/lanes-leases.test.ts` (hook calls; dispose after an aborted signal), `test/unit/bench/{runner-lock,runner-presence}.test.ts`,
 `test/unit/sandbox/seatbelt.test.ts` extended, `test/unit/coordination/import-fork.test.ts`.
 
 ### W4 — hardening, perf gates, docs (both; 1–2 days)
@@ -3327,7 +3327,7 @@ import time, and the prompt size distribution per mode before and after compacti
       unchanged read) so a legacy step equals HEAD's step and not merely HEAD's prompt bytes (M9, W2 items 18 / 21).
     - **`SynthesisContext.cache` / `onRound` are additive and called from the synthesizer's own `onSample`.** The engine never reaches
       into the LLM source: the synthesizer calls `cache?.writeSample(goalId, round, sample, json)` from the `onSample` it already has
-      (`src/synth/search/llm.ts`) and `onRound?(goalId, round, arrived)` at each fire, both optional, so an engine without the hooks
+      (`src/jev-modes/synth/search/llm.ts`) and `onRound?(goalId, round, arrived)` at each fire, both optional, so an engine without the hooks
       behaves exactly as today and `PausePoint.llm` / `cache/llm/**` simply stay absent (§6.4, §12.0.2 P3, W3 item 28).
       **Condition (re-review):** `LlmSourceDeps.replay` reads the **round directory** (`cache.readRound(goalId, round)` over
       `cache/llm/<goalId>/<round>/`), never `cache/step-n.json.llmRound` — `writeSample` is `void`, so a lost write would

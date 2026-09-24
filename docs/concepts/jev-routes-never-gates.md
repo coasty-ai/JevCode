@@ -156,7 +156,7 @@ So the deny-list is production code and it is wired, but the path that consults 
 run is behind a switch that ships off. Today the guards that run on every step in every
 Jev-driven mode are the sandbox profile and — for anything correctness-bearing — the tests.
 
-<!-- src/jev/danger.ts (DANGER_RULES, dangerousCommand); src/loop/stages/risk.ts runRiskStage / runHarmOnlyRiskStage / codeRiskReason / codeRiskVerdict / codeRiskFloor / escalateVerdict; src/jev/confidence.ts RISK_REVIEW 0.3, RISK_BLOCK 0.7. Two design-doc drifts: docs/LLM-LOOP-DESIGN.md §2.2 places codeRiskReason in danger.ts (it is in risk.ts), and dangerousCommand is reached from production only through codeRiskVerdict / codeRiskFloor, which run only when routersOn() is true. -->
+<!-- src/jev/danger.ts (DANGER_RULES, dangerousCommand); src/jev-modes/stages/risk.ts runRiskStage / runHarmOnlyRiskStage / codeRiskReason / codeRiskVerdict / codeRiskFloor / escalateVerdict; src/jev/confidence.ts RISK_REVIEW 0.3, RISK_BLOCK 0.7. Two design-doc drifts: docs/LLM-LOOP-DESIGN.md §2.2 places codeRiskReason in danger.ts (it is in risk.ts), and dangerousCommand is reached from production only through codeRiskVerdict / codeRiskFloor, which run only when routersOn() is true. -->
 
 ## What is structurally excluded, and why
 

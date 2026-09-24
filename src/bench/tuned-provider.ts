@@ -9,7 +9,7 @@
  *     an estimate (§4.8: prompt chars / 4 in, streamed chars / 4 out, at the served rate, `estimated: true` — or the
  *     usage frame itself when it had arrived, priced like a completed call) and returned as a `GenerateResult` with
  *     `stopReason` `DROPPED_CALL_STOP_REASON` and no tool call — the propose stage records the row and ends the step
- *     without its malformed retry (src/loop/stages/propose.ts), so a dropped call costs the deadline once. The CALLER's
+ *     without its malformed retry (src/jev-modes/stages/propose.ts), so a dropped call costs the deadline once. The CALLER's
  *     abort is not a deadline: it is rethrown untouched, exactly as the wrapped provider would, even when it lands while
  *     the deadline is firing;
  *   - `finish_reason: length` → the same request once more at double `max_tokens`; both calls' usage is summed into the
@@ -20,8 +20,8 @@
  */
 import type { CancelledGeneration, GenerateOptions, GenerateReasoning, GenerateRequest, GenerateResult, Provider, TokenUsage } from '../core/types.js';
 import { monotonicNow } from '../core/time.js';
-import { DROPPED_CALL_STOP_REASON } from '../loop/stages/propose.js';
-import { isLengthStop } from '../synth/llm/schema.js';
+import { DROPPED_CALL_STOP_REASON } from '../jev-modes/stages/propose.js';
+import { isLengthStop } from '../jev-modes/synth/llm/schema.js';
 import type { LengthHandling, ServedRate } from './types.js';
 
 export const PLAN_CAP_CHARS = 200;

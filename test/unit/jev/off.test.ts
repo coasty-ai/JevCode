@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest';
 import { JEV_OFF_MODEL, JEV_OFF_NOUL, createJevOffDecider, jevOffAnswer, jevOffModeFrom, withJevOff } from '../../../src/jev/off.js';
 import { ESCAPE_KEY, choice, noul, score } from '../../../src/jev/questions.js';
 import { createMockDecider } from '../../../src/jev/mock.js';
-import { HARM_DIMENSIONS, assessRisk, harmOnlyQuestions } from '../../../src/loop/stages/risk.js';
+import { HARM_DIMENSIONS, assessRisk, harmOnlyQuestions } from '../../../src/jev-modes/stages/risk.js';
 import { JevHttpError } from '../../../src/errors.js';
 import type { Answer, AskOptions } from '../../../src/core/types.js';
 
@@ -46,7 +46,7 @@ describe('the --jev off switch', () => {
   });
 
   it('never lets the real harm gate read `ok`: assessRisk under the double is `block` on the harm dimensions', () => {
-    // the actual Q20 batch the llm-jev risk stage asks (src/loop/stages/risk.ts harmOnlyQuestions)
+    // the actual Q20 batch the llm-jev risk stage asks (src/jev-modes/stages/risk.ts harmOnlyQuestions)
     const questions = harmOnlyQuestions();
     expect(Object.keys(questions).sort()).toEqual([...HARM_DIMENSIONS].sort());
     const answers: Record<string, Answer> = {};

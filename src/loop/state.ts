@@ -42,7 +42,7 @@ export const STATE_LIMITS = {
 
 /**
  * The jev-only synthesizer's plan-item grammar, `fix <first_test_id>[, +N more] in <path>`
- * (docs/JEV-ONLY-DESIGN.md §5.2; src/synth/search/proposal.ts GOAL_ITEM_RE is the same
+ * (docs/JEV-ONLY-DESIGN.md §5.2; src/jev-modes/synth/search/proposal.ts GOAL_ITEM_RE is the same
  * expression). Items of this form in `plan.remaining` are the ledger the intent stage reads in
  * jev-only mode; a generator's free-form plan never matches it by accident on jev-on runs, and
  * the stages guard on the mode as well.

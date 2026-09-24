@@ -10,9 +10,9 @@ import type { Answer, DeciderConfig, Json, Question, StageName } from '../../src
 import { createJevDecider } from '../../src/jev/client.js';
 import { JEV_PROVIDERS } from '../../src/jev/providers.js';
 import { DEFAULT_JEV_BASE_URL, DEFAULT_JEV_MODEL } from '../../src/jev/types.js';
-import { createTokenBeamSource } from '../../src/synth/beam/index.js';
-import { analyse, blockAt, scopeAt } from '../../src/synth/py/index.js';
-import type { JevAsk, Site, SourceFile } from '../../src/synth/types.js';
+import { createTokenBeamSource } from '../../src/jev-modes/synth/beam/index.js';
+import { analyse, blockAt, scopeAt } from '../../src/jev-modes/synth/py/index.js';
+import type { JevAsk, Site, SourceFile } from '../../src/jev-modes/synth/types.js';
 
 const apiKey = process.env['JEV_API_KEY'] ?? process.env['OPENROUTER_API_KEY'] ?? '';
 const live = process.env['JEVCODE_LIVE'] === '1';

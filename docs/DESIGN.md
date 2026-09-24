@@ -109,7 +109,7 @@ into an isolated map, never into `process.env`.
 | Generator pricing override | | `JEVCODE_PRICE_IN_PER_M`, `JEVCODE_PRICE_OUT_PER_M` | table in `config/defaults.ts` `[R]` |
 
 Risk thresholds 0.3 and 0.7 are constants from the prompt, exported from
-`loop/stages/risk.ts`, not configurable. Plan-claim acceptance constants 0.7 / 0.3
+`jev-modes/stages/risk.ts`, not configurable. Plan-claim acceptance constants 0.7 / 0.3
 (`PLAN_ACCEPT_THRESHOLD`, `PLAN_REJECT_THRESHOLD`) are exported from `loop/plan.ts` (§6).
 
 Decider model, accepted forms per REPORT §2: `typesafe/jev-1.13-20260917`,
@@ -330,7 +330,7 @@ export interface SpendMeter {
 // ---- workspace and sandbox (engine <-> workspace/*, sandbox/*; stubbed by bench/perf mocks) ----
 export interface Candidate { path: string; bytes: number }                       // produced by workspace/candidates.ts
 export interface CandidateView extends Candidate { mentionsInTask: number; touchedThisRun: boolean }
-  // built by loop/stages/context.ts, which also owns the <= 300-path pre-filter (mention count, then recency)
+  // built by jev-modes/stages/context.ts, which also owns the <= 300-path pre-filter (mention count, then recency)
 export interface FileView { path: string; content: string; bytes: number; truncatedBytes: number }
 export type TestRunner = 'pytest' | 'jest' | 'vitest' | 'npm' | 'cargo' | 'go' | 'unknown';
 export interface TestCommand { command: string; runner: TestRunner }
@@ -708,7 +708,7 @@ A Noul with instructions and no per-question `criteria` is valid on the wire (RE
 Cost: each question is ~40 tokens (REPORT §4's +9 applies only to a short noul), so 300
 candidates ≈ 12 k question tokens plus ≈ 12 k of candidate state; the request stays under
 the 64 k request cap and the 32 k state + longest question cap. `mentionsInTask` and
-`touchedThisRun` are computed by `loop/stages/context.ts` from the task text and the run's
+`touchedThisRun` are computed by `jev-modes/stages/context.ts` from the task text and the run's
 changed-files set; `workspace/candidates.ts` returns only path and bytes. Selection in code:
 p ≥ 0.5, descending, cap 12 files and 60 KB; files mentioned by `plan.remaining[0]` are
 candidates but not forced in. Candidates are pre-filtered in code to ≤ 300 paths by mention
@@ -910,7 +910,7 @@ stage failure (Jev/provider)  -> stage failure policy below: nothing downstream 
 abort / wall time mid-step    -> step commit rule §9.1.
 ```
 
-**Choice resolution** (`loop/stages/choose.ts`, shared by intent and replan). Let `c` be the
+**Choice resolution** (`jev-modes/stages/choose.ts`, shared by intent and replan). Let `c` be the
 response's `choice` and `nouls[o]` the paired Noul of each non-escape option. (1) If `c` is
 not the escape and `nouls[c] ≥ 0.5`, take `c`; its Choice row gets `verdict: 'chosen'`. (2)
 Otherwise take the option with the highest paired Noul if that Noul is ≥ 0.5; the Choice row
@@ -1699,7 +1699,7 @@ per line, redacted at emission), then `src/chat/intake.ts` builds one Jev reques
 readings with paired Nouls, the reply Choice over the 14-row catalogue (`src/chat/replies.ts`) and the 14 fact Nouls
 (`src/chat/facts.ts`) — and `resolveIntake` starts a run only for `coding_task` at Jev's own p ≥ `INTAKE_RUN_FLOOR`
 0.6 with its paired Noul ≥ 0.5; a greeting becomes one `[jevcode]` catalogue item, a tool question one item per
-selected fact (`selectFacts`, p ≥ 0.5, ≤ 4), a code question a Jev-selected lookup (`src/chat/lookup.ts`, jev-only) or
+selected fact (`selectFacts`, p ≥ 0.5, ≤ 4), a code question a Jev-selected lookup (`src/jev-modes/chat/lookup.ts`, jev-only) or
 one generator turn without tools (`src/chat/llm-turn.ts`, jev+llm, floor `LLM_ANSWER_FLOOR` 0.5), and anything weaker
 the `intake` overlay (`run this as a task?`; `y` runs, `n` replies from the answers in hand, Esc restores the draft).
 Chat spend is charged to the root session meter, which exists from startup and is never recreated
@@ -2291,7 +2291,7 @@ artefact listed in §8.4 after a mocked 2-step run, while a 40-hex git SHA-1 in 
 output survives unchanged); confidence formulas against REPORT §8 numbers; a Jev Choice
 response with tied top probabilities (`{a: 0.50, b: 0.50}`, choice `b`) passes validation
 and `b` is used, and a Score response with tied top levels computes confidence with the
-smallest tied index; risk mapping table for `loop/stages/risk.ts` on all four dimensions:
+smallest tied index; risk mapping table for `jev-modes/stages/risk.ts` on all four dimensions:
 `{1: .8, 2: .2}` → 0.30 review; `{1: .85, 2: .15}` → 0.2875 ok; `{1: .9, 3: .1}` → 0.30
 review; `{1: 1.0}` → 0.25 ok; `{2: 1.0}` → 0.50 review; `{3: .7, 2: .3}` → 0.70 block;
 `{3: .8, 2: .2}` → 0.80 block; `{3: .8, 0: .2}` → 0.80 block; `{4: .7, 0: .3}` → 0.70 block;
@@ -2678,23 +2678,23 @@ mode's rule: code proposes from facts in the workspace, Jev chooses among ≤ 25
 options, tests verify. Measurements are in `experiments/results/jev-only-rungs-1-2.md` (cited
 below as "rungs §n").
 
-- **Ledger.** `src/synth/search/goals.ts`: one goal per cluster of failing tests
+- **Ledger.** `src/jev-modes/synth/search/goals.ts`: one goal per cluster of failing tests
   (exception-raising tests cluster by innermost frame, assertion failures one goal per test),
-  the attack-first Choice, the park rules of design §5.3. `src/synth/search/index.ts` is the
+  the attack-first Choice, the park rules of design §5.3. `src/jev-modes/synth/search/index.ts` is the
   outer step (`synthesize(ctx)`): establishing full-suite run, one goal per step, commit or
-  park, plan items with evidence, `synthState` persistence. `src/synth/search/proposal.ts`
+  park, plan items with evidence, `synthState` persistence. `src/jev-modes/synth/search/proposal.ts`
   builds the `patch` / `run` / `read` / `done` proposals and attaches the code-computed
   `Proposal.evidence` (before/after counts, newly passing and newly failing tests).
-- **Sieve and budgets.** `src/synth/search/budget.ts` is the oracle model (per-run time from
+- **Sieve and budgets.** `src/jev-modes/synth/search/budget.ts` is the oracle model (per-run time from
   the baseline, lanes, SIEVE when one goal-subset run is ≤ 2 s, RANK otherwise; per-step caps
-  on test wall, runs and Jev requests). `src/synth/sieve/queue.ts` (global verification queue,
+  on test wall, runs and Jev requests). `src/jev-modes/synth/sieve/queue.ts` (global verification queue,
   vocabulary pre-check, dedupe), `lanes.ts` (git worktree or `cp -R` shadow lanes, never the
   workspace), `runner.ts` (tail-based per-case timeouts, provisional timeouts retried at 2 s,
   load-scaled caps, all-killed batches re-queued once; rungs §8, §12, §15).
-  `src/synth/search/subgoal.ts` walks the phases SEEDS → SKETCH → BEAM → WIDENED, runs a
+  `src/jev-modes/synth/search/subgoal.ts` walks the phases SEEDS → SKETCH → BEAM → WIDENED, runs a
   site's seed sources as one SIEVE batch decided once, and tests pairs of complementary
   partials inside a 15 s / 16-run reserve before a batch would spend it (rungs §15).
-- **Issue oracle.** `src/synth/oracle/extract.ts` extracts fenced, REPL, traceback and
+- **Issue oracle.** `src/jev-modes/synth/oracle/extract.ts` extracts fenced, REPL, traceback and
   expected-vs-actual blocks from the task text; `questions.ts` asks one Jev batch per instance
   (`is_reproduction_i`, `shows_expected_i`, `shows_actual_i`, Choice `failure_kind`);
   `runner.ts` builds a runnable script with a code-computed pass criterion and runs it under
@@ -2704,7 +2704,7 @@ below as "rungs §n").
   the best-guess goal. Measured: a valid oracle (fails at the base commit, passes with the
   gold patch) on 9/30 SWE-bench Verified instances for $0.0096
   (`experiments/results/oracle-from-issue.md`).
-- **Repository mode.** `src/synth/search/index.ts` (`initRepository`, `rebaselineRepository`):
+- **Repository mode.** `src/jev-modes/synth/search/index.ts` (`initRepository`, `rebaselineRepository`):
   when the workspace is a repository with no failing test, the oracle's reproduction becomes the
   goal (`repro::<sha8>`); one localisation anchored on the traceback frames; a regression
   baseline scoped to the related test files; the corpus read is the first 1,200 files with the
@@ -2713,37 +2713,37 @@ below as "rungs §n").
   regression-only commit per run, its goal text and `openProblems` note reading "no reproduction
   oracle: best-guess fix, unverified" (`proposal.ts BEST_GUESS_NOTE`). The introspection and
   history harvests run once at the establishing step and again on a checkpoint restore;
-  `src/synth/search/memory.ts` keeps a per-run file cache so a re-baseline re-analyses only
+  `src/jev-modes/synth/search/memory.ts` keeps a per-run file cache so a re-baseline re-analyses only
   changed files and an LRU of four run memories (rungs §20). Native runner detection is in
   `src/workspace/tests.ts` (`tests/runtests.py`, `bin/test`, `unittest discover`) with the
-  parsers in `src/synth/verify/runners.ts`.
-- **Candidate sources** (design §3). `src/synth/mutate/` (operator families over the site's
+  parsers in `src/jev-modes/synth/verify/runners.ts`.
+- **Candidate sources** (design §3). `src/jev-modes/synth/mutate/` (operator families over the site's
   line; `collapse_collection_to_element` at statement-level sites and in WIDENED),
-  `src/synth/templates/` (guards, conditions, branches, imports, statements, signatures,
+  `src/jev-modes/synth/templates/` (guards, conditions, branches, imports, statements, signatures,
   attribute and callee substitution; added 2026-09-20: `stdlib.ts` stdlib-sibling callee
   substitution that carries its import as an extra edit, `wrap2.ts` depth-2 wraps in WIDENED,
   `introspect.ts` attribute-predicate guard and MRO method alias, inert without introspection
-  facts), `src/synth/donor/` (lines elsewhere in the corpus with identifiers re-bound by a Jev
-  Choice per hole), `src/synth/search/composite.ts` (pairs of seeds, signature units that thread
+  facts), `src/jev-modes/synth/donor/` (lines elsewhere in the corpus with identifiers re-bound by a Jev
+  Choice per hole), `src/jev-modes/synth/search/composite.ts` (pairs of seeds, signature units that thread
   a parameter to every call site, donor-body units; bounded by a 3 s per-unit deadline and a
   5,000-statement call-site cap after one enumeration did not return in 27 min, rungs §16),
-  `src/synth/sketch/` + `fill/` + `beam/` (sketch productions ranked by Jev, slot filling, a
-  grammar-guided token beam), `src/synth/introspect/` (a pass appended to the reproduction
+  `src/jev-modes/synth/sketch/` + `fill/` + `beam/` (sketch productions ranked by Jev, slot filling, a
+  grammar-guided token beam), `src/jev-modes/synth/introspect/` (a pass appended to the reproduction
   script: MRO class names, `is_*` predicates with their truth value at the failing call, module
-  names; ≤ 400 names, fed to the vocabulary and the templates), `src/synth/history/` (the
+  names; ≤ 400 names, fed to the vocabulary and the templates), `src/jev-modes/synth/history/` (the
   reverse of each change run in the ≤ 5 most recent commits that touched the located
   identifiers or the ticket the issue names, offered as candidates; ≤ 8 read-only git commands).
   At the gold sites of the nine oracle instances all six reach-study targets are now enumerated
   and pass FAIL_TO_PASS (rungs §16.2, §18.2); the QuixBugs SEEDS sets are unchanged (40/40 gold
   in SEEDS, rungs §16.3).
-- **Sites.** `src/synth/localize/` (file, function and line stages; `sites.ts` builds replace
+- **Sites.** `src/jev-modes/synth/localize/` (file, function and line stages; `sites.ts` builds replace
   sites, insert gaps at every statement boundary with legal indents, and statement-level sites
   whose `currentLine` is a multi-line statement joined onto one line, `Site.endLine` the span).
-  `src/synth/search/sites.ts` orders a goal's sites from the Jev line anchors (Q5/Q5n), SBFL
-  top-5 (`src/synth/sbfl/`), the gap slots around each anchor including the loop-exit gap,
+  `src/jev-modes/synth/search/sites.ts` orders a goal's sites from the Jev line anchors (Q5/Q5n), SBFL
+  top-5 (`src/jev-modes/synth/sbfl/`), the gap slots around each anchor including the loop-exit gap,
   evidence-ordered WIDENED sites cut at 24, and up to two introspection-derived sites (the
   class-body gap of the class the failing call points at and its module import gap).
-- **Guard.** `src/synth/search/guard.ts` decides on a run batch (design §2.6): passers are
+- **Guard.** `src/jev-modes/synth/search/guard.ts` decides on a run batch (design §2.6): passers are
   clustered by behaviour on inputs `perturb.ts` derives from the visible tests (JSON cases,
   linked lists from pytest `Node` chains; run on the sieve's lanes); one Q15/Q16 request
   arbitrates between cluster representatives with an escape; a set whose escape ≥ 0.8 and every
@@ -2767,11 +2767,11 @@ below as "rungs §n").
 Each was measured on the ladder before it landed (`experiments/results/jev-only-ladder-4-analysis.md`,
 rungs §9, §14, §17). The synthesizer's `Proposal.evidence` reaches the risk and judge states with
 rubric clauses that tell a verified fix from "skipping verification" (rungs §9); the intent stage
-is ledger-aware in this mode (`src/loop/stages/intent.ts`: an `edit` intent becomes `verify`
+is ledger-aware in this mode (`src/jev-modes/stages/intent.ts`: an `edit` intent becomes `verify`
 while a change is unverified; a `finish` fallback is rescued when the engine's last run is green
 and current).
 
-- **Verified completion** (`src/loop/stages/risk.ts completionVerifiedByRun`, `engine.ts
+- **Verified completion** (`src/jev-modes/stages/risk.ts completionVerifiedByRun`, `engine.ts
   verifiedCompletion`): a `done` whose `plan.remaining` is empty while `workspace.testsCurrent`
   and `lastTestRun.allPassed` hold is not refused by the risk stage; Jev's answers stay in the
   record and the completion Noul still decides the stop.
@@ -2794,7 +2794,7 @@ and current).
   only the tripped signature, and a second `gather_context` for the same refused `done:`
   signature is treated as `stop_and_report` (§6 of this document carries the dated paragraph).
 - **No-op `done` carries the engine's last run** (`src/loop/state.ts doneExecutedJson`,
-  `src/loop/stages/complete.ts`): the judge state of a `done` after a run includes the run's
+  `src/jev-modes/stages/complete.ts`): the judge state of a `done` after a run includes the run's
   parsed counts, `testsCurrent` and a `lastRun` block, and the completion criteria name it;
   ladder `grades`/`shipping`/`table` went from 47 steps (round 5) to 20 and 19 with 0 loop
   replans (rungs §17.3).
@@ -2803,7 +2803,7 @@ and current).
 
 - **Q17 deleted** (design §2.7 row, DECISIONS "Q17 deleted"). The progress Nouls and the
   `closeness` Score were a pure function of the pass counts the harness already computes
-  (240/240) and were asked 0 times live; progress is `src/synth/verify/progress.ts` and a tie
+  (240/240) and were asked 0 times live; progress is `src/jev-modes/synth/verify/progress.ts` and a tie
   between partials is the code rule `compareTieKeys` (fewer newly-failing tests, smaller diff,
   earlier candidate).
 - **Run cap derived from the oracle, not the class** (design §4.3 dated paragraph). The
@@ -2858,7 +2858,7 @@ open, not the design's anchors — and lists where the tree departs from the des
 What landed when (`git log 2a92d0b..HEAD`, all 2026-09-21): the map (`214bf55`) and the design
 (`22e5153`); stage 1 — the sanctioned generator channel, mode plumbing and code-fact stages
 (`a0f7fbc`, fixes `64c8d3e`); stage 2 — GLM details on the OpenRouter provider (`61c15b6`, fixes
-`87b0be1`); stage 3 — the LLM source under `src/synth/llm/` (`2651024`, fixes `24fc2d7`); the
+`87b0be1`); stage 3 — the LLM source under `src/jev-modes/synth/llm/` (`2651024`, fixes `24fc2d7`); the
 integration commit that made `src/core/types.ts` the single contract source (`652e5bf`) and the
 §4.13 addendum (`ca0335f`); stage 4 — the source wired into the search (`c8f0939`, fixes `67208b5`);
 stage 5 — bench arms and measurement (`304be21`, fixes `9376b75`); the merge into `main` after the
@@ -2908,24 +2908,24 @@ intent or context request is made.
 | Stage | Who decides | Inputs | File |
 |---|---|---|---|
 | 0 Budgets, pause pane, steers, `git status` | code (spend_cap → token_cap → wall_time → max_steps → max_replans) | meter, clock, counters | `src/loop/engine.ts` (`runStep`, `checkBudgets`) |
-| 1 Replan, only when `detector.tripped()` | Jev Q19 (`next_move` Choice + paired Nouls + `task_impossible`) | common state + loop signature | `src/loop/stages/replan.ts` |
+| 1 Replan, only when `detector.tripped()` | Jev Q19 (`next_move` Choice + paired Nouls + `task_impossible`) | common state + loop signature | `src/jev-modes/stages/replan.ts` |
 | 2 Intent | **not asked**: `codeIntent(kind)` after the proposal (`patch` → `edit`, `run` → `verify`, `done` → `finish`, `read` → `investigate`); the `intent` event follows `proposal` with `verdict: 'code'` | the proposal's action kind | `src/loop/engine.ts codeIntent` |
-| 3 Context | **not asked**: the synthesizer loads every non-test `.py` itself | — | `src/synth/search/index.ts` (`deps.loadFiles`) |
-| 4 Propose = `synthesize()` | the synthesizer; the engine only measures `synthMs` and flushes the per-sample generator rows | `SynthesisContext` (`ask`, `generate`, `sandbox`, `workspace`, `synthState`) | `src/loop/stages/synth.ts`, `src/synth/index.ts createSynthesizer`, `src/synth/search/index.ts LedgerSieveSynthesizer` |
-| 4a Ledger / rebaseline | code; a green lane run is adopted as the baseline when the loaded tree equals the lane's post-image (`adoptableLaneRun`); the establishing run of jev-only is not proposed | committed workspace, last commit's lane outcome | `src/synth/search/index.ts rebaseline`, `rebaselineRepository`, `engineNeedsRun` |
-| 4b Pick goal | code; Jev Q1 `attack_first` only with ≥ 2 open goals | ≤ 10 goals keyed by first test id | `src/synth/search/goals.ts pickGoalDetailed` |
-| 4c Oracle (repository class, once per run) | code extracts and runs the issue's snippets; when none is valid and `ctx.generate` exists, the L2 writer asks GLM for scripts, code filters them, Jev Q18 picks | issue text, package, framework | `src/synth/oracle/search.ts findIssueOracle`, `src/synth/search/index.ts writeReproductionL2`, `src/synth/llm/repro.ts` |
-| 4d Localise | Jev Q2–Q6 (files, functions, lines, gaps) plus code: the traceback frames' functions are always listing members; the Q6 fallback is batched into one request per state (`batchQ6Fallback`) | task, `FailureView`s, traceback, files | `src/synth/index.ts locate`, `src/synth/localize/*`, `src/synth/search/sites.ts` |
-| 4e Seeds → lanes | code SIEVE when `t_run ≤ 2 s`; Q8–Q10 (full-criteria Nouls in chunks ≤ 50 for 11–150 candidates, `fullCriteriaNouls`) in RANK; at repository sites `mutation` is marked exhausted instead of ranked | sites, base files | `src/synth/search/subgoal.ts visitSeedBatch`, `src/synth/rank/index.ts` |
-| 4f LLM round L1 | the LLM: N `propose_fix` samples, staggered on QuixBugs/ladder class (sample 0 with the seeds, 1..N−1 released when the top-site batch has no passer), whole on repository class (fired before the scoped baseline at step 1) | listings ∪ failure evidence ∪ attempt ledger | `src/synth/search/llm.ts createSearchLlm.fire`, `src/synth/llm/source.ts createLlmSource`, `src/synth/search/subgoal.ts startLlm`, `src/synth/search/index.ts fireEarlyRound` |
-| 4g Order | code runs every distinct sample when it can; Jev Q17 orders them only when `distinct > runsLeft` or `t_run > 2 s` (RANK) | ≤ 8 distinct samples as hunk views | `src/synth/llm/rank.ts`, `src/synth/search/subgoal.ts runLlmRound` |
-| 4h Verify | lanes (8/4/2 by measured `t_run`); the queue is awaitable so lanes start on the first parsed sample; a batch begun while the queue streams ends on its first plausible outcome (`runQueue` and `runRepositoryQueue` alike), so the controller decides at once, cancels the round's losers as `commit` and re-enters the stream when the guard holds; workers parked in `next()` are released (`VerifyQueue.next(signal)`, `runner.ts awaitNextJob`) when dispatch stops, the step signal fires or the wall no longer fits one run; ≤ 5 full-suite runs per step | queue in key order | `src/synth/sieve/queue.ts` (`open`/`next(signal)`/`close`), `src/synth/sieve/runner.ts runQueue`, `awaitNextJob`, `src/synth/oracle/verify.ts runRepositoryQueue` |
-| 4i Guard | code: 0 plausible → hold partial; one behaviour cluster holding a seed and an LLM passer → the LLM member (`preferLlmInCluster`, no Jev); ≥ 2 clusters → Q15/Q16; the seed-vs-LLM grace waits ≤ min(6 s, deadline left) for sample 0 | `VerifyOutcome[]` of seeds ∪ arrived LLM candidates | `src/synth/search/guard.ts decide`, `src/synth/search/subgoal.ts afterSeedBatch` |
-| 4j Proposal | code | committed candidate → unified diff (≤ 4 files for an `llm` winner), `ProposalEvidence{selection: 'llm'…}`; the claiming `run` carries `evidence.completion`; the revert route emits `revert_last_change` | `src/synth/search/proposal.ts proposePatch`, `completionEvidence`, `proposeRevert` |
-| 5 Risk | code `ok` before any Jev request for a verified patch, a verification run, a verified `done`, a recoverable revert, a `read`; otherwise Jev Q20 harm-only (`destructive`, `irreversible`) | proposal, targets, evidence | `src/loop/stages/risk.ts runHarmOnlyRiskStage`, `codeRiskReason` |
+| 3 Context | **not asked**: the synthesizer loads every non-test `.py` itself | — | `src/jev-modes/synth/search/index.ts` (`deps.loadFiles`) |
+| 4 Propose = `synthesize()` | the synthesizer; the engine only measures `synthMs` and flushes the per-sample generator rows | `SynthesisContext` (`ask`, `generate`, `sandbox`, `workspace`, `synthState`) | `src/jev-modes/stages/synth.ts`, `src/jev-modes/synth/index.ts createSynthesizer`, `src/jev-modes/synth/search/index.ts LedgerSieveSynthesizer` |
+| 4a Ledger / rebaseline | code; a green lane run is adopted as the baseline when the loaded tree equals the lane's post-image (`adoptableLaneRun`); the establishing run of jev-only is not proposed | committed workspace, last commit's lane outcome | `src/jev-modes/synth/search/index.ts rebaseline`, `rebaselineRepository`, `engineNeedsRun` |
+| 4b Pick goal | code; Jev Q1 `attack_first` only with ≥ 2 open goals | ≤ 10 goals keyed by first test id | `src/jev-modes/synth/search/goals.ts pickGoalDetailed` |
+| 4c Oracle (repository class, once per run) | code extracts and runs the issue's snippets; when none is valid and `ctx.generate` exists, the L2 writer asks GLM for scripts, code filters them, Jev Q18 picks | issue text, package, framework | `src/jev-modes/synth/oracle/search.ts findIssueOracle`, `src/jev-modes/synth/search/index.ts writeReproductionL2`, `src/jev-modes/synth/llm/repro.ts` |
+| 4d Localise | Jev Q2–Q6 (files, functions, lines, gaps) plus code: the traceback frames' functions are always listing members; the Q6 fallback is batched into one request per state (`batchQ6Fallback`) | task, `FailureView`s, traceback, files | `src/jev-modes/synth/index.ts locate`, `src/jev-modes/synth/localize/*`, `src/jev-modes/synth/search/sites.ts` |
+| 4e Seeds → lanes | code SIEVE when `t_run ≤ 2 s`; Q8–Q10 (full-criteria Nouls in chunks ≤ 50 for 11–150 candidates, `fullCriteriaNouls`) in RANK; at repository sites `mutation` is marked exhausted instead of ranked | sites, base files | `src/jev-modes/synth/search/subgoal.ts visitSeedBatch`, `src/jev-modes/synth/rank/index.ts` |
+| 4f LLM round L1 | the LLM: N `propose_fix` samples, staggered on QuixBugs/ladder class (sample 0 with the seeds, 1..N−1 released when the top-site batch has no passer), whole on repository class (fired before the scoped baseline at step 1) | listings ∪ failure evidence ∪ attempt ledger | `src/jev-modes/synth/search/llm.ts createSearchLlm.fire`, `src/jev-modes/synth/llm/source.ts createLlmSource`, `src/jev-modes/synth/search/subgoal.ts startLlm`, `src/jev-modes/synth/search/index.ts fireEarlyRound` |
+| 4g Order | code runs every distinct sample when it can; Jev Q17 orders them only when `distinct > runsLeft` or `t_run > 2 s` (RANK) | ≤ 8 distinct samples as hunk views | `src/jev-modes/synth/llm/rank.ts`, `src/jev-modes/synth/search/subgoal.ts runLlmRound` |
+| 4h Verify | lanes (8/4/2 by measured `t_run`); the queue is awaitable so lanes start on the first parsed sample; a batch begun while the queue streams ends on its first plausible outcome (`runQueue` and `runRepositoryQueue` alike), so the controller decides at once, cancels the round's losers as `commit` and re-enters the stream when the guard holds; workers parked in `next()` are released (`VerifyQueue.next(signal)`, `runner.ts awaitNextJob`) when dispatch stops, the step signal fires or the wall no longer fits one run; ≤ 5 full-suite runs per step | queue in key order | `src/jev-modes/synth/sieve/queue.ts` (`open`/`next(signal)`/`close`), `src/jev-modes/synth/sieve/runner.ts runQueue`, `awaitNextJob`, `src/jev-modes/synth/oracle/verify.ts runRepositoryQueue` |
+| 4i Guard | code: 0 plausible → hold partial; one behaviour cluster holding a seed and an LLM passer → the LLM member (`preferLlmInCluster`, no Jev); ≥ 2 clusters → Q15/Q16; the seed-vs-LLM grace waits ≤ min(6 s, deadline left) for sample 0 | `VerifyOutcome[]` of seeds ∪ arrived LLM candidates | `src/jev-modes/synth/search/guard.ts decide`, `src/jev-modes/synth/search/subgoal.ts afterSeedBatch` |
+| 4j Proposal | code | committed candidate → unified diff (≤ 4 files for an `llm` winner), `ProposalEvidence{selection: 'llm'…}`; the claiming `run` carries `evidence.completion`; the revert route emits `revert_last_change` | `src/jev-modes/synth/search/proposal.ts proposePatch`, `completionEvidence`, `proposeRevert` |
+| 5 Risk | code `ok` before any Jev request for a verified patch, a verification run, a verified `done`, a recoverable revert, a `read`; otherwise Jev Q20 harm-only (`destructive`, `irreversible`) | proposal, targets, evidence | `src/jev-modes/stages/risk.ts runHarmOnlyRiskStage`, `codeRiskReason` |
 | 6 Confirm + execute | human in the review band (bench: decline); `git apply` / the test command | proposal | `src/loop/stages/execute.ts` |
-| 7 Judge | code on every step (`codeJudge` on a `run`; `null` on patch/read); Q21 `done_<j>` / `tests_pass_unparsed` / Q22 `task_complete` asked in one request and recorded only | parsed counts, `evidence.newlyPassing` | `src/loop/stages/judge.ts runCodeJudgeStage` |
-| 8 Commit + completion fact | code: `isCompleteByFact()` stops the run `complete` on the claiming `run` step itself (or on a `done` the engine's own green, current run verifies) | draft + `evidence.completion` | `src/loop/stages/complete.ts`, `src/loop/engine.ts completeAfter`, `completionFact` |
+| 7 Judge | code on every step (`codeJudge` on a `run`; `null` on patch/read); Q21 `done_<j>` / `tests_pass_unparsed` / Q22 `task_complete` asked in one request and recorded only | parsed counts, `evidence.newlyPassing` | `src/jev-modes/stages/judge.ts runCodeJudgeStage` |
+| 8 Commit + completion fact | code: `isCompleteByFact()` stops the run `complete` on the claiming `run` step itself (or on a `done` the engine's own green, current run verifies) | draft + `evidence.completion` | `src/jev-modes/stages/complete.ts`, `src/loop/engine.ts completeAfter`, `completionFact` |
 
 Timing: `StepTiming.synthMs` is the wall of `synthesize()`; `generatorMs` is the wall of the
 sample batch (the union of the samples' intervals, `noteSampleStart/End`), never the sum;
@@ -2936,9 +2936,9 @@ sample batch (the union of the samples' intervals, `noteSampleStart/End`), never
 shows `k/N` for the rest (`src/tui/useEngine.tsx`); `/mode llm-jev` and `--mode llm-jev` exist
 (`src/tui/commands/registry.ts ENGINE_MODES`, `src/cli/args.ts MODES`, `src/config/validate.ts`).
 
-### 22.3 The LLM candidate source (`src/synth/llm/`)
+### 22.3 The LLM candidate source (`src/jev-modes/synth/llm/`)
 
-`src/synth/llm/index.ts` re-exports six modules. The engine never calls the provider for this mode
+`src/jev-modes/synth/llm/index.ts` re-exports six modules. The engine never calls the provider for this mode
 itself: `SynthesisContext.generate(req, {sample, purpose, signal})` (`src/core/types.ts
 SampleOptions`) is the one sanctioned channel, bound in `engine.ts synthesisContext()` to the
 engine's `generate()`, which meters, records and emits per sample (§22.6).
@@ -3063,7 +3063,7 @@ engine's `generate()`, which meters, records and emits per sample (§22.6).
   outcome `llm_valid` (Noul ≥ 0.7) or `llm_weak` (0.3 ≤ p < 0.7) and the note
   `LLM_ORACLE_OPEN_PROBLEM` ("llm-written reproduction") on every proposal; an `llm_*` oracle
   **never completes a run** (`COMPLETING_ORACLE_OUTCOMES` excludes it).
-- **The search adapter** (`src/synth/search/llm.ts`, injected as `SubGoalDeps.llm`). One
+- **The search adapter** (`src/jev-modes/synth/search/llm.ts`, injected as `SubGoalDeps.llm`). One
   `LlmSource` per run (`runOf`), its compile check rebound to each step's sandbox (`bindCompile`);
   `fire(ctx, mem, goal, loc, {round, widen, needPaths, editClass})` assembles the prompt from
   what the search holds (committed base files, `LocalizeResult` sites and beam, traceback or
@@ -3085,16 +3085,16 @@ bench pins `typesafe/jev-1.13-20260917` and refuses aliases (`src/bench/cli.ts`)
 
 | Id | Type | Where built | Consumer (code) | Notes |
 |---|---|---|---|---|
-| Q1 `attack_first` | Choice ≤ 10 goals + escape | `src/synth/search/goals.ts pickGoalDetailed` (existing) | argmax iff it beats the runner-up by > 0.02, else code order; skipped with one open goal | unchanged |
-| Q2 `fix_file_<path>` / Q3 confirm / Q4 `fix_function` / Q5 `buggy_line` + Q5n `line_<k>` / Q6 `insert_after` | contextNouls ≤ 250 per chunk; Nouls; Choice; Choice + Nouls; Choice over gaps | `src/synth/localize/*`, `src/synth/search/sites.ts` (existing) | rank cuts (file beam top-5, sites by P(file) × P(fn), anchors = top-3 with p ≥ 0.05 ∪ Noul top-3); Q5's P(top) also gates hint h1 (§22.3) | llm-jev: the Q6 fallback asks about every statement template in one request over one state (`batchQ6Fallback`, `q6FallbackSites`) |
-| Q7 `edit_class` | Choice, 6 classes + escape | `src/synth/search/subgoal.ts askEditClassPrior` (existing) | soft source/site order; hint h4 | asked only when `t_run > 2 s`, as before |
-| Q8 `fix` / Q9 `is_fix_<xx>` / Q10 shortlist | Choice ≤ 10; Nouls; Choice | `src/synth/rank/index.ts` (existing) | queue order in RANK mode; strong/weak fix-absent as routing after the runs | llm-jev: 11–150 candidates get **full-criteria Nouls in chunks ≤ 50** instead of the compact hybrid (`RankerOptions.fullCriteriaNouls`, `FULL_NOUL_CHUNK`); jev-only keeps the measured compact form |
-| Q15 `genuine_fix` + Q16 `general_<xx>` | Choice ≤ 20 cluster representatives + one Noul each, one request | `src/synth/search/guard.ts arbitrate` (existing) | pick = Choice argmax, overridden only when its Noul < 0.3 and another ≥ 0.7; suspect iff P(escape) ≥ 0.5 ∧ max Noul < 0.1 (advisory) | llm-jev: asked only across ≥ 2 behaviour clusters; a single cluster holding a seed and an LLM passer is decided by code (`preferLlmInCluster`); Choice ties put `llm` before the smaller edit (`llmFirst`) |
-| **Q17** `fix` + `is_fix_patch_<sha4>` | Choice ≤ 8 distinct samples + escape; one full-criteria Noul per sample (`PATCH_FIX_CRITERIA`), Nouls in chunks ≤ 50 (the first chunk shares the Choice's request) | **new**, `src/synth/llm/rank.ts buildQ17` / `readQ17` / `orderByQ17` | **order only, never a gate**: asked only when `q17Needed` (`distinct > runsLeft` or `t_run > 2,000 ms`) in RANK mode; the Choice ranks the first 8, Nouls break ties and order the rest; the fix-absent signals (strong: P(escape) − p_max ≥ 0.10 ∧ max Noul < 0.3; weak: exactly one) are **recorded** (`trace.llm.fixAbsent`) and only widen the feedback round's listing | keys `patch_<sha4>` carry no position (order-only keys collapse, REPORT §10); state = task ≤ 2,000, listings of the touched functions (≤ 6 × 120 lines), ≤ 3 tests with `actual_with_bug`, candidates as `{file, L<a>-L<b>, replaces, with}` (≤ 3 hunks × 400 chars), the criteria object |
-| **Q18** `reproduction` + `reproduces_issue_script_<k>` + `failure_kind` | Choice over ≤ 3 scripts + escape; one Noul per script with the existing `REPRODUCTION_CRITERIA`; 6-way `failure_kind` Choice | **new**, `src/synth/llm/repro.ts q18Questions` / `readQ18` | pick = argmax iff it beats the runner-up by > 0.05, else the fewest lines among the near-ties; escape above the top → no oracle; pick's Noul ≥ 0.7 → `llm_valid`, ≥ 0.3 → `llm_weak`, below → none (best-guess path) | only scripts code proved fail at base twice with a verbatim issue quote reach it; state = `{issue: {repository, problem_statement ≤ 8k}, criteria, scripts: {source, issue_quote, base_run}}` |
-| Q19 replan | Choice + paired Nouls + `task_impossible` | `src/loop/stages/replan.ts` (existing) | as before; `task_impossible ≥ 0.85` → stop | only on a loop-detector trip |
-| **Q20** harm Scores `destructive`, `irreversible` | 2 Scores × 5 levels (`RISK_LEVEL_TEXTS`) | `src/loop/stages/risk.ts harmOnlyQuestions` | `r = max(E[k]/4, P(k ≥ 3))`; block ≥ 0.7, review 0.3–0.7 (unchanged `src/jev/confidence.ts`); asked **only** when `codeRiskReason` is null — a non-test `run`, an unverified best-guess patch, a partial `done` | the alignment dimensions are recorded at level 0 with `harmOnly: true` in the reason; `matches_intent` / `evidence_consistent` are never asked |
-| Q21 `done_<j>` (+ `tests_pass_unparsed`) and Q22 `task_complete` | Nouls, one request on a `run` step; Q22 alone on a `done` | `src/loop/stages/judge.ts buildRecordOnlyQuestions` | **recorded only**: the claim is accepted by `codeJudge` (the suite passed, or the claim's goal tests ⊆ the confirmed `newlyPassing`); a disagreement is a transcript line; `tests_pass_unparsed ≥ 0.85` is consumed only when the parser read nothing (`TESTS_PASS_UNPARSED_THRESHOLD`) | the stop is `isCompleteByFact`, not `task_complete` |
+| Q1 `attack_first` | Choice ≤ 10 goals + escape | `src/jev-modes/synth/search/goals.ts pickGoalDetailed` (existing) | argmax iff it beats the runner-up by > 0.02, else code order; skipped with one open goal | unchanged |
+| Q2 `fix_file_<path>` / Q3 confirm / Q4 `fix_function` / Q5 `buggy_line` + Q5n `line_<k>` / Q6 `insert_after` | contextNouls ≤ 250 per chunk; Nouls; Choice; Choice + Nouls; Choice over gaps | `src/jev-modes/synth/localize/*`, `src/jev-modes/synth/search/sites.ts` (existing) | rank cuts (file beam top-5, sites by P(file) × P(fn), anchors = top-3 with p ≥ 0.05 ∪ Noul top-3); Q5's P(top) also gates hint h1 (§22.3) | llm-jev: the Q6 fallback asks about every statement template in one request over one state (`batchQ6Fallback`, `q6FallbackSites`) |
+| Q7 `edit_class` | Choice, 6 classes + escape | `src/jev-modes/synth/search/subgoal.ts askEditClassPrior` (existing) | soft source/site order; hint h4 | asked only when `t_run > 2 s`, as before |
+| Q8 `fix` / Q9 `is_fix_<xx>` / Q10 shortlist | Choice ≤ 10; Nouls; Choice | `src/jev-modes/synth/rank/index.ts` (existing) | queue order in RANK mode; strong/weak fix-absent as routing after the runs | llm-jev: 11–150 candidates get **full-criteria Nouls in chunks ≤ 50** instead of the compact hybrid (`RankerOptions.fullCriteriaNouls`, `FULL_NOUL_CHUNK`); jev-only keeps the measured compact form |
+| Q15 `genuine_fix` + Q16 `general_<xx>` | Choice ≤ 20 cluster representatives + one Noul each, one request | `src/jev-modes/synth/search/guard.ts arbitrate` (existing) | pick = Choice argmax, overridden only when its Noul < 0.3 and another ≥ 0.7; suspect iff P(escape) ≥ 0.5 ∧ max Noul < 0.1 (advisory) | llm-jev: asked only across ≥ 2 behaviour clusters; a single cluster holding a seed and an LLM passer is decided by code (`preferLlmInCluster`); Choice ties put `llm` before the smaller edit (`llmFirst`) |
+| **Q17** `fix` + `is_fix_patch_<sha4>` | Choice ≤ 8 distinct samples + escape; one full-criteria Noul per sample (`PATCH_FIX_CRITERIA`), Nouls in chunks ≤ 50 (the first chunk shares the Choice's request) | **new**, `src/jev-modes/synth/llm/rank.ts buildQ17` / `readQ17` / `orderByQ17` | **order only, never a gate**: asked only when `q17Needed` (`distinct > runsLeft` or `t_run > 2,000 ms`) in RANK mode; the Choice ranks the first 8, Nouls break ties and order the rest; the fix-absent signals (strong: P(escape) − p_max ≥ 0.10 ∧ max Noul < 0.3; weak: exactly one) are **recorded** (`trace.llm.fixAbsent`) and only widen the feedback round's listing | keys `patch_<sha4>` carry no position (order-only keys collapse, REPORT §10); state = task ≤ 2,000, listings of the touched functions (≤ 6 × 120 lines), ≤ 3 tests with `actual_with_bug`, candidates as `{file, L<a>-L<b>, replaces, with}` (≤ 3 hunks × 400 chars), the criteria object |
+| **Q18** `reproduction` + `reproduces_issue_script_<k>` + `failure_kind` | Choice over ≤ 3 scripts + escape; one Noul per script with the existing `REPRODUCTION_CRITERIA`; 6-way `failure_kind` Choice | **new**, `src/jev-modes/synth/llm/repro.ts q18Questions` / `readQ18` | pick = argmax iff it beats the runner-up by > 0.05, else the fewest lines among the near-ties; escape above the top → no oracle; pick's Noul ≥ 0.7 → `llm_valid`, ≥ 0.3 → `llm_weak`, below → none (best-guess path) | only scripts code proved fail at base twice with a verbatim issue quote reach it; state = `{issue: {repository, problem_statement ≤ 8k}, criteria, scripts: {source, issue_quote, base_run}}` |
+| Q19 replan | Choice + paired Nouls + `task_impossible` | `src/jev-modes/stages/replan.ts` (existing) | as before; `task_impossible ≥ 0.85` → stop | only on a loop-detector trip |
+| **Q20** harm Scores `destructive`, `irreversible` | 2 Scores × 5 levels (`RISK_LEVEL_TEXTS`) | `src/jev-modes/stages/risk.ts harmOnlyQuestions` | `r = max(E[k]/4, P(k ≥ 3))`; block ≥ 0.7, review 0.3–0.7 (unchanged `src/jev/confidence.ts`); asked **only** when `codeRiskReason` is null — a non-test `run`, an unverified best-guess patch, a partial `done` | the alignment dimensions are recorded at level 0 with `harmOnly: true` in the reason; `matches_intent` / `evidence_consistent` are never asked |
+| Q21 `done_<j>` (+ `tests_pass_unparsed`) and Q22 `task_complete` | Nouls, one request on a `run` step; Q22 alone on a `done` | `src/jev-modes/stages/judge.ts buildRecordOnlyQuestions` | **recorded only**: the claim is accepted by `codeJudge` (the suite passed, or the claim's goal tests ⊆ the confirmed `newlyPassing`); a disagreement is a transcript line; `tests_pass_unparsed ≥ 0.85` is consumed only when the parser read nothing (`TESTS_PASS_UNPARSED_THRESHOLD`) | the stop is `isCompleteByFact`, not `task_complete` |
 
 Not asked in this mode (design §5, §13; verified in `src/loop/engine.ts runStep`,
 `runHarmOnlyRiskStage`, `runCodeJudgeStage`): the intent Choice and its paired Nouls,
@@ -3109,7 +3109,7 @@ the ones the probes held or routing margins.
 
 ### 22.5 Verification, commit, completion
 
-- **Sieve.** Every candidate is a `VerifyJob` in the `VerifyQueue` (`src/synth/sieve/queue.ts`):
+- **Sieve.** Every candidate is a `VerifyJob` in the `VerifyQueue` (`src/jev-modes/synth/sieve/queue.ts`):
   dedupe by id and canonical text, `unchanged`, `apply_failed`, `tried`; the vocabulary pre-check
   is skipped for `source === 'llm'`. SIEVE jobs are keyed by `sourcePriorAt(position)`; LLM jobs
   take `sourcePriorAt(3) − i·ε` on the QuixBugs/ladder class (after the three seed sources) and
@@ -3127,7 +3127,7 @@ the ones the probes held or routing margins.
   wall no longer fits one run — no worker waits out a round's slowest sample or its deadline.
   The full-suite passer cap is per step
   (`RunnerMemory.passersThisStep`, `MAX_FULL_SUITE_RUNS_PER_STEP` 5, DECISIONS 2026-09-21).
-  Lanes are unchanged (`src/synth/sieve/lanes.ts`: `candidate_file`, `git worktree`, `cp -R`,
+  Lanes are unchanged (`src/jev-modes/synth/sieve/lanes.ts`: `candidate_file`, `git worktree`, `cp -R`,
   `inplace`).
 - **The race and the grace** (`subgoal.ts afterSeedBatch`). Once, at the top site: a seed batch
   with no passer releases the staggered samples. At any site while the round is open: a seed
@@ -3153,7 +3153,7 @@ the ones the probes held or routing margins.
   covering one sample — the source holds each fired sample's full estimate until it settles and
   charges the counter the price at settle alone, so the counter as it reads would count a round
   in flight as headroom for a round the source refuses. `decideLlmN` takes the same hold.
-- **Guard** (`src/synth/search/guard.ts`; as built after the 2026-09-21 head-to-head fix, groups
+- **Guard** (`src/jev-modes/synth/search/guard.ts`; as built after the 2026-09-21 head-to-head fix, groups
   D/E). `clusterByBehaviour` groups passers by P2P outcome vector ∪ perturbation-probe signature;
   on a ladder-class workspace the probe is the harvest/replay harness `LADDER_HARNESS`
   (`perturb.ts`, shared with the ladder-verdicts script): the goal's test calls are harvested
@@ -3210,7 +3210,7 @@ the ones the probes held or routing margins.
   LLM sample present — *"5 passers … in 2 behaviour clusters … cluster_1 3 members/support 2 …
   committing its representative llm/sample_0_0"* — a hunk that differs from the reference on
   `detect_cycle(None)` alone (1 of 500 random lists).
-- **Proposal** (`src/synth/search/proposal.ts`). `patchMaxFiles(applied)` is
+- **Proposal** (`src/jev-modes/synth/search/proposal.ts`). `patchMaxFiles(applied)` is
   `VERIFIED_PATCH_MAX_FILES` 4 for an `llm` winner and `MAX_PATCH_FILES` 2 for code sources;
   `selectionOf` reports `'llm'` when the winner's source is `llm`; the winner is re-expressed
   against the committed workspace as one unified diff.
@@ -3238,7 +3238,7 @@ the ones the probes held or routing margins.
   OracleOutcome | null, command}` **plus, on the repository class, `knownFailures`** — the scoped
   tests that already failed at the base commit (**as built 2026-09-21**). `core/types.ts` owns
   `CompletionEvidence`, so the count travels as an optional structural extension declared in the
-  engine's own stage (`loop/stages/complete.ts KnownFailuresEvidence`,
+  engine's own stage (`jev-modes/stages/complete.ts KnownFailuresEvidence`,
   `ClaimingCompletionEvidence`) and is written by the synthesizer from `RepositoryMode.knownFailures`
   (`search/index.ts`, omitted when 0 — every QuixBugs / ladder run and every repository whose scoped
   suite is green at the base). `knownFailures` is the **base commit's** count: the first rebaseline
@@ -3326,7 +3326,7 @@ the ones the probes held or routing margins.
   nothing). A `done` completes only as a noop the engine's own passing, current run verifies; a
   rejected `done` leaves the note `done rejected: no passing, current run verifies it
   (task_complete=… recorded only)`. `task_complete` is recorded, never consulted.
-- **Generic fallback via `handles()`** (`engine.ts synthesizerHandles`, `src/synth/index.ts
+- **Generic fallback via `handles()`** (`engine.ts synthesizerHandles`, `src/jev-modes/synth/index.ts
   synthesizerHandles`). Decided once per run from the workspace listing: true when there is a
   non-test `.py` file and either a QuixBugs/pytest layout with a detected `testCommand` or a
   repository workspace (`isRepositoryWorkspace`). When false the step proposes through the
@@ -3348,7 +3348,7 @@ the ones the probes held or routing margins.
   The client sends what it is asked and never rewrites (`reasoningOf` discriminates on the member
   present, so `{effort}` never degrades to `reasoning: {}` = effort `max`). The mode's default is
   therefore `LLM_DEFAULT_REASONING = {effort: 'low'}` with the reasoning-on `max_tokens` base of
-  3,000 (`LLM_DEFAULT_GENERATION`, `src/synth/llm/source.ts`), used by the L1 rounds and the L2
+  3,000 (`LLM_DEFAULT_GENERATION`, `src/jev-modes/synth/llm/source.ts`), used by the L1 rounds and the L2
   writer; the `jev-off-tuned` arm sends the same `reasoning` at its own base of 1,500. Contract 1.2 keeps `ReasoningEffort = 'low' |
   'medium'` verbatim from the design, so `high` is not requestable and `medium` is not a GLM
   effort. Probe with effort low (`llm-jev-probes.md`): 24/25 valid, valid p50 3.2 s / p90 48.2 s,
@@ -3399,7 +3399,7 @@ model)` is recorded verbatim in `summary.json.conditions` and is what the reques
 | Arm | Engine | Proposer | Pinned generation | Decider | Notes |
 |---|---|---|---|---|---|
 | `jev-off` | generator-only (`src/loop/generator-only.ts`, untouched since `2a92d0b`) | generator | `temperature null, maxTokens 4096, reasoning null, deadline none, lengthHandling none` — exactly the checked-in baseline runs | none | the baseline of criteria 1–4 |
-| `jev-off-tuned` | generator-only behind `createTunedProvider` | generator | `maxTokens 1500, reasoning {effort: 'low'}, deadline 20 s (30 s on SWE/Terminal-Bench, per suite), lengthHandling double-once, plan capped at 200 chars by one added system sentence` | none (a `jev-off` engine) | attribution control for generator hygiene; a call past the deadline is aborted, metered from an estimate and returned as `GenerateResult{stopReason: 'timeout', toolCalls: []}`, which `src/loop/stages/propose.ts` (`DROPPED_CALL_STOP_REASON`) ends the step on without a retry; the wrapper's ledger (`timeouts`, `doubled`) goes on the record |
+| `jev-off-tuned` | generator-only behind `createTunedProvider` | generator | `maxTokens 1500, reasoning {effort: 'low'}, deadline 20 s (30 s on SWE/Terminal-Bench, per suite), lengthHandling double-once, plan capped at 200 chars by one added system sentence` | none (a `jev-off` engine) | attribution control for generator hygiene; a call past the deadline is aborted, metered from an estimate and returned as `GenerateResult{stopReason: 'timeout', toolCalls: []}`, which `src/jev-modes/stages/propose.ts` (`DROPPED_CALL_STOP_REASON`) ends the step on without a retry; the wrapper's ledger (`timeouts`, `doubled`) goes on the record |
 | `jev-only` | full engine + synthesizer, `NullProvider` | synthesizer | inert (no LLM) | Jev | the no-generator reference; any generator call invalidates the record |
 | `llm-jev` | full engine + synthesizer **and** the real provider | synthesizer | the one `SynthesizerGeneration` object `LLM_DEFAULT_GENERATION` — `reasoning {effort: 'low'}, maxTokens 3000, sampleDeadline {10 s, 20 s, repo 30 s}, sampleTemperature {0, 0.8, 0.6, 1.0}` — handed to `createSynthesizer({generation})` and echoed back as `Synthesizer.generation`; the flat record fields (`maxTokens`, `reasoning`, `deadlineMs`, `sampleTemperatures`, `lengthHandling: double-once`, `servedRate`) are derived from it | Jev | the candidate; generator calls are recorded per sample, never asserted zero |
 | `llm-sieve` | as `llm-jev` with `createStubDecider()` in the decider slot | synthesizer | same object as `llm-jev` | stub (`STUB_DECIDER_MODEL`, Noul 0.5, Choice = first non-escape option, Score level 0; `usage.calls: 0`, its own count travels as `stubbedJevRequests`) | attribution control for criterion 5; **not wired**: `createSynthesizer` throws for `mode: 'llm-sieve'`, so the runner writes an `engine_create_failed` record instead of measuring a different arm under this name |
@@ -3507,7 +3507,7 @@ them are recorded alongside.
   OpenRouter; the mock streams tool-argument JSON in pieces and implements `onCancelled`.
 
 **Stage 3 — the LLM source** (`2651024`, `24fc2d7`).
-- `src/synth/llm/types.ts` (not in the §9.2 file list) held local copies of the contract until
+- `src/jev-modes/synth/llm/types.ts` (not in the §9.2 file list) held local copies of the contract until
   the integration commit `652e5bf` replaced them with imports from `core/types.ts`.
 - `near_line` settles several matches only when one is strictly nearest inside ±20 lines (a pure
   window filter could never disambiguate two copies in a small file).
@@ -3535,9 +3535,9 @@ them are recorded alongside.
   `reasoningEnabled` keys on `'effort' in reasoning`.
 
 **Stage 4 — wiring into the search** (`c8f0939`, `67208b5`).
-- The adapter is `src/synth/search/llm.ts` (`SubGoalLlm`, `LlmRound`, `createSearchLlm`), not
-  code inside `src/synth/index.ts`; `SubGoalDeps.llm` is an injectable interface so the loop is
-  tested with the fake in `test/unit/synth/search/controller-fakes.ts`.
+- The adapter is `src/jev-modes/synth/search/llm.ts` (`SubGoalLlm`, `LlmRound`, `createSearchLlm`), not
+  code inside `src/jev-modes/synth/index.ts`; `SubGoalDeps.llm` is an injectable interface so the loop is
+  tested with the fake in `test/unit/jev-modes/synth/search/controller-fakes.ts`.
 - The §7.1 repository step-1 overlap is [scoped baseline ‖ L1 round] only (`fireEarlyRound`
   before the scoped run; the search takes the round from `mem.llm.early`); the reproduction runs
   of arriving candidates start after the baseline because the runner's classification needs it.
@@ -3584,7 +3584,7 @@ them are recorded alongside.
   1,500 and one doubling; the synthesizer arms use the reasoning-on base 3,000.
 - Drop-not-retry is implemented at the provider boundary (`generator-only.ts` untouched per
   §9.1): a dropped call returns a `GenerateResult{stopReason: 'timeout', toolCalls: []}`, and
-  `src/loop/stages/propose.ts` (`DROPPED_CALL_STOP_REASON`, 13 lines of engine code) ends the
+  `src/jev-modes/stages/propose.ts` (`DROPPED_CALL_STOP_REASON`, 13 lines of engine code) ends the
   step on it without its malformed retry; `malformed` excludes dropped rows. The deadline is per
   suite (20 s QuixBugs/ladder, 30 s SWE/Terminal-Bench), not per class detected at run time.
 - The plan cap is one added system sentence (`planCapSentence`), not a grammar change.
@@ -3651,7 +3651,7 @@ describe the code as it now stands.
   numbers are measured, and every one of them carries its run ids and its load disclosure there.
   What is NOT measured, and is the standing gap, is `Ring 1 --jev off` at or after `main` `d297b29`
   (`docs/DECISIONS.md`, "the provenance of every Ring-1 `--jev off` number").
-- **`llm-sieve` is not wired** in `src/synth/index.ts createSynthesizer` (it throws; the bench
+- **`llm-sieve` is not wired** in `src/jev-modes/synth/index.ts createSynthesizer` (it throws; the bench
   records `engine_create_failed`), so criterion 5 (attribution) and the per-question ablation
   cannot be measured yet. **STILL OPEN — owner: finishing-pass F06.** The second half of this bullet
   is struck: ~~`src/cli/args.ts CONDITIONS` does not list `llm-sieve` / `jev-off-tuned`, so the arms
@@ -3660,7 +3660,7 @@ describe the code as it now stands.
 - ~~**`StepRecord.verify` is typed but never filled**: `SynthesisContext` has no channel for the
   synthesizer's `GoalSearchTrace.llm` counts …~~ **CLOSED.** The channel is
   `SynthesisContext.reportVerify?: (counts: Partial<StepVerifySummary>) => void`
-  (`src/core/types.ts:1985`), reported from `src/synth/search/index.ts` and written onto the record at
+  (`src/core/types.ts:1985`), reported from `src/jev-modes/synth/search/index.ts` and written onto the record at
   `src/loop/engine.ts:5654` (`llm-jev` + `proposer === 'synth'` only, so `jev-only` rows are byte-identical).
   Contract 1.9 then added the S2 members (TTFB, hedge, cache) to the same block, and the warm plane added
   `verify.warm` (`StepWarmSummary`, `warm-plane-fix-2`). `l2FalsePositive` remains unmeasured — that is the

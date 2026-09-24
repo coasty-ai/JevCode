@@ -1,0 +1,1002 @@
+/**
+ * The ledger of sub-goals (docs/JEV-ONLY-DESIGN.md §2.1–§2.2, §5.3): failing tests clustered
+ * into goals, the status transitions (open → active → fixed / parked → open), and the one Jev
+ * question of this module, Q1 `attack_first` (§2.7).
+ *
+ * Clustering is code: by the innermost traceback frame in a source file (file, function, ±3
+ * lines) when the run printed one, else by the top-ranked SBFL line the tests share, else one
+ * goal per test. Why frames first: on the ladder's multi-bug tasks every hunk fixes ≥ 1 test on
+ * its own (bench/data/ladder/README.md), and the tests a hunk fixes raise or return from the
+ * same function; on QuixBugs the runner reports no frames, so one goal per test reproduces the
+ * measured attack-first setting (probe-progress-judgment.md Part 3, options = failing tests).
+ *
+ * Jev's job here is the one tests cannot do: which failing behaviour to attack first
+ * (neutral wording 16/34 simplest-first vs 8/34 chance). Everything else is arithmetic.
+ *
+ * One traceback-derived hint rides on the goal: `missingNames`, the identifiers a NameError /
+ * ImportError / ModuleNotFoundError line names (`missingNamesIn`). It is evidence for the site
+ * list (search/sites.ts adds the module-level import gap), never a rule about a fix.
+ */
+import type { Json, Question, StageName, SynthesisContext } from '../../../core/types.js';
+import { choice } from '../../../jev/questions.js';
+import type { PerTestResult, RankedLine } from '../sbfl/types.js';
+import type { CandidateSourceName, FailureView, JevAsk, SourceFile, TestRunSummary } from '../types.js';
+import { DEFAULT_PICK_MAX, DEFAULT_TIE_MARGIN, failureStatus, inputSize, optionKeyFor, STATE_FAILURES_BOUND } from '../verify/questions.js';
+import { RUN_FAILURE_ID } from '../verify/text.js';
+import { attachPlanItems, memoryOfGoals, parseGoalItem, planItemFor } from './memory.js';
+import type { SearchMemory } from './memory.js';
+import type { Goal, GoalStatus, Phase } from './types.js';
+
+// ---------------------------------------------------------------------------------------
+// Constants (each with the measurement behind it)
+// ---------------------------------------------------------------------------------------
+
+/**
+ * Two frames in the same function whose lines are this close belong to one goal. Jev's line
+ * pick lands within ±3 of the gold line on 94 % of the SWE functions (probe-swebench-understanding.md
+ * Q4) and the localiser's site windows are ±3 (localize/types.ts `window`), so tests that fail
+ * within one window are one repair.
+ */
+export const FRAME_LINE_WINDOW = 3;
+/**
+ * SBFL lines considered for clustering when no frame exists: Ochiai's top-5 covers 34/38 QuixBugs
+ * fixed lines while top-1 covers 7/38 (lit-search-based-repair.md §6); the design unions SBFL
+ * top-5 on single-file workspaces (§2.5).
+ */
+export const SBFL_CLUSTER_TOP = 5;
+/** §5.3: a goal is parked after this many searches without a commit. */
+export const MAX_SEARCHES_WITHOUT_COMMIT = 3;
+/**
+ * §5.3: a goal is parked after this many consecutive budget-hit steps that tested nothing new
+ * (`noteBudgetHit` with `progress` false). A budget-hit step that classified fresh candidates at
+ * ≥ 1 site no earlier step had tested is progress and does not count: with the run cap derived
+ * from the measured oracle (budget.ts repositoryRunsPerStep) a repository goal with 12 sites
+ * and ~700 candidates needs 3–4 steps to reach every site, and the old rule (any 2 budget-hit
+ * steps) parked sympy-15345 with sites 3–12 never visited (jev-only-swebench-2-oracle).
+ */
+export const MAX_CONSECUTIVE_BUDGET_HITS = 2;
+/**
+ * §5.3 hard cap: a goal is parked after this many consecutive budget-hit steps whatever they
+ * tested. Every such step is one more goal-subset `run` of the same command with the same
+ * result, and the engine's loop detector trips at 3 identical signatures (loop/loopdetect.ts
+ * LOOP_TRIP_COUNT): the bound keeps a run to at most one such trip (one replan of the run's 5)
+ * per goal, so the detector's guarantee — no unbounded repetition — still holds.
+ */
+export const MAX_BUDGET_HIT_STEPS = 4;
+/**
+ * Progress commits (partial fixes, subgoal.ts commitProgress) a goal takes before its remaining
+ * tests continue under a NEW goal id (`inheritGoalState`), so the ledger shows the chain instead
+ * of one id absorbing every stage. Three is the longest chain a merged goal needs on the long
+ * tier's designed shapes (ladder `masked`: report → parse/aggregate, two links; `long_chain`: six
+ * stages under one goal, which the rule splits into g1 (three links) and a successor); a resumed
+ * run starts the count at 0 (in-memory, like `budgetSteps`).
+ */
+export const MAX_PROGRESS_COMMITS_PER_GOAL = 3;
+/**
+ * Review finding 4: a caller shared by this many clusters or more is a shared utility, not the
+ * defect's call chain, and never merges them. Three is the smallest number that can distinguish
+ * the two: TWO clusters meeting at a caller is the coupled-defect shape the merge exists for
+ * (`crossfile`: three failing frames under one `run`), while a function that three otherwise
+ * unrelated failures all pass through is by definition general-purpose. It is a property of the
+ * relation, not a tuned threshold — at 2 the rule would refuse every merge and delete itself.
+ */
+export const SHARED_UTILITY_CLUSTERS = 3;
+/** Failures kept per goal for Jev states; the measured programs had ≤ 14 (verify STATE_FAILURES_BOUND). */
+export const GOAL_FAILURES_BOUND = STATE_FAILURES_BOUND;
+/**
+ * The task text appended to the Q1 state, bounded. The measured Q1 state was ≈ 1k tokens with
+ * the failing tests alone; the task text is context, not evidence, and must not crowd them out.
+ */
+export const Q1_TASK_CHARS_MAX = 2000;
+export const ATTACK_FIRST_ID = 'attack_first';
+/** Measured neutral wording (probe-progress-judgment.md Part 3), verbatim. */
+export const ATTACK_FIRST_INSTRUCTIONS = 'Which entry of `failing_tests` should the repair attack first?';
+
+// ---------------------------------------------------------------------------------------
+// Traceback-derived hints: the name a NameError / ImportError says is missing
+// ---------------------------------------------------------------------------------------
+
+/**
+ * CPython's own wording for an unbound or unimportable name, as pytest prints it on an `E` line
+ * and as the verifier keeps it in `FailureView.actual`. Only the interpreter's messages are read
+ * (never an assertion's text): each one names exactly the identifier a missing import binds.
+ */
+const MISSING_NAME_PATTERNS: readonly RegExp[] = [
+  /\bNameError: (?:global )?name '([A-Za-z_]\w*)' is not defined/g,
+  /\bImportError: cannot import name '([A-Za-z_]\w*)'/g,
+  /\bModuleNotFoundError: No module named '([A-Za-z_][\w.]*)'/g,
+];
+
+/** Identifiers the interpreter reported missing in `text` (traceback, `E` lines or a failure's `actual`), first seen first. */
+export function missingNamesIn(text: string): string[] {
+  const out: string[] = [];
+  for (const re of MISSING_NAME_PATTERNS) {
+    for (const m of text.matchAll(re)) {
+      const name = m[1] ?? '';
+      if (name !== '' && !out.includes(name)) out.push(name);
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------------------
+// Clustering
+// ---------------------------------------------------------------------------------------
+
+export interface ClusterOptions {
+  /**
+   * Full raw output of the baseline run. pytest's FAILURES sections carry the traceback frames.
+   * When absent the summary's `outputTail` (last 4,000 chars, verify OUTPUT_TAIL_BOUND) is read
+   * instead: index.ts only passes the file map, and a ladder-sized run (≤ 2 KB) fits the tail
+   * whole; on a longer output the sections the cut removed simply yield one goal per test.
+   */
+  output?: string;
+  /**
+   * Workspace source paths (non-test) a frame may point into, relative to the workspace root.
+   * When absent, any frame outside a test file, site-packages or the stdlib counts as source.
+   */
+  sourcePaths?: readonly string[];
+  /** per-test coverage and the spectrum ranking from src/jev-modes/synth/sbfl, when coverage was collected */
+  sbfl?: { ranked: readonly RankedLine[]; perTest: readonly PerTestResult[] };
+  /** files to suspect when neither frames nor SBFL name one (the QuixBugs program under repair) */
+  defaultFiles?: readonly string[];
+}
+
+/** One resolved traceback frame of a failing test. */
+export interface Frame {
+  path: string;
+  line: number;
+  fn: string | null;
+  /** source: a workspace file under repair; test: the test module itself */
+  kind: 'source' | 'test';
+}
+
+// pytest --tb=short/long frame: "src/account.py:37: in withdraw"
+const PYTEST_FRAME = /^(\S+\.py):(\d+): in (\S+)\s*$/;
+// pytest location line without a function: "test_sample.py:12: AssertionError", "test_sample.py:20: "
+const PYTEST_LOCATION = /^(\S+\.py):(\d+):(?: \S.*)?\s*$/;
+// Python's own traceback (pytest --tb=native, captured stderr): '  File "src/x.py", line 42, in f'
+const NATIVE_FRAME = /^\s*File "([^"]+)", line (\d+)(?:, in (\S+))?/;
+// bench/data/quixbugs/run_tests.py appends the failing test line: "(at gcd_test.py:47: path = ...)"
+const ACTUAL_FRAME = /\(at (\S+\.py):(\d+): /;
+const SECTION_HEADER = /^={3,} (.+?) ={3,}$/;
+const TEST_HEADER = /^_{3,} (.+?) _{3,}$/;
+const TEST_PATH = /(^|\/)(test_[^/]*\.py|[^/]*_test\.py|conftest\.py)$|(^|\/)tests?\//;
+const FOREIGN_PATH = /site-packages\/|\/lib\/python\d|\/_pytest\/|^<|^\/usr\/|^\/opt\//;
+
+function normalisePath(raw: string): string {
+  return raw.replace(/\\/g, '/').replace(/^\.\//, '');
+}
+
+/** Resolve a printed path to a workspace source path (exact, or the print is absolute and ends with it). */
+function resolveSource(raw: string, sourcePaths: readonly string[] | undefined): string | null {
+  const path = normalisePath(raw);
+  if (sourcePaths !== undefined) {
+    if (sourcePaths.includes(path)) return path;
+    let best: string | null = null;
+    for (const p of sourcePaths) if (path.endsWith(`/${p}`) && (best === null || p.length > best.length)) best = p;
+    return best;
+  }
+  if (FOREIGN_PATH.test(path) || TEST_PATH.test(path)) return null;
+  return path;
+}
+
+function frameOf(raw: string, line: number, fn: string | null, sourcePaths: readonly string[] | undefined): Frame | null {
+  const source = resolveSource(raw, sourcePaths);
+  if (source !== null) return { path: source, line, fn, kind: 'source' };
+  const path = normalisePath(raw);
+  if (FOREIGN_PATH.test(path)) return null;
+  // Not a known source file: a test module (or, with sourcePaths given, anything else in the
+  // workspace, which a test that fails in its own body prints).
+  return { path, line, fn, kind: 'test' };
+}
+
+/** Frames in a block of traceback text, outermost first (pytest and Python both print that way). */
+export function framesIn(text: string, sourcePaths?: readonly string[]): Frame[] {
+  const out: Frame[] = [];
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.replace(/\s+$/, '');
+    let m = PYTEST_FRAME.exec(line);
+    if (m !== null) {
+      const f = frameOf(m[1] ?? '', Number(m[2]), m[3] ?? null, sourcePaths);
+      if (f !== null) out.push(f);
+      continue;
+    }
+    m = NATIVE_FRAME.exec(line);
+    if (m !== null) {
+      const f = frameOf(m[1] ?? '', Number(m[2]), m[3] ?? null, sourcePaths);
+      if (f !== null) out.push(f);
+      continue;
+    }
+    m = PYTEST_LOCATION.exec(line);
+    if (m !== null) {
+      const f = frameOf(m[1] ?? '', Number(m[2]), null, sourcePaths);
+      if (f !== null) out.push(f);
+    }
+  }
+  return out;
+}
+
+/**
+ * The FAILURES / ERRORS sections of a pytest run: header name → raw lines, in order. Starts
+ * inside a failures section: pytest prints no `___ name ___` header before its first `=== … ===`
+ * banner, so this only matters when the text is an `outputTail` whose head (banner included) was
+ * cut, and then the sections that survived whole are still read.
+ */
+function pytestSections(output: string): { name: string; lines: string[] }[] {
+  const sections: { name: string; lines: string[] }[] = [];
+  let inFailures = true;
+  let current: { name: string; lines: string[] } | null = null;
+  for (const line of output.split(/\r?\n/)) {
+    const header = SECTION_HEADER.exec(line);
+    if (header !== null) {
+      const name = header[1] ?? '';
+      inFailures = name === 'FAILURES' || name === 'ERRORS';
+      current = null;
+      continue;
+    }
+    if (!inFailures) continue;
+    const test = TEST_HEADER.exec(line);
+    if (test !== null) {
+      current = { name: (test[1] ?? '').replace(/^ERROR (?:at (?:setup|call|teardown) of|collecting) /, ''), lines: [] };
+      sections.push(current);
+      continue;
+    }
+    if (current !== null) current.lines.push(line);
+  }
+  return sections;
+}
+
+/** "path::TestGroup::test_x[1-2]" → "TestGroup.test_x[1-2]" (pytest's FAILURES header form). */
+function sectionNameOf(testId: string): string {
+  const parts = testId.split('::');
+  return parts.length > 1 ? parts.slice(1).join('.') : testId;
+}
+
+/** "tests/test_x.py::TestA::test_b[1-2]" → "TestA.test_b"; a run_tests.py id is its own function. */
+function testFunctionOf(testId: string): string {
+  return sectionNameOf(testId).replace(/\[.*$/, '');
+}
+
+function testFileOfId(testId: string): string {
+  const at = testId.indexOf('::');
+  return at === -1 ? '' : testId.slice(0, at);
+}
+
+/** What one failing test's output says: its traceback frames and the names the interpreter reported missing. */
+interface TestEvidence {
+  frames: Frame[];
+  missingNames: string[];
+}
+
+/**
+ * Per failing test, the frames of its traceback section (same-named tests in two files are told
+ * apart by the file the section prints) and the missing names read from that section and from
+ * the failure's `actual` (the verifier keeps the exception line there even when the output tail
+ * cut the section).
+ */
+function evidencePerTest(baseline: TestRunSummary, opts: ClusterOptions): Map<string, TestEvidence> {
+  const out = new Map<string, TestEvidence>();
+  const sections = opts.output === undefined ? [] : pytestSections(opts.output);
+  for (const id of baseline.failing) {
+    const name = sectionNameOf(id);
+    const file = testFileOfId(id);
+    const same = sections.filter((s) => s.name === name);
+    let section = same[0];
+    if (same.length > 1 && file !== '') {
+      const own = same.find((s) => s.lines.some((l) => l.includes(file)));
+      if (own !== undefined) section = own;
+    }
+    const sectionText = section === undefined ? '' : section.lines.join('\n');
+    const frames = section === undefined ? [] : framesIn(sectionText, opts.sourcePaths);
+    const failure = baseline.failures.find((f) => f.testId === id);
+    if (frames.length === 0) {
+      // The QuixBugs runner's "(at file.py:47: ...)" tail is the only frame it prints.
+      const m = failure === undefined ? null : ACTUAL_FRAME.exec(failure.actual);
+      if (m !== null) {
+        const f = frameOf(m[1] ?? '', Number(m[2]), null, opts.sourcePaths);
+        if (f !== null) frames.push(f);
+      }
+    }
+    out.set(id, { frames, missingNames: missingNamesIn(`${sectionText}\n${failure?.actual ?? ''}`) });
+  }
+  return out;
+}
+
+/** The frame a test clusters on: its innermost source frame, else its innermost test-module frame. */
+export function keyFrame(frames: readonly Frame[]): Frame | null {
+  for (let i = frames.length - 1; i >= 0; i--) if (frames[i]?.kind === 'source') return frames[i] ?? null;
+  return frames[frames.length - 1] ?? null;
+}
+
+interface Cluster {
+  /** why these tests are together, for the transcript: "frame src/x.py:f", "sbfl src/x.py:12", "test" */
+  reason: string;
+  /** indices into baseline.failing, ascending */
+  members: number[];
+  suspectedFiles: string[];
+  /** union of the members' missing names, in member order */
+  missingNames: string[];
+}
+
+function dedupe(items: readonly string[]): string[] {
+  return [...new Set(items)];
+}
+
+interface FramedTest {
+  index: number;
+  frame: Frame;
+  frames: Frame[];
+  missingNames: string[];
+}
+
+/** Group tests with the same (file, function) key whose lines fall within FRAME_LINE_WINDOW of the group's first line. */
+function clusterByFrames(entries: FramedTest[]): Cluster[] {
+  const byFn = new Map<string, typeof entries>();
+  for (const e of entries) {
+    const key = `${e.frame.kind}|${e.frame.path}|${e.frame.fn ?? ''}`;
+    const list = byFn.get(key);
+    if (list === undefined) byFn.set(key, [e]);
+    else list.push(e);
+  }
+  const clusters: Cluster[] = [];
+  for (const list of byFn.values()) {
+    list.sort((a, b) => a.frame.line - b.frame.line || a.index - b.index);
+    let current: typeof entries = [];
+    const flush = (): void => {
+      if (current.length === 0) return;
+      const first = current[0]!;
+      const files = dedupe(current.flatMap((e) => e.frames.filter((f) => f.kind === 'source').map((f) => f.path).reverse()));
+      const where = `${first.frame.path}:${first.frame.fn ?? first.frame.line}`;
+      const members = current.map((e) => e.index).sort((a, b) => a - b);
+      const missingNames = dedupe([...current].sort((a, b) => a.index - b.index).flatMap((e) => e.missingNames));
+      clusters.push({ reason: `frame ${where}`, members, suspectedFiles: files, missingNames });
+      current = [];
+    };
+    for (const e of list) {
+      const start = current[0];
+      if (start !== undefined && e.frame.line - start.frame.line > FRAME_LINE_WINDOW) flush();
+      current.push(e);
+    }
+    flush();
+  }
+  return clusters;
+}
+
+/**
+ * Couple the frame clusters that the same repair has to touch
+ * (docs/research/llm-jev/oos-analysis-2026-09-22.md ranked change 4).
+ *
+ * Q3: the four `plausible = 0` ladder losses decompose wrongly in both directions. `crossfile`
+ * (`20260922-054652-dcxbrltg`) made SEVEN goals, one per failing test, over three files, for a
+ * defect that needs coupled hunks — so every goal searched a fragment of a repair no single hunk
+ * could complete, 168 sites and 12,153 candidates later with 0 plausible. One goal per failing
+ * test is right only when the tests are independent repairs.
+ *
+ * The structural reason to be one goal, read off the traceback and not a threshold: the two
+ * clusters' failing frames have the SAME IMMEDIATE CALLER — the source frame directly above the
+ * key frame, shared by every member of both clusters. That is the call chain the defect sits on,
+ * and a repair there fixes both tests at once; it is exactly the shape `crossfile` has and
+ * exactly what seven per-test goals cannot express.
+ *
+ * Two guards, both from review finding 4, because the first version merged on ANY shared node:
+ *   - ADJACENCY. On a repository workspace nearly every traceback runs through `sympify`,
+ *     `Basic.__new__` or a decorator, so "shares a node somewhere" is true of almost every pair
+ *     and the union-find collapsed the whole ledger into one goal. Only the immediate caller
+ *     counts, and only when every member of the cluster reaches its key frame through it.
+ *   - SHARED UTILITIES. A caller that appears on `SHARED_UTILITY_CLUSTERS` or more clusters is a
+ *     helper — unrelated code calling one function is what a helper IS — and merging on it is
+ *     refused outright.
+ *
+ * What is deliberately NOT a reason:
+ *
+ *  - the same source FILE. Two independent functions in one module are two repairs, and
+ *    `clusterByFrames` has already split one function's distant lines on FRAME_LINE_WINDOW; a
+ *    file-level merge would undo both and rebuild `masked`'s single 69-site goal.
+ *  - a node that IS a cluster's key frame. Merging on that is the same-function merge
+ *    `clusterByFrames` already did and then split on the line window.
+ *  - a test-kind frame. A single-file workspace with no source traceback (QuixBugs,
+ *    `run_tests.py`) produces only test-kind frames, so it has no shared-caller node at all and
+ *    is left exactly as `clusterByFrames` left it — which keeps a one-file, <= 2-failing-test
+ *    workspace at the ONE goal it is today.
+ *
+ * Merging is transitive (union-find) and order-free: the result depends on the frames, not on the
+ * order the clusters arrived in.
+ */
+export function mergeCoupledClusters(clusters: readonly Cluster[], chains: ReadonlyMap<number, readonly Frame[]>, keys: ReadonlyMap<number, string>): Cluster[] {
+  const parent = clusters.map((_, i) => i);
+  const find = (i: number): number => {
+    let r = i;
+    while (parent[r] !== r) r = parent[r]!;
+    return r;
+  };
+  const union = (a: number, b: number): void => {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) parent[Math.max(ra, rb)] = Math.min(ra, rb);
+  };
+  /**
+   * The IMMEDIATE caller of each member's key frame. Review finding 4: a merely shared node was too
+   * weak — on a repository workspace nearly every traceback runs through `sympify`,
+   * `Basic.__new__` or a decorator, so "shares a node" is true of almost every pair and the
+   * union-find collapsed the whole ledger into one goal. The immediate caller is the frame the
+   * defect actually sits under: if two failing frames have the same parent, one edit at that
+   * parent plausibly fixes both; a node six frames up says nothing.
+   *
+   * A cluster's callers are the intersection over its members — a caller only counts if EVERY
+   * member reaches its key frame through it.
+   */
+  const nodeOf = (f: Frame): string | null => (f.kind === 'source' && f.fn !== null ? `${f.path}|${f.fn}` : null);
+  /** the immediate SOURCE caller of `key` on one member's chain (chains are outermost-first) */
+  const callerOn = (chain: readonly Frame[], key: string | undefined): string | null => {
+    for (let i = 0; i < chain.length; i += 1) {
+      if (nodeOf(chain[i]!) !== key) continue;
+      for (let j = i - 1; j >= 0; j -= 1) {
+        const up = nodeOf(chain[j]!);
+        if (up !== null) return up;
+      }
+      return null;
+    }
+    return null;
+  };
+  const callersOf = clusters.map((c) => {
+    // the intersection over the cluster's members: a caller counts only when EVERY member
+    // reaches its key frame through it
+    let shared: string[] | null = null;
+    for (const m of c.members) {
+      const caller = callerOn(chains.get(m) ?? [], keys.get(m));
+      const mine: string[] = caller === null ? [] : [caller];
+      shared = shared === null ? mine : shared.filter((x) => mine.includes(x));
+      if (shared.length === 0) break;
+    }
+    return new Set<string>(shared ?? []);
+  });
+
+  /**
+   * A shared utility: a function that unrelated failures merely PASS THROUGH. It is counted over
+   * the clusters on whose chains the node appears somewhere OTHER than as the immediate caller of
+   * a key frame — which is the distinction that makes the two halves of review finding 4 consistent.
+   *
+   * Counting bare appearances would refuse `crossfile` itself: its three failing frames are three
+   * clusters and `src/pipeline.py|run` is on all three chains, so a flat "on >= 3 chains" test
+   * deletes the very merge the change exists for. What makes `sympify` / `Basic.__new__` / a
+   * decorator different is not how many chains carry them but WHERE: they sit far above the
+   * failing frame on chain after chain, while `run` is the frame directly above each failure. So
+   * the count ignores the adjacency uses and asks whether the node is ALSO a general waypoint.
+   */
+  const passThrough = new Map<string, number>();
+  clusters.forEach((c, ci) => {
+    const seen = new Set<string>();
+    for (const m of c.members) {
+      const chain = chains.get(m) ?? [];
+      const caller = callerOn(chain, keys.get(m));
+      for (const f of chain) {
+        const n = nodeOf(f);
+        if (n === null || n === caller || n === keys.get(m)) continue;
+        seen.add(n);
+      }
+    }
+    for (const n of seen) passThrough.set(n, (passThrough.get(n) ?? 0) + (ci >= 0 ? 1 : 0));
+  });
+  const utility = (n: string): boolean => (passThrough.get(n) ?? 0) >= SHARED_UTILITY_CLUSTERS;
+
+  const sharesCaller = (a: ReadonlySet<string>, b: ReadonlySet<string>): boolean => {
+    for (const x of a) if (b.has(x) && !utility(x)) return true;
+    return false;
+  };
+  for (let i = 0; i < clusters.length; i += 1) {
+    for (let j = i + 1; j < clusters.length; j += 1) {
+      if (sharesCaller(callersOf[i]!, callersOf[j]!)) union(i, j);
+    }
+  }
+  const byRoot = new Map<number, Cluster>();
+  const order: number[] = [];
+  clusters.forEach((c, i) => {
+    const root = find(i);
+    const held = byRoot.get(root);
+    if (held === undefined) {
+      byRoot.set(root, { reason: c.reason, members: [...c.members], suspectedFiles: [...c.suspectedFiles], missingNames: [...c.missingNames] });
+      order.push(root);
+      return;
+    }
+    held.members.push(...c.members);
+    held.suspectedFiles = dedupe([...held.suspectedFiles, ...c.suspectedFiles]);
+    held.missingNames = dedupe([...held.missingNames, ...c.missingNames]);
+    held.reason = `${held.reason} + ${c.reason}`;
+  });
+  return order.map((root) => {
+    const c = byRoot.get(root)!;
+    c.members.sort((a, b) => a - b);
+    return c;
+  });
+}
+
+/**
+ * The other direction of ranked change 4: split a multi-test goal whose site list cannot be
+ * searched inside the run budget.
+ *
+ * Q3: `masked` (`plausible = 0`, `replan_stop`) was ONE goal over four coupled tests in one file
+ * with 69 sites; it enumerated 7,027 candidates and tested 4,525 without ever reaching the sites
+ * the later tests name, because one goal searches its sites in one order and the budget runs out
+ * part-way down. When a goal's sites outnumber the runs the step can spend, the goal cannot be
+ * decided as a unit this step, and its tests are better attacked one at a time — each with its
+ * own localisation, its own site order and its own share of the ledger's attention.
+ *
+ * The trigger is the same budget comparison as the rest of this iteration (`sites > runsLeft`),
+ * never a site count chosen by hand. A goal with one test is never split: there is nothing to
+ * split it into. The successors inherit the parent's suspected files and missing names, and are
+ * ids `<parent>.1 .. <parent>.n` so the ledger shows the chain.
+ */
+export function splitBySiteBudget(goal: Goal, sites: number, runsLeft: number): Goal[] {
+  if (goal.tests.length < 2 || sites <= runsLeft) return [goal];
+  return goal.tests.map((test, i) => {
+    const failures = goal.failures.filter((f) => f.testId === test);
+    const child = newGoal(`${goal.id}.${i + 1}`, [test], failures.length > 0 ? failures : [failureless(test)], [...goal.suspectedFiles], goal.missingNames ?? []);
+    child.phase = goal.phase;
+    return child;
+  });
+}
+
+function failureless(testId: string): FailureView {
+  return { testId, call: testId, expected: '', actual: 'failed: no details in the output' };
+}
+
+/** The best-ranked SBFL line (rank ≤ SBFL_CLUSTER_TOP) a test executed, or null. */
+function sbflKeyLine(testId: string, sbfl: NonNullable<ClusterOptions['sbfl']>): RankedLine | null {
+  const per = sbfl.perTest.find((r) => r.id === testId);
+  if (per === undefined) return null;
+  let best: RankedLine | null = null;
+  for (const r of sbfl.ranked) {
+    if (r.rank > SBFL_CLUSTER_TOP) continue;
+    if (!(per.lines[r.file] ?? []).includes(r.line)) continue;
+    if (best === null || r.rank < best.rank) best = r;
+  }
+  return best;
+}
+
+function failureFor(baseline: TestRunSummary, testId: string): FailureView {
+  return baseline.failures.find((f) => f.testId === testId) ?? { testId, call: testId, expected: '', actual: 'failed: no details in the output' };
+}
+
+export function newGoal(id: string, tests: string[], failures: FailureView[], suspectedFiles: string[], missingNames: readonly string[] = []): Goal {
+  const goal: Goal = { id, tests, failures, suspectedFiles, status: 'open', attempts: 0, budgetHits: 0, exhausted: new Map(), phase: 'SEEDS', planItem: '' };
+  if (missingNames.length > 0) goal.missingNames = [...missingNames];
+  goal.planItem = planItemFor(goal);
+  return goal;
+}
+
+/**
+ * Cluster the baseline's failing tests into goals. Deterministic: ids g1..gn by cluster size
+ * descending, then first test id ascending; members keep the runner's order. The synthetic
+ * `<test run>` failure (timeout, crash) is not a test and is left to the caller (§4.1 parks the
+ * run's goals with "suite too slow").
+ */
+export function clusterFailures(baseline: TestRunSummary, options: ClusterOptions | ReadonlyMap<string, SourceFile> = {}): Goal[] {
+  const given = options instanceof Map ? optionsFromFiles(options) : (options as ClusterOptions);
+  const opts: ClusterOptions = { ...given, output: given.output ?? baseline.outputTail };
+  const failing = baseline.failing.filter((id) => id !== RUN_FAILURE_ID);
+  const evidence = evidencePerTest({ ...baseline, failing }, opts);
+  const framed: FramedTest[] = [];
+  const unframed: number[] = [];
+  const missingOf = (id: string): string[] => evidence.get(id)?.missingNames ?? [];
+  failing.forEach((id, index) => {
+    const fs = evidence.get(id)?.frames ?? [];
+    let key = keyFrame(fs);
+    // A test-module location without a function name ("test_x.py:12: AssertionError") is the
+    // test's own body: key it by the test function, so parametrised cases of one test share a
+    // goal while neighbouring tests at adjacent lines do not.
+    if (key !== null && key.kind === 'test' && key.fn === null) key = { ...key, fn: testFunctionOf(id) };
+    if (key === null) unframed.push(index);
+    else framed.push({ index, frame: key, frames: fs, missingNames: missingOf(id) });
+  });
+  // ranked change 4: frame clusters the same repair has to touch are ONE goal (shared source
+  // file, or an overlapping (path, fn) node in the two chains). crossfile's seven single-test
+  // goals over three files were seven fragments of a repair no single hunk could complete.
+  const chains = new Map<number, readonly Frame[]>(framed.map((f) => [f.index, f.frames]));
+  const keyNodes = new Map<number, string>(framed.map((f) => [f.index, `${f.frame.path}|${f.frame.fn ?? ''}`]));
+  const clusters = mergeCoupledClusters(clusterByFrames(framed), chains, keyNodes);
+  const bySbfl = new Map<string, Cluster>();
+  for (const index of unframed) {
+    const id = failing[index]!;
+    const line = opts.sbfl === undefined ? null : sbflKeyLine(id, opts.sbfl);
+    if (line === null) {
+      clusters.push({ reason: 'test', members: [index], suspectedFiles: [], missingNames: missingOf(id) });
+      continue;
+    }
+    const key = `${line.file}:${line.line}`;
+    const existing = bySbfl.get(key);
+    if (existing === undefined) {
+      const c: Cluster = { reason: `sbfl ${key}`, members: [index], suspectedFiles: [line.file], missingNames: missingOf(id) };
+      bySbfl.set(key, c);
+      clusters.push(c);
+    } else {
+      existing.members.push(index);
+      existing.missingNames = dedupe([...existing.missingNames, ...missingOf(id)]);
+    }
+  }
+  const defaults = [...(opts.defaultFiles ?? [])];
+  const withTests = clusters.map((c) => ({ c, tests: c.members.sort((a, b) => a - b).map((i) => failing[i]!) }));
+  withTests.sort((a, b) => b.tests.length - a.tests.length || cmp(a.tests[0] ?? '', b.tests[0] ?? ''));
+  return withTests.map(({ c, tests }, i) => {
+    const files = c.suspectedFiles.length > 0 ? c.suspectedFiles : defaults;
+    return newGoal(`g${i + 1}`, tests, tests.slice(0, GOAL_FAILURES_BOUND).map((t) => failureFor(baseline, t)), files, c.missingNames);
+  });
+}
+
+/**
+ * The workspace's Python files as clustering options: non-test files are the source paths frames
+ * may resolve into; a single-file workspace (QuixBugs) suspects that file by default.
+ */
+export function optionsFromFiles(files: ReadonlyMap<string, SourceFile>): ClusterOptions {
+  const sourcePaths = [...files.keys()].filter((p) => !TEST_PATH.test(normalisePath(p)));
+  const opts: ClusterOptions = { sourcePaths };
+  if (sourcePaths.length === 1) opts.defaultFiles = [sourcePaths[0]!];
+  return opts;
+}
+
+function cmp(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+// ---------------------------------------------------------------------------------------
+// Reconciling a fresh clustering with the ledger (after every commit, and on resume)
+// ---------------------------------------------------------------------------------------
+
+/** What a previous goal contributes to a fresh one with overlapping tests. */
+export interface PriorGoalState {
+  id: string;
+  tests: readonly string[];
+  status: GoalStatus;
+  attempts: number;
+  budgetHits: number;
+  phase: Phase;
+  parkedReason?: string;
+  planItem: string;
+  exhausted?: Map<string, Set<CandidateSourceName>>;
+  failures?: FailureView[];
+  suspectedFiles?: string[];
+  progressCommits?: number;
+}
+
+function goalNumber(id: string): number {
+  const m = /^g(\d+)$/.exec(id);
+  return m === null ? 0 : Number(m[1]);
+}
+
+/**
+ * Carry the ledger's state onto a fresh clustering by test-id overlap (largest overlap first,
+ * each prior used once). A matched goal keeps the prior id (the localisation cache and WIDENED
+ * cursor are keyed by it), its parked state and reason, attempts, budget hits, phase and
+ * exhausted sources; `active` becomes `open` (the search that was running ended with the
+ * workspace change that triggered the re-clustering). A prior goal none of whose tests fail any
+ * more comes back as `fixed`. Unmatched fresh goals get ids above every id seen so far.
+ *
+ * Progress commits (goals.ts noteCommit, subgoal.ts commitProgress) keep the goal's remaining
+ * tests OPEN under its id — the fresh cluster carries the new failure (frame, failures,
+ * suspected files) and inherits the counters — and a goal that took MAX_PROGRESS_COMMITS_PER_GOAL
+ * of them hands its remaining tests to a NEW id with fresh counters (the chain rule), so the
+ * ledger shows the chain. A fresh cluster is never marked fixed here: only a prior goal whose
+ * every test passes is.
+ */
+export function inheritGoalState(fresh: readonly Goal[], prior: readonly PriorGoalState[]): Goal[] {
+  const pairs: { i: number; j: number; overlap: number }[] = [];
+  fresh.forEach((g, i) => {
+    const tests = new Set(g.tests);
+    prior.forEach((p, j) => {
+      const overlap = p.tests.filter((t) => tests.has(t)).length;
+      if (overlap > 0) pairs.push({ i, j, overlap });
+    });
+  });
+  pairs.sort((a, b) => b.overlap - a.overlap || a.i - b.i || a.j - b.j);
+  const freshTaken = new Set<number>();
+  const priorTaken = new Set<number>();
+  const match = new Map<number, number>();
+  for (const { i, j } of pairs) {
+    if (freshTaken.has(i) || priorTaken.has(j)) continue;
+    freshTaken.add(i);
+    priorTaken.add(j);
+    match.set(i, j);
+  }
+  const takenIds = new Set(prior.map((p) => p.id));
+  let next = Math.max(0, ...prior.map((p) => goalNumber(p.id)), ...fresh.map((g) => goalNumber(g.id))) + 1;
+  const out: Goal[] = fresh.map((g, i) => {
+    const j = match.get(i);
+    if (j === undefined) {
+      if (prior.length === 0 || !takenIds.has(g.id)) return g;
+      const id = `g${next++}`;
+      return { ...g, id };
+    }
+    const p = prior[j]!;
+    // The chain rule: after MAX_PROGRESS_COMMITS_PER_GOAL partial fixes the remaining tests
+    // continue as a new goal (fresh id and counters); the prior is consumed, never marked fixed.
+    if ((p.progressCommits ?? 0) >= MAX_PROGRESS_COMMITS_PER_GOAL) return { ...g, id: `g${next++}`, status: 'open', attempts: 0, budgetHits: 0, phase: 'SEEDS', exhausted: new Map(), progressCommits: 0 };
+    const goal: Goal = { ...g, id: p.id, status: p.status === 'parked' ? 'parked' : 'open', attempts: p.attempts, budgetHits: p.budgetHits, phase: p.phase, exhausted: p.exhausted ?? new Map() };
+    if (p.status === 'parked' && p.parkedReason !== undefined) goal.parkedReason = p.parkedReason;
+    if (p.progressCommits !== undefined) goal.progressCommits = p.progressCommits;
+    return goal;
+  });
+  const stillFailing = new Set(fresh.flatMap((g) => g.tests));
+  prior.forEach((p, j) => {
+    if (priorTaken.has(j) || p.tests.some((t) => stillFailing.has(t))) return;
+    const parsed = parseGoalItem(p.planItem);
+    const suspectedFiles = p.suspectedFiles ?? (parsed === null ? [] : [parsed.path]);
+    out.push({ id: p.id, tests: [...p.tests], failures: p.failures ?? [], suspectedFiles, status: 'fixed', attempts: p.attempts, budgetHits: 0, exhausted: new Map(), phase: p.phase, planItem: p.planItem });
+  });
+  return out;
+}
+
+function priorOf(g: Goal): PriorGoalState {
+  const p: PriorGoalState = { id: g.id, tests: g.tests, status: g.status, attempts: g.attempts, budgetHits: g.budgetHits, phase: g.phase, planItem: g.planItem, exhausted: g.exhausted, failures: g.failures, suspectedFiles: g.suspectedFiles };
+  if (g.parkedReason !== undefined) p.parkedReason = g.parkedReason;
+  if (g.progressCommits !== undefined) p.progressCommits = g.progressCommits;
+  return p;
+}
+
+/**
+ * §2.2 `reconcile(mem.goals, clusterFailures(mem.baseline), ctx.plan)`: the fresh clustering
+ * inherits the ledger's parked/attempt state and the engine's plan-item strings.
+ */
+export function reconcile(existing: readonly Goal[], fresh: readonly Goal[], plan: { remaining: readonly string[] }): Goal[] {
+  const goals = inheritGoalState(fresh, existing.map(priorOf));
+  attachPlanItems(goals, plan.remaining);
+  return goals;
+}
+
+// ---------------------------------------------------------------------------------------
+// Status transitions
+// ---------------------------------------------------------------------------------------
+
+export function isOpen(goal: Goal): boolean {
+  return goal.status === 'open' || goal.status === 'active';
+}
+
+/**
+ * The goal enters a search: `active`, one more attempt (§5.3 counts searches without a commit).
+ * `pickGoal` calls this for the goal it returns, so the controller (search/index.ts) must not
+ * count the attempt again: doing both would park after two searches, not three.
+ */
+export function beginAttempt(goal: Goal): void {
+  goal.status = 'active';
+  goal.attempts += 1;
+}
+
+export function park(goal: Goal, reason: string): void {
+  goal.status = 'parked';
+  goal.parkedReason = reason;
+  goal.budgetHits = 0;
+  goal.budgetSteps = 0;
+}
+
+/**
+ * A commit for this goal: attempts restart; `fixed` when every goal test passed, else back to
+ * `open` as a progress commit — one more link of the chain (`progressCommits`), and the goal's
+ * sites, tested sites and phase go: its remaining tests now fail for a new reason at a new frame
+ * (ladder `masked`: report → parse/aggregate; `long_chain`: load → clean), which the next
+ * baseline re-clusters (`reconcile`), so what was exhausted at the old sites is no fact about the new.
+ */
+export function noteCommit(goal: Goal, allGoalTestsPass: boolean): void {
+  goal.status = allGoalTestsPass ? 'fixed' : 'open';
+  goal.attempts = 0;
+  goal.budgetHits = 0;
+  goal.budgetSteps = 0;
+  delete goal.parkedReason;
+  if (!allGoalTestsPass) {
+    goal.progressCommits = (goal.progressCommits ?? 0) + 1;
+    goal.exhausted = new Map();
+    delete goal.testedSites;
+    goal.phase = 'SEEDS';
+  }
+}
+
+/**
+ * A step ended on the budget cap for this goal. `progress` (§5.3): the step classified fresh
+ * candidates at ≥ 1 site no earlier step had tested and the top sites are not all exhausted —
+ * such a step is counted toward the hard cap (MAX_BUDGET_HIT_STEPS) but not toward the
+ * stagnation park (MAX_CONSECUTIVE_BUDGET_HITS). Returns the park reason when parked.
+ */
+export function noteBudgetHit(goal: Goal, progress = false): string | null {
+  goal.budgetSteps = (goal.budgetSteps ?? 0) + 1;
+  if (!progress) goal.budgetHits += 1;
+  const reason = parkReasonFor({ attempts: 0, budgetHits: goal.budgetHits, budgetSteps: goal.budgetSteps });
+  if (reason !== null) park(goal, reason);
+  return reason;
+}
+
+/** The §5.3 park rule the counters alone can decide; null when the goal may be searched. */
+export function parkReasonFor(goal: Pick<Goal, 'attempts' | 'budgetHits' | 'budgetSteps'>): string | null {
+  if (goal.attempts >= MAX_SEARCHES_WITHOUT_COMMIT) return `${goal.attempts} searches without a commit`;
+  if (goal.budgetHits >= MAX_CONSECUTIVE_BUDGET_HITS) return `${goal.budgetHits} consecutive budget-hit steps that tested nothing new`;
+  if ((goal.budgetSteps ?? 0) >= MAX_BUDGET_HIT_STEPS) return `${goal.budgetSteps} consecutive budget-hit steps (hard cap)`;
+  return null;
+}
+
+const COUNTER_PARK = /^\d+ (?:searches without a commit|consecutive budget-hit steps)/;
+const NO_SITE_PARK = /^no site located for /;
+const EXHAUSTED_PARK = /^exhausted .* at \d+ sites? /;
+
+/**
+ * A park the search itself made: by the §5.3 counters (`parkReasonFor`), for want of a site, or
+ * at exhaustion of the LOCALISED sites (subgoal.ts describeExhaustion: "exhausted … at N sites").
+ * Each is relative to one localisation — the sites Q2/Q5 named, the sources ranked there — so a
+ * re-localisation leaves the goal something to try; a park for a timed-out suite (index.ts
+ * SUITE_TOO_SLOW) or after the one best-guess commit (oracle BEST_GUESS_PARK_REASON) is not. The
+ * `gather_context` directive reopens exactly these (directive.ts): the engine says the repeated
+ * step rested on a wrong assumption, and a search's assumption is its localisation, which the
+ * directive redoes; the engine grants one such directive per repeated `done` signature before it
+ * stops the run (loop/engine.ts), so an exhausted goal gets one re-localised search, not a loop.
+ */
+export function parkedWithMoreToTry(goal: Pick<Goal, 'status' | 'parkedReason'>): boolean {
+  if (goal.status !== 'parked') return false;
+  const reason = goal.parkedReason ?? '';
+  return COUNTER_PARK.test(reason) || NO_SITE_PARK.test(reason) || EXHAUSTED_PARK.test(reason);
+}
+
+/**
+ * A commit changed `changedFiles`: every goal that suspects one of them loses its localisation
+ * cache, exhausted sets and WIDENED cursor (line numbers moved), and a parked one re-opens with
+ * its attempts kept (§5.3). Returns the re-opened goals.
+ */
+export function reopenOnChange(memOrGoals: Pick<SearchMemory, 'goals' | 'localizeCache' | 'widenCursor'> | readonly Goal[], changedFiles: readonly string[]): Goal[] {
+  // The bare-list form (search/index.ts passes `mem.goals`) still invalidates the caches when the
+  // list is a registered run's ledger; a detached list has no caches to clear.
+  const mem = Array.isArray(memOrGoals)
+    ? (memoryOfGoals(memOrGoals as readonly Goal[]) ?? { goals: memOrGoals as readonly Goal[], localizeCache: new Map<string, never>(), widenCursor: new Map<string, number>() })
+    : (memOrGoals as Pick<SearchMemory, 'goals' | 'localizeCache' | 'widenCursor'>);
+  const changed = new Set(changedFiles.map(normalisePath));
+  const reopened: Goal[] = [];
+  for (const goal of mem.goals) {
+    if (goal.status === 'fixed' || !goal.suspectedFiles.some((f) => changed.has(normalisePath(f)))) continue;
+    mem.localizeCache.delete(goal.id);
+    mem.widenCursor.delete(goal.id);
+    goal.exhausted = new Map();
+    // the sites move with the file: what was tested there is no longer a fact about the new sites
+    delete goal.testedSites;
+    if (goal.status === 'parked') {
+      goal.status = 'open';
+      goal.budgetHits = 0;
+      goal.budgetSteps = 0;
+      delete goal.parkedReason;
+      reopened.push(goal);
+    }
+  }
+  return reopened;
+}
+
+/** The `synth` ledger line emitted every step: "fixed 2, open 1, parked 1". */
+export function ledgerLine(goals: readonly Goal[]): string {
+  const n = (s: GoalStatus): number => goals.filter((g) => g.status === s).length;
+  return `fixed ${n('fixed')}, open ${n('open') + n('active')}, parked ${n('parked')}`;
+}
+
+// ---------------------------------------------------------------------------------------
+// Q1 attack_first
+// ---------------------------------------------------------------------------------------
+
+/** The failure Jev sees for a goal: its first test's (the plan-item test). */
+export function leadFailure(goal: Pick<Goal, 'tests' | 'failures'>): FailureView {
+  const first = goal.tests[0] ?? '';
+  return goal.failures.find((f) => f.testId === first) ?? goal.failures[0] ?? { testId: first, call: first, expected: '', actual: 'failed: no details in the output' };
+}
+
+/**
+ * The code tiebreak of §2.7 Q1: fewest tests, shortest input, fewest attempts, then ledger order.
+ * Fewest tests first because a one-test goal is the most local behaviour; shortest input is the
+ * measured "simplest" proxy (probe-progress-judgment.md Part 3).
+ */
+export function codeOrder(a: Goal, b: Goal): number {
+  return a.tests.length - b.tests.length || inputSize(leadFailure(a)) - inputSize(leadFailure(b)) || a.attempts - b.attempts || goalNumber(a.id) - goalNumber(b.id) || cmp(a.id, b.id);
+}
+
+function failureText(f: FailureView): string {
+  return f.expected === '' ? `${f.call} -> ${f.actual}` : `${f.call} -> ${f.actual}, expected ${f.expected}`;
+}
+
+export interface AttackFirstBatch {
+  offered: { key: string; goal: Goal }[];
+  state: Json;
+  question: Question;
+}
+
+export interface PickGoalOptions {
+  /** goals offered (the measured Choice offered the first 10 failing tests) */
+  max?: number;
+  /** what fails, e.g. "the Python function `gcd`" (the measured wording); default "the program under repair" */
+  subject?: string;
+  /** probabilities within this margin of the top tie (Jev's noise band, DEFAULT_TIE_MARGIN 0.02) */
+  tieMargin?: number;
+  stage?: StageName;
+}
+
+/**
+ * Q1: the measured neutral Choice over open goals, options keyed by the first test id
+ * (`failing_<slug>`), description = the failure text, content under `failing_tests.<key>`
+ * as `{ input, expected, actual, status }` (the measured state shape); escape appended by `choice()`.
+ */
+export function attackFirstQuestion(goals: readonly Goal[], task: string, opts: PickGoalOptions = {}): AttackFirstBatch {
+  const max = opts.max ?? DEFAULT_PICK_MAX;
+  const taken = new Set<string>();
+  const offered: { key: string; goal: Goal }[] = [];
+  for (const goal of goals.slice(0, max)) {
+    const key = optionKeyFor(goal.tests[0] ?? goal.id, taken);
+    taken.add(key);
+    offered.push({ key, goal });
+  }
+  const entries: { [k: string]: Json } = {};
+  const options: Record<string, Json | null> = {};
+  for (const { key, goal } of offered) {
+    const f = leadFailure(goal);
+    entries[key] = { input: f.call, expected: f.expected, actual: f.actual, status: failureStatus(f) };
+    options[key] = failureText(f);
+  }
+  const subject = opts.subject ?? 'the program under repair';
+  const lead = `${subject.charAt(0).toUpperCase()}${subject.slice(1)} fails several tests. \`failing_tests\` lists them with input, expected output and actual result.`;
+  const taskText = task.trim();
+  const clipped = taskText.length > Q1_TASK_CHARS_MAX ? `${taskText.slice(0, Q1_TASK_CHARS_MAX)}…` : taskText;
+  return {
+    offered,
+    state: { task: clipped === '' ? lead : `${lead}\nThe task: ${clipped}`, failing_tests: entries },
+    question: choice(ATTACK_FIRST_INSTRUCTIONS, options),
+  };
+}
+
+export interface GoalPick {
+  goal: Goal | null;
+  /**
+   * none: no open goal; active: a search already in progress resumes; single: the only open
+   * goal; jev: the Choice argmax beat the runner-up by more than the margin; tiebreak: the code
+   * order decided (several options within the margin, or the escape option won)
+   */
+  method: 'none' | 'active' | 'single' | 'jev' | 'tiebreak';
+  /** P(option) of the pick on the Choice; 1 without a request */
+  probability: number;
+  requests: number;
+}
+
+export class GoalPickError extends Error {
+  constructor(message: string) {
+    super(`GoalPickError: ${message}`);
+    this.name = 'GoalPickError';
+  }
+}
+
+export type PickGoalContext = Pick<SynthesisContext, 'task'> & Partial<Pick<SynthesisContext, 'ask'>>;
+
+/**
+ * §2.2 `pickGoal`: the goal to attack this step, or null when every goal is parked or fixed.
+ * One `active` goal (a search a budget-hit step left in memory) resumes without a request; one
+ * open goal is taken; two or more are put to Q1, argmax if it beats the runner-up by more than
+ * `tieMargin`, else the code tiebreak. The picked goal becomes `active` and its attempt count
+ * moves (`beginAttempt`; not when resuming an already active goal). `pickGoalDetailed` returns
+ * the method and probability as well.
+ */
+export async function pickGoal(ctx: PickGoalContext, mem: Pick<SearchMemory, 'goals'>, ask: JevAsk | undefined = ctx.ask, opts: PickGoalOptions = {}): Promise<Goal | null> {
+  return (await pickGoalDetailed(ctx, mem, ask, opts)).goal;
+}
+
+export async function pickGoalDetailed(ctx: PickGoalContext, mem: Pick<SearchMemory, 'goals'>, ask: JevAsk | undefined = ctx.ask, opts: PickGoalOptions = {}): Promise<GoalPick> {
+  const active = mem.goals.filter((g) => g.status === 'active');
+  if (active.length === 1) return { goal: active[0]!, method: 'active', probability: 1, requests: 0 };
+  const open = mem.goals.filter(isOpen);
+  if (open.length === 0) return { goal: null, method: 'none', probability: 1, requests: 0 };
+  if (open.length === 1) {
+    const goal = open[0]!;
+    beginAttempt(goal);
+    return { goal, method: 'single', probability: 1, requests: 0 };
+  }
+  if (ask === undefined) throw new GoalPickError('pickGoal needs a JevAsk (argument or ctx.ask) when two or more goals are open');
+  const ordered = [...open].sort(codeOrder);
+  const batch = attackFirstQuestion(ordered, ctx.task, opts);
+  const res = await ask(opts.stage ?? 'propose', batch.state, { [ATTACK_FIRST_ID]: batch.question });
+  const answer = res.answers[ATTACK_FIRST_ID];
+  if (answer === undefined || answer.type !== 'choice') throw new GoalPickError('attack_first answer missing or not a choice');
+  const margin = opts.tieMargin ?? DEFAULT_TIE_MARGIN;
+  const p = (key: string): number => answer.probabilities[key] ?? 0;
+  const top = batch.offered.reduce((m, it) => Math.max(m, p(it.key)), 0);
+  const escape = answer.probabilities['none_of_these'] ?? 0;
+  // The escape winning means "attack first" has no good answer: code decides among all offered.
+  const tied = escape > top ? batch.offered : batch.offered.filter((it) => top - p(it.key) <= margin + 1e-9);
+  // `offered` is already in code order, so the first tied entry is the tiebreak winner.
+  const pick = tied[0] ?? batch.offered[0]!;
+  beginAttempt(pick.goal);
+  return { goal: pick.goal, method: tied.length > 1 || escape > top ? 'tiebreak' : 'jev', probability: p(pick.key), requests: 1 };
+}

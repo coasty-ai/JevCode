@@ -12,7 +12,7 @@ import { createJevDecider } from '../../src/jev/client.js';
 import { JEV_PROVIDERS } from '../../src/jev/providers.js';
 import { INTAKE_TOKEN_BUDGET, buildIntakeState, runIntake } from '../../src/chat/intake.js';
 import { harnessFacts, type FactsInput } from '../../src/chat/facts.js';
-import { lookupCode } from '../../src/chat/lookup.js';
+import { lookupCode } from '../../src/jev-modes/chat/lookup.js';
 import { pickReply } from '../../src/chat/replies.js';
 import { notRepoState } from '../../src/workspace/gitstate.js';
 

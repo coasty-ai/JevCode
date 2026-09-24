@@ -8,16 +8,16 @@
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { toks } from '../../src/synth/beam/tokens.ts';
-import { createDonorSource } from '../../src/synth/donor/index.ts';
-import { buildSlotVocabulary } from '../../src/synth/fill/state.ts';
-import { createMutationSource } from '../../src/synth/mutate/index.ts';
-import { createCompositeSource } from '../../src/synth/search/composite.ts';
-import { ENUMERATE_CAP, isTestPath, taskIdentifiers, testLiterals } from '../../src/synth/search/subgoal.ts';
-import { sketchPool } from '../../src/synth/sketch/pool.ts';
-import { instantiates, productionsFor } from '../../src/synth/sketch/productions.ts';
-import { createTemplateSource } from '../../src/synth/templates/index.ts';
-import type { EnumerateOptions, FailureView, SourceFile } from '../../src/synth/types.ts';
+import { toks } from '../../src/jev-modes/synth/beam/tokens.ts';
+import { createDonorSource } from '../../src/jev-modes/synth/donor/index.ts';
+import { buildSlotVocabulary } from '../../src/jev-modes/synth/fill/state.ts';
+import { createMutationSource } from '../../src/jev-modes/synth/mutate/index.ts';
+import { createCompositeSource } from '../../src/jev-modes/synth/search/composite.ts';
+import { ENUMERATE_CAP, isTestPath, taskIdentifiers, testLiterals } from '../../src/jev-modes/synth/search/subgoal.ts';
+import { sketchPool } from '../../src/jev-modes/synth/sketch/pool.ts';
+import { instantiates, productionsFor } from '../../src/jev-modes/synth/sketch/productions.ts';
+import { createTemplateSource } from '../../src/jev-modes/synth/templates/index.ts';
+import type { EnumerateOptions, FailureView, SourceFile } from '../../src/jev-modes/synth/types.ts';
 import { REPOS, loadFile, normLine, replaceSiteAt, sh } from './lib.mts';
 
 const ROOT = join(import.meta.dirname, '..', '..');

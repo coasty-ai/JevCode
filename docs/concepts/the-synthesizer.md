@@ -101,7 +101,7 @@ Every source is code. Each one takes a site and produces candidate edits for it.
 | `history` | reversals drawn from the repository's git history |
 | `llm/source` | samples from the code model — **only in `llm-jev`**, never in `jev-only` |
 
-`src/synth/py` is infrastructure rather than a source: it is the Python structure parser the
+`src/jev-modes/synth/py` is infrastructure rather than a source: it is the Python structure parser the
 sources and the patch applier share.
 
 In `jev-only` the factory short-circuits: it returns a plain Ledger-plus-Sieve synthesizer with
@@ -119,11 +119,11 @@ step has left?**
 | the pool fits the runs left | **SIEVE** — run every candidate and let the tests rank them. No Jev request is spent: the first passer arrives before any order would have been consulted |
 | it does not | **RANK** — ask Jev to order the pool first, then run down the order as far as the budget reaches |
 
-The cut is `poolFitsRunBudget(n, left)` in `src/synth/search/budget.ts`, which is simply
+The cut is `poolFitsRunBudget(n, left)` in `src/jev-modes/synth/search/budget.ts`, which is simply
 `n <= left`. `runsLeft` divides the wall the step has left by the *measured* cost of one run,
 multiplied by the lane count, and caps that by the run count the step has left — so an
 expensive test suite shrinks `left` rather than needing a threshold of its own.
-<!-- src/synth/search/budget.ts:222 poolFitsRunBudget, :911 runsLeft, :952 decideRunPlan -->
+<!-- src/jev-modes/synth/search/budget.ts:222 poolFitsRunBudget, :911 runsLeft, :952 decideRunPlan -->
 
 `SIEVE_MAX_T_RUN_MS = 2000` still exists and is still worth knowing, but it is **no longer the
 cut**. It is the oracle-class line: at or under two seconds per goal-subset run the suite is
@@ -135,7 +135,7 @@ order over candidates that were all going to run anyway.
 There is hysteresis on that class line for loaded machines. A measured batch median up to 1.5×
 it does **not** move a sieve-eligible suite to the slower class: the lanes are loaded, not the
 suite slow.
-<!-- SIEVE_MAX_T_RUN_MS src/synth/search/budget.ts:27, SIEVE_KEEP_FACTOR :128, the class line :638 -->
+<!-- SIEVE_MAX_T_RUN_MS src/jev-modes/synth/search/budget.ts:27, SIEVE_KEEP_FACTOR :128, the class line :638 -->
 
 ## Shadow lanes
 

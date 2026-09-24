@@ -3,14 +3,14 @@
  * wired as the unit project's `setupFiles` in vitest.config.ts).
  *
  * Before that wiring, every mechanism env var the engine reads before its options leaked from the shell into all
- * 543 unit files, and only three of them defended themselves (test/unit/loop/fastpath.test.ts,
+ * 543 unit files, and only three of them defended themselves (test/unit/jev-modes/stages/fastpath.test.ts,
  * test/unit/loop/router.test.ts, test/unit/loop/router-golden.test.ts). A developer who had exported
  * `JEVCODE_FASTPATH=off` for a `jev-on-next-nofast` replay and then typed `npm test` in the same shell was
  * gating the merge on a different tree from the one the merge message describes.
  *
  * The first version of the setup file deleted a hand-audited list of nine names, which left ~78 of the ~87
  * `JEVCODE_*` names the shipped code reads still leaking — among them `JEVCODE_HEDGE` and
- * `JEVCODE_DEADLINE_GROWTH` (src/synth/llm/source.ts, both read before/without an option and both pinned per arm
+ * `JEVCODE_DEADLINE_GROWTH` (src/jev-modes/synth/llm/source.ts, both read before/without an option and both pinned per arm
  * in the OOS wave) and `JEVCODE_MOCK_STEP_MS`, each of which deterministically reds a real unit file. The list is
  * now INVERTED — sweep every `JEVCODE_*` except an explicit keep-list — so the two cases below that quantify over
  * the whole tree (`no product switch survives the sweep`, `the keep-list holds only harness opt-ins`) are the
@@ -86,7 +86,7 @@ describe('the unit suite starts from the tree default, not the shell', () => {
   });
 
   it('the names the audited list missed are swept too (the reason the list is inverted)', () => {
-    // each of these reds a real unit file when it is exported: source-backoff/deadline-growth (src/synth/llm/source.ts
+    // each of these reds a real unit file when it is exported: source-backoff/deadline-growth (src/jev-modes/synth/llm/source.ts
     // `hedgeEnabled`, `deadlineGrowthFrom` — read before any option) and cli/mock-trajectory
     for (const name of ['JEVCODE_HEDGE', 'JEVCODE_DEADLINE_GROWTH', 'JEVCODE_MOCK_STEP_MS', 'JEVCODE_MOCK_INTAKE', 'JEVCODE_MOCK_JEV_MS', 'JEVCODE_CONTEXT_MODE', 'JEVCODE_SANDBOX', 'JEVCODE_PROVIDER', 'JEVCODE_MODEL', 'JEVCODE_API_KEY']) {
       expect(deletedByUnitSetup(name), `${name} is read by the shipped code and must not reach a unit file`).toBe(true);

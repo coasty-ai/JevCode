@@ -200,7 +200,7 @@ goes through the injected seam, never through a direct filesystem call.
 
 ### 5. One contract file
 
-`src/core/types.ts` is the single contract file. Nothing in `src/provider/**`, `src/synth/**`,
+`src/core/types.ts` is the single contract file. Nothing in `src/provider/**`, `src/jev-modes/synth/**`,
 `src/orchestrate/**` or `src/import/**` declares a contract shape of its own; where a module used to, it now
 re-exports from core.
 

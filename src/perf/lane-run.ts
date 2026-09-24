@@ -206,7 +206,7 @@ export async function measureLaneRun(opts: { runs?: number; root?: string; warmR
         progress(`${spec.mode.padEnd(14)} unavailable: ${spec.why}`);
         continue;
       }
-      // the real cold path: one fresh sandboxed shell per candidate, exactly what src/synth/sieve/runner.ts does
+      // the real cold path: one fresh sandboxed shell per candidate, exactly what src/jev-modes/synth/sieve/runner.ts does
       const sandbox = createSandbox({ workspaceRoot: spec.cwd, runDir: join(dir, spec.mode), profile: 'auto', noNetwork: true, secretReadDenies: [], redact: (s) => s });
       const runOpts: SandboxRunOptions = { timeoutMs: 120_000, maxOutputBytes: 64 * 1024, signal: new AbortController().signal, cwd: spec.cwd, ...(opts.env !== undefined ? { env: opts.env } : {}) };
       const first: ExecResult = await sandbox.run(spec.command, runOpts); // warm-up: the OS page cache and the .pyc are not what this measures

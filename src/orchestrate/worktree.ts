@@ -6,13 +6,13 @@
  * [G16], which lives on the coordination branch; `WorktreeFacade` below is therefore the SEAM
  * only — declared here, implemented there. What this module owns are the two pieces around it:
  *
- *  - `dirtySnapshot` / `applyDirtySnapshot`, lifted from `src/synth/sieve/lanes.ts:158` and made
+ *  - `dirtySnapshot` / `applyDirtySnapshot`, lifted from `src/jev-modes/synth/sieve/lanes.ts:158` and made
  *    binary-safe. The lane version reads `readFile(abs, 'utf8')`, which mangles a dirty `.png` or
  *    `.db`; on a synth lane that dies with the lane, but in an agent it can be committed and
  *    landed into the user's checkout (corner row 17). This copy moves `Buffer`s, preserves
  *    `st_mode & 0o7777`, and records the sha256 of the bytes it WROTE — which is exactly what
  *    §2.6's `carried` set compares against. `lanes.ts`'s `parsePorcelainZ` is not reusable from
- *    here (§8.1 rule 1 keeps `src/orchestrate/**` off `src/synth/**`), so the NUL parser is
+ *    here (§8.1 rule 1 keeps `src/orchestrate/**` off `src/jev-modes/synth/**`), so the NUL parser is
  *    reimplemented below in ~15 lines.
  *
  *  - `cleanProbe`, because `git worktree lock` prevents only `prune` and `move` and is NOT a
@@ -66,7 +66,7 @@ const STATUS_ARGS: readonly string[] = ['status', '--porcelain', '-z', '--untrac
  * `git status --porcelain -z --untracked-files=all`, parsed. NUL-separated; a rename or copy
  * carries its original path as one extra NUL-separated field, which must be consumed or every
  * following entry is read off by one. (A reimplementation of `lanes.ts parsePorcelainZ`, which
- * sits in `src/synth/**` and so out of reach of §8.1 rule 1; this version also keeps `from`,
+ * sits in `src/jev-modes/synth/**` and so out of reach of §8.1 rule 1; this version also keeps `from`,
  * because `commit.ts` must stage a rename's source to stage its deletion.)
  */
 export function parseStatusZ(out: string): StatusZEntry[] {

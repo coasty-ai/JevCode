@@ -3,7 +3,7 @@
  *
  *   env -u ANTHROPIC_API_KEY node --env-file=.env node_modules/.bin/tsx experiments/oracle/run.mts [--only id,id] [--limit n] [--extract-only] [--labels] [--skip-gold]
  *
- * Per instance: (a) code extracts candidate blocks (src/synth/oracle/extract.ts); (b) ONE Jev
+ * Per instance: (a) code extracts candidate blocks (src/jev-modes/synth/oracle/extract.ts); (b) ONE Jev
  * request judges is_reproduction / shows_expected / shows_actual per block, the failure kind and
  * the traceback frames (questions.ts), compared with experiments/oracle/labels.json; (c) the chosen
  * block runs at base_commit in /tmp/jevonly/repos/<instance_id> (worktrees of the bare clones under
@@ -23,9 +23,9 @@ import { fileURLToPath } from 'node:url';
 import { globSync } from 'node:fs';
 import type { Answer, Json } from '../../src/core/types.ts';
 import { createJevDecider } from '../../src/jev/client.ts';
-import { buildCriterion, chooseBlocks, chunksWithContext, evaluateCriterion, extractBlocks, isRunnable, oracleQuestions, readOracleAnswers, reproductionGoal, verifyRepro } from '../../src/synth/oracle/index.ts';
-import type { BlockChoice, BuiltCriterion, CodeBlock, Extraction, FailureKind, OracleJudgement, ReproRunResult, Verdict } from '../../src/synth/oracle/index.ts';
-import type { VerifyRunFn } from '../../src/synth/verify/types.ts';
+import { buildCriterion, chooseBlocks, chunksWithContext, evaluateCriterion, extractBlocks, isRunnable, oracleQuestions, readOracleAnswers, reproductionGoal, verifyRepro } from '../../src/jev-modes/synth/oracle/index.ts';
+import type { BlockChoice, BuiltCriterion, CodeBlock, Extraction, FailureKind, OracleJudgement, ReproRunResult, Verdict } from '../../src/jev-modes/synth/oracle/index.ts';
+import type { VerifyRunFn } from '../../src/jev-modes/synth/verify/types.ts';
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const DIR = join(ROOT, 'experiments/oracle');
@@ -287,7 +287,7 @@ async function one(r: Record_): Promise<void> {
   if (vnote !== null) row.notes.push(vnote);
   const pkg = PACKAGE[r.repo] ?? null;
   const options = { packageName: pkg, framework: pkg === 'django' ? ('django' as const) : null, timeoutMs: 30_000 };
-  const { runRepro } = await import('../../src/synth/oracle/runner.ts');
+  const { runRepro } = await import('../../src/jev-modes/synth/oracle/runner.ts');
   const base: ReproRunResult = await runRepro(run, cwc.chunks, { ...options, workspace, python: py });
   const goal = reproductionGoal({ block, chunks: cwc.chunks, built, result: base, options });
   row.base = {

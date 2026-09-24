@@ -77,11 +77,11 @@ it must work (section 16).
 ### 1.1 What the harness does today
 
 - **One forced action per step.** The generator must call a single `propose_action` tool, whose `action` is one of six
-  kinds (`src/provider/actions.ts:15`, `:28-81`). A named `toolChoice` forces it (`src/loop/stages/propose.ts:53`).
+  kinds (`src/provider/actions.ts:15`, `:28-81`). A named `toolChoice` forces it (`src/jev-modes/stages/propose.ts:53`).
   Every adapter disables parallel tool calls: `src/provider/openrouter.ts:109`, `src/provider/anthropic.ts:111-116`,
   `src/provider/openai.ts:155`, `src/provider/openai-compat.ts:184`.
 - **No conversation.** Each step rebuilds one user message from the plan, a 4-entry window and a relaxed file view
-  (`src/loop/stages/propose.ts:43-44`, `src/provider/prompts.ts:1002`).
+  (`src/jev-modes/stages/propose.ts:43-44`, `src/provider/prompts.ts:1002`).
   - `ChatMessage` is text only (`src/core/types.ts:891-894`) and `ToolCall` has no id (`src/core/types.ts:884-888`), so no adapter can send a tool result back as a tool message.
   - The model never sees its own earlier calls, and only the system prompt and tools can hit a prompt cache (inferred from `src/provider/anthropic.ts:89`, `:101`).
 - **The session is not a conversation either.** A run's task is the raw message text (`src/cli/session.ts:2349`,
@@ -177,7 +177,7 @@ Everything new lives under `src/agent/` (about 5,500 lines in 30 modules; none i
 | `src/agent/safety.ts`, `safety-rules.ts`, `safety-git.ts`, `shlex.ts` | The rule-based command classifier (`readonly` / `safe` / `destructive` / `unknown`), its rule ids and sentences, the git rules, and the small POSIX-shell reader it classifies with. |
 | `src/agent/jev.ts` | The three in-run Jev placements: RA0 (first-turn effort hint), RA1 (loop-nudge wording) and RA2 (progress check). Each is routed through `routeSpeculative` and carries a four-clause `jev-contract` block. |
 | `src/agent/limits.ts` | Every agent constant of section 11. |
-| `src/loop/stages/agent.ts` | `runAgentStage(ctx, driver, actx)` and every helper of the engine seam that needs no private engine state: the per-step change set, the rule `RiskAssessment`, the destructive note, the unscoped-run test and the stream tap. This is the engine-side twin of `src/loop/stages/synth.ts`. |
+| `src/loop/stages/agent.ts` | `runAgentStage(ctx, driver, actx)` and every helper of the engine seam that needs no private engine state: the per-step change set, the rule `RiskAssessment`, the destructive note, the unscoped-run test and the stream tap. This is the engine-side twin of `src/jev-modes/stages/synth.ts`. |
 | `src/core/agent-run.ts` | `isReplyOnlyRun`, the one predicate for "this run was a reply": the engine, the TUI and the session all import it. |
 
 Reused unchanged:
@@ -195,7 +195,7 @@ The legacy loop detector is **not** used in agent mode. The agent has its own de
 ### 2.2 The engine seam
 
 Today `Engine.runStep` dispatches the propose stage to an injected `Synthesizer` through `runSynthStage`
-(`src/loop/engine.ts:4473-4503`, `src/loop/stages/synth.ts:17-31`). It then runs the shared tail: coordinate, budget
+(`src/loop/engine.ts:4473-4503`, `src/jev-modes/stages/synth.ts:17-31`). It then runs the shared tail: coordinate, budget
 check, pre-images, execute, post-images, outcome (`src/loop/engine.ts:4600-4700`). After that come `commit()` (`:5828`) and the stop
 rules (`:4716-4724`).
 
@@ -219,7 +219,7 @@ The agent mode adds one branch next to the `jev-off` branch (`src/loop/engine.ts
   - `observe()` is wrapped. An exception becomes a transcript warning plus a stage failure (three in a row stop the run with `error`, `src/loop/engine.ts:321`), and the step still commits.
   - The driver updates its in-memory transcript before any I/O, so the call counts as resolved even when the disk append fails.
 - **Test results without Jev.** On a test-command run, the engine fills `draft.judge` with `codeJudge()`
-  (`src/loop/stages/judge.ts:176`). `lastTests` and the `tests Np/Nf` segment keep working.
+  (`src/jev-modes/stages/judge.ts:176`). `lastTests` and the `tests Np/Nf` segment keep working.
 - **Discarded steps.** The engine can discard a step after `next()` has returned it. This happens in three places:
   the checkpoint-failure pane before execute (`src/loop/engine.ts:4603-4608`), a coordination discard (`:4613-4620`), and
   a pause-now under rule 1 (`:5738-5745`). The driver needs no hook for this.
@@ -396,7 +396,7 @@ The rules are evaluated in order. Their counters live in `AgentStateV1` and surv
 
 **Passing and `complete`.**
 - A *passing run* is a run of the detected test command that is **unscoped** (its normalised command equals `testCommand.command`, with no `workdir` or with `workdir: '.'`) and exits 0.
-- An exit-0 run whose output the parser cannot read resets `changedSinceVerify`. It never yields `complete`. It replaces today's `tests_pass_unparsed` question (`src/loop/stages/complete.ts:282`).
+- An exit-0 run whose output the parser cannot read resets `changedSinceVerify`. It never yields `complete`. It replaces today's `tests_pass_unparsed` question (`src/jev-modes/stages/complete.ts:282`).
 - The engine stops with `complete` when the agent variant of `verifiedCompletion` holds. That means a `done` proposal plus a last test run that is the unscoped detected command, parsed, all passed and current (`lastChangeStep` < its step). Todo items left pending do not block it; the finish row lists them as a note.
 - Otherwise the stop is `generator_done`. Today's check also requires an empty plan and accepts scoped runs (`src/loop/engine.ts:5233-5238`, `src/loop/stages/execute.ts:33-51`); the agent variant replaces both conditions.
 - **A reply** (§A1). A run whose every step is a `finish` with no call — the model answered in prose and never called a
@@ -440,7 +440,7 @@ stepChanged = (after \ before) ∪ (before \ after)
 
 Invalid arguments, unknown tools and unrepairable JSON become `tool_result` errors with a precise message (section
 5.4), and the loop continues. This follows OpenCode's "invalid tool" sink (`packages/opencode/src/session/llm.ts:296-312`).
-It replaces today's "second failure ends the step" (`src/loop/stages/propose.ts:22`, `:66-76`).
+It replaces today's "second failure ends the step" (`src/jev-modes/stages/propose.ts:22`, `:66-76`).
 
 ### 3.6 Loop detection and the progress check (`src/agent/loop.ts`)
 
@@ -1668,7 +1668,7 @@ redirect other than to `/dev/null` or `&1`/`&2`:
 `awk` is excluded (`system()`, `print >`). Anything in doubt is not `readonly`.
 
 **`safe`** (an `act` step, never asked, never noted):
-- the detected test command and its scoped forms (`isVerificationRun`, `src/loop/stages/risk.ts:231`);
+- the detected test command and its scoped forms (`isVerificationRun`, `src/jev-modes/stages/risk.ts:231`);
 - build, lint and type-check commands: `npm|pnpm|yarn|bun run build|lint|typecheck|test|check`, `tsc`, `eslint`, `prettier --check`, `cargo build|check|test|clippy|fmt --check`, `go build|test|vet`, `pytest`, `python -m pytest|unittest`, `make test|check|build`.
 
 **`destructive`** (under `full`: runs, and the step carries a note; under `review`: asked):
@@ -1811,7 +1811,7 @@ code model, keeps its catalogue replies.
 - The loop detector (code) decides that the agent is looping. Jev only picks the wording of the nudge from four code-enumerated moves (`choice()`, `src/jev/questions.ts:63`, with the escape option).
 - State: the last 6 step one-liners (action kind, target, outcome status, exit code), the trip rule, tool and count, the last test counts, and the number of changed files. No tool output.
 - The detector, `AGENT_MAX_LOOP_NUDGES` and the budgets remain the only stops.
-- It replaces today's replan Choice, whose `stop_and_report` could end the run (`src/loop/stages/replan.ts:338-345`).
+- It replaces today's replan Choice, whose `stop_and_report` could end the run (`src/jev-modes/stages/replan.ts:338-345`).
 - Contract block:
 
 ```ts
@@ -1842,7 +1842,7 @@ code model, keeps its catalogue replies.
 
 | Candidate | Verdict | Reason |
 |---|---|---|
-| First-turn file hints (Jev ranks candidate files) | rejected | It brings back per-candidate ranking, which the research says to remove, and no surveyed system pre-ranks files (https://arxiv.org/abs/2609.00006). Its input is close to alphabetical at a fresh run: `prefilterCandidates` sorts by task mentions, then `touchedThisRun`, then path (`src/loop/stages/context.ts:72-78`). It would add up to 400 ms before the first token. Replaced by the deterministic "your uncommitted changes" line (5.3). |
+| First-turn file hints (Jev ranks candidate files) | rejected | It brings back per-candidate ranking, which the research says to remove, and no surveyed system pre-ranks files (https://arxiv.org/abs/2609.00006). Its input is close to alphabetical at a fresh run: `prefilterCandidates` sorts by task mentions, then `touchedThisRun`, then path (`src/jev-modes/stages/context.ts:72-78`). It would add up to 400 ms before the first token. Replaced by the deterministic "your uncommitted changes" line (5.3). |
 | Review-card skip under `--autonomy review` | rejected | Deciding whether a human sees a card is approving an action, the gating role the user asked Jev to leave. Review mode shows the card for every `unknown` command. |
 | Confirm-only continuation after a text-only turn | rejected | It would extend a run. The narrowed deterministic rule (3.3) covers the case. Gemini CLI's model-based version is off by default (`config/config.ts:1286`). |
 | Test-command choice among detected candidates | rejected | `detectTestCommand` returns one command (`src/workspace/tests.ts:222-235`), and a Jev pick would feed verification. |
@@ -1856,14 +1856,14 @@ code model, keeps its catalogue replies.
 ### 13.5 Removed from the default mode
 
 Removed from the default mode:
-- intent (`src/loop/stages/intent.ts:240`);
-- context Nouls (`src/loop/stages/context.ts:181`);
-- the harm Scores (`src/loop/stages/risk.ts:869`);
-- the record-only judge questions and `tests_pass_unparsed` (`src/loop/stages/judge.ts:379`, `src/loop/stages/complete.ts:282`);
-- the replan Choice (`src/loop/stages/replan.ts:285`);
-- the synthesizer's localisation, ranking, guard and oracle questions (`src/synth/**`);
-- the fast path (`src/loop/stages/fastpath.ts:181`);
-- the chat lookup (`src/chat/lookup.ts:141`);
+- intent (`src/jev-modes/stages/intent.ts:240`);
+- context Nouls (`src/jev-modes/stages/context.ts:181`);
+- the harm Scores (`src/jev-modes/stages/risk.ts:869`);
+- the record-only judge questions and `tests_pass_unparsed` (`src/jev-modes/stages/judge.ts:379`, `src/jev-modes/stages/complete.ts:282`);
+- the replan Choice (`src/jev-modes/stages/replan.ts:285`);
+- the synthesizer's localisation, ranking, guard and oracle questions (`src/jev-modes/synth/**`);
+- the fast path (`src/jev-modes/stages/fastpath.ts:181`);
+- the chat lookup (`src/jev-modes/chat/lookup.ts:141`);
 - the chat intake (`src/chat/intake.ts`) with its `On it — starting the run.` line, its `do it` offer and the catalogue
   replies (§A1);
 - the mandatory Jev key (`src/config/resolve.ts:778-781`).

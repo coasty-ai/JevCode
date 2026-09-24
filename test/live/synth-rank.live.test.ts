@@ -9,9 +9,9 @@ import type { DeciderConfig } from '../../src/core/types.js';
 import { createJevDecider } from '../../src/jev/client.js';
 import { JEV_PROVIDERS } from '../../src/jev/providers.js';
 import { DEFAULT_JEV_BASE_URL, DEFAULT_JEV_MODEL } from '../../src/jev/types.js';
-import { createRanker } from '../../src/synth/rank/index.js';
-import type { Candidate, JevAsk } from '../../src/synth/types.js';
-import { GCD_BUGGY_LINE, GCD_FILE, GCD_FIX, candidate, context, siteAt } from '../unit/synth/rank/helpers.js';
+import { createRanker } from '../../src/jev-modes/synth/rank/index.js';
+import type { Candidate, JevAsk } from '../../src/jev-modes/synth/types.js';
+import { GCD_BUGGY_LINE, GCD_FILE, GCD_FIX, candidate, context, siteAt } from '../unit/jev-modes/synth/rank/helpers.js';
 
 const apiKey = process.env['JEV_API_KEY'] ?? process.env['OPENROUTER_API_KEY'] ?? '';
 const live = process.env['JEVCODE_LIVE'] === '1';

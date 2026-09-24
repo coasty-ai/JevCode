@@ -6,7 +6,7 @@
  * (§9.3). Pure; every row ≤ `columns`; the cut is a function, never Ink clipping.
  */
 import { RISK_DIMENSIONS, type ConfirmRequest, type RiskDimension, type RiskDimensionResult, type SessionClamp } from '../../core/types.js';
-import { buildRiskQuestions, riskLevelTexts } from '../../loop/stages/risk.js';
+import { buildRiskQuestions, riskLevelTexts } from '../../jev-modes/stages/risk.js';
 import { noulConfidence } from '../../jev/confidence.js';
 import { confirmPreviewLines, describeAction, oneLine, p2 } from '../plain.js';
 import { WITHHELD_ROW_TEXT, diffRows, moreRowText, type DiffRow, type DiffRowKind } from '../diff/rows.js';

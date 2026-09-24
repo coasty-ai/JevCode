@@ -26,10 +26,10 @@ import { fileURLToPath } from 'node:url';
 
 import type { SandboxProfile } from '../../src/core/types.js';
 import { createSandbox } from '../../src/sandbox/run.js';
-import type { Lane } from '../../src/synth/search/types.js';
-import { quixbugsTestCommand } from '../../src/synth/verify/quixbugs.js';
-import { summarize } from '../../src/synth/verify/index.js';
-import { WarmPlane } from '../../src/synth/warm/index.js';
+import type { Lane } from '../../src/jev-modes/synth/search/types.js';
+import { quixbugsTestCommand } from '../../src/jev-modes/synth/verify/quixbugs.js';
+import { summarize } from '../../src/jev-modes/synth/verify/index.js';
+import { WarmPlane } from '../../src/jev-modes/synth/warm/index.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = join(HERE, '../..');

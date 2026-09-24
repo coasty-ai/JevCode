@@ -28,7 +28,7 @@
  */
 import { formatDuration } from '../core/time.js';
 import type { BenchCondition, BenchSuite, FastPathReason } from '../core/types.js';
-import { s2ReachableOn } from '../synth/llm/hedge.js';
+import { s2ReachableOn } from '../jev-modes/synth/llm/hedge.js';
 import { armMechanisms, engineModeOf } from './conditions.js';
 import { isEvaluated, median } from './metrics.js';
 import { emptyStepsSummary, mergeStepsSummaries } from './step-records.js';
@@ -256,7 +256,7 @@ export function measurementRows(records: readonly BenchRecord[], condition: Benc
 
   // F05. The §3 generation path is the wave's third mechanism and it has no row, because on these arms it has no RUN:
   // `jev-on-next*` are the `jev-on` engine, and every S2 mechanism lives on the synthesizer sample path
-  // (`src/synth/llm/source.ts` for hedging and the §3.4 cap; `PromptInput.prefixOrder` has no writer; `onFirstByte` is
+  // (`src/jev-modes/synth/llm/source.ts` for hedging and the §3.4 cap; `PromptInput.prefixOrder` has no writer; `onFirstByte` is
   // forwarded only from the sample path). The arms used to RECORD `s2: true` regardless, which is the half of this the
   // conditions file fixes; this row is the other half — the table says so out loud instead of leaving a mechanism
   // unmentioned, which reads as "measured, nothing to report". It reports and never gates: an arm that cannot run a
@@ -266,7 +266,7 @@ export function measurementRows(records: readonly BenchRecord[], condition: Benc
   // §5.5) — before this it read `armMechanisms(condition)` with no observation, so the moment a run reports
   // `mechanisms.s2` the table would have said `not_evaluable` under a summary.json saying `'on'`.
   // B6: the reason names the arm's OWN mode, never a hard-coded one. Integration: the reason itself changed with
-  // the F05/F25 reconciliation — S2 is honoured on `jev-on` (`s2Mode`, src/synth/llm/hedge.ts) and NOT on the
+  // the F05/F25 reconciliation — S2 is honoured on `jev-on` (`s2Mode`, src/jev-modes/synth/llm/hedge.ts) and NOT on the
   // synthesizer sample path, which is the opposite of what F05 could see. An `'off'` row is now either an arm
   // whose mode cannot honour the pin, or one that pinned nothing; `s2ReachableOn` separates the two so the row
   // says which, instead of blaming a mode that in fact runs it.

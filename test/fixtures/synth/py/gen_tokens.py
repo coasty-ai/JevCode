@@ -1,7 +1,7 @@
 """Regenerate the *.tokens.json fixtures from CPython's tokenize module (run with python3 >= 3.8, < 3.12).
 
 Each entry is [type, string, startLine, startCol, endLine, endCol] with the ENCODING token dropped.
-The TypeScript tokenizer in src/synth/py/tokenize.ts is tested against these files.
+The TypeScript tokenizer in src/jev-modes/synth/py/tokenize.ts is tested against these files.
 """
 import io
 import json

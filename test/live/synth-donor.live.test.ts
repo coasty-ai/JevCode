@@ -12,10 +12,10 @@ import { describe, expect, it } from 'vitest';
 import type { Json, Question, StageName } from '../../src/core/types.js';
 import { createJevDecider } from '../../src/jev/client.js';
 import { JEV_PROVIDERS } from '../../src/jev/providers.js';
-import { fillHolesSequentially, identifierHoles } from '../../src/synth/donor/holes.js';
-import type { HoleContext } from '../../src/synth/donor/holes.js';
-import { analyse, blockAt, scopeAt } from '../../src/synth/py/structure.js';
-import type { JevAsk, Site, SourceFile } from '../../src/synth/types.js';
+import { fillHolesSequentially, identifierHoles } from '../../src/jev-modes/synth/donor/holes.js';
+import type { HoleContext } from '../../src/jev-modes/synth/donor/holes.js';
+import { analyse, blockAt, scopeAt } from '../../src/jev-modes/synth/py/structure.js';
+import type { JevAsk, Site, SourceFile } from '../../src/jev-modes/synth/types.js';
 
 const live = process.env['JEVCODE_LIVE'] === '1';
 const apiKey = process.env['OPENROUTER_API_KEY'] ?? '';

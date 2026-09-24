@@ -15,14 +15,14 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createDonorSource } from '../../src/synth/donor/index.ts';
-import { statementSiteAt } from '../../src/synth/localize/sites.ts';
-import { createMutationSource } from '../../src/synth/mutate/index.ts';
-import { createCompositeSource } from '../../src/synth/search/composite.ts';
-import { ENUMERATE_CAP, isTestPath, taskIdentifiers, testLiterals } from '../../src/synth/search/subgoal.ts';
-import { createTemplateSource } from '../../src/synth/templates/index.ts';
-import type { Candidate, CandidateSource, EnumerateOptions, FailureView, Site, SourceFile } from '../../src/synth/types.ts';
-import { applyCandidate } from '../../src/synth/verify/apply.ts';
+import { createDonorSource } from '../../src/jev-modes/synth/donor/index.ts';
+import { statementSiteAt } from '../../src/jev-modes/synth/localize/sites.ts';
+import { createMutationSource } from '../../src/jev-modes/synth/mutate/index.ts';
+import { createCompositeSource } from '../../src/jev-modes/synth/search/composite.ts';
+import { ENUMERATE_CAP, isTestPath, taskIdentifiers, testLiterals } from '../../src/jev-modes/synth/search/subgoal.ts';
+import { createTemplateSource } from '../../src/jev-modes/synth/templates/index.ts';
+import type { Candidate, CandidateSource, EnumerateOptions, FailureView, Site, SourceFile } from '../../src/jev-modes/synth/types.ts';
+import { applyCandidate } from '../../src/jev-modes/synth/verify/apply.ts';
 import { REPOS, loadFile, normLine, privateWorktree, replaceSiteAt, runF2P, sh, venvPython } from './lib.mts';
 import type { F2PRecord } from './lib.mts';
 

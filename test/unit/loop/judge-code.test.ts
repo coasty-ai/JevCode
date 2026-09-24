@@ -7,10 +7,10 @@
 import { describe, expect, it } from 'vitest';
 import { assertQuestionBatch } from '../../../src/jev/questions.js';
 import type { CompletionEvidence } from '../../../src/core/types.js';
-import { completionEvidenceHolds, isCompleteByFact, knownFailuresOf, type ClaimingCompletionEvidence } from '../../../src/loop/stages/complete.js';
-import { buildRecordOnlyQuestions } from '../../../src/loop/stages/judge.js';
+import { completionEvidenceHolds, isCompleteByFact, knownFailuresOf, type ClaimingCompletionEvidence } from '../../../src/jev-modes/stages/complete.js';
+import { buildRecordOnlyQuestions } from '../../../src/jev-modes/stages/judge.js';
 import { codeJudge, knownFailureCount, ledgerGoalsOf, unexpectedFailures, type CodeJudgeRun } from '../../../src/loop/judge-code.js';
-import { completeQuestionDue } from '../../../src/loop/stages/complete.js';
+import { completeQuestionDue } from '../../../src/jev-modes/stages/complete.js';
 
 const T1 = 'tests/test_a.py::test_f';
 const T2 = 'tests/test_a.py::test_g';

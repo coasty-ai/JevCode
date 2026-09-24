@@ -2,7 +2,7 @@
 
 Written 2026-09-21 against `main` = `a2fee9c`, re-anchored at `c3b0aad` (which landed COORDINATION revision 3 and the
 `llm-jev` guard work; it changed no source file this document cites — only `src/loop/stages/{complete,judge}.ts` and
-`src/synth/{llm/source,search/*}.ts` — so every `file:line` below still holds, and the `CD:` line numbers are revision
+`src/jev-modes/synth/{llm/source,search/*}.ts` — so every `file:line` below still holds, and the `CD:` line numbers are revision
 3's). Working tree: the TUI round-3 changes are uncommitted; every `file:line` was re-read in that tree.
 `CD §n` is `docs/COORDINATION-DESIGN.md`, `D §n` is `docs/DESIGN.md`, `TD §n` / `TD3 §n` are `docs/TUI-DESIGN.md` /
 `docs/TUI-DESIGN-3.md`.
@@ -95,8 +95,8 @@ the user reviewing".
 | G5 | Ledger is a hard prerequisite for spawning; degraded control deleted, degraded discovery kept | §0.1, §2.7 | correctness |
 | G6 | Persist and re-establish the reserve: `heldUsd` in `SpendSnapshot`, restored on adoption | §6.2, row 31 | correctness |
 | G7 | Name and test the file that installs the child's parking blocker (`src/cli/session.ts:2030`, `:2354`) | §2.5, row 27 | correctness |
-| G8 | Close ownership belt 2 for `run` actions, or demote the land-time rule — `computeTargets` (`src/loop/stages/risk.ts:537`) yields paths only for `edit \| write \| patch` | §2.4, §5.3, row 18 | correctness |
-| G9 | Make the lifted `dirtySnapshot` binary-safe (`src/synth/sieve/lanes.ts:158` reads `utf8`) | §2.3, row 17 | correctness |
+| G8 | Close ownership belt 2 for `run` actions, or demote the land-time rule — `computeTargets` (`src/jev-modes/stages/risk.ts:537`) yields paths only for `edit \| write \| patch` | §2.4, §5.3, row 18 | correctness |
+| G9 | Make the lifted `dirtySnapshot` binary-safe (`src/jev-modes/synth/sieve/lanes.ts:158` reads `utf8`) | §2.3, row 17 | correctness |
 | G10 | Delete the claim that `git worktree lock` keeps `git status` clean; give the sweep a real clean probe | §2.3, §5.6 | correctness |
 | G11 | Code cross-check for the one judgement Jev owns: path-shaped tokens in a child's task text | §3.4, §3.5 | correctness |
 | G12 | State the exit-code contract for a delegating headless run | §4.9, row 11 | correctness |
@@ -219,7 +219,7 @@ commits. The sweep therefore runs its **own** porcelain probe (`statusPorcelain`
 subtracts the recorded `syncedIgnored` list; "clean" is measured, never assumed.
 
 **[G9] The dirty-set sync must be binary-safe.** The parent's uncommitted work is replayed into each new worktree using
-the `src/synth/sieve/lanes.ts` recipe (`DIRTY_ENTRIES_MAX = 200` at `:45`, `dirtySnapshot` at `:158`), lifted into
+the `src/jev-modes/synth/sieve/lanes.ts` recipe (`DIRTY_ENTRIES_MAX = 200` at `:45`, `dirtySnapshot` at `:158`), lifted into
 `src/orchestrate/worktree.ts` and shared. The lane version reads with `readFile(abs, 'utf8')`, which mangles any dirty
 binary file; on a synth lane that dies with the lane, but in an agent it can be committed and landed into the user's
 checkout. The lifted version copies **bytes** (`Buffer`) and preserves the file mode.
@@ -267,7 +267,7 @@ the gate is shut and the reason is printed. A copy-mode agent cannot land (there
 | **logical** | `EngineOptions.orchestration.own`; the risk stage refuses a target outside `own` with `outcome = { status: 'blocked', reason: "outside this agent's ownership: src/y.ts (owns src/x/**)" }` (`ActionOutcome` `'blocked'`, `src/core/types.ts:196`), counted in `counters.blocked` and visible to Jev and the generator | an agent wandering outside its slice *inside its own worktree*, which would conflict at land time |
 | **reported** | one CD §4.3 lease per child, `type: 'agent'`, `paths = own`, renewed on the 15 s heartbeat | a *second human session* on the repo sees `3 agents own src/tui/**, src/loop/**, test/**` before starting heavy work |
 
-**[G8] Belt 2 does not cover `run` actions.** `computeTargets` (`src/loop/stages/risk.ts:537`) yields paths only for
+**[G8] Belt 2 does not cover `run` actions.** `computeTargets` (`src/jev-modes/stages/risk.ts:537`) yields paths only for
 `edit | write | patch` (the function reads `a.kind === 'edit' || a.kind === 'write' ? [a.path] : a.kind === 'patch' ?
 patchTouchedPaths(a.diff)... : []`). A formatter, a codegen step, or `npm test` regenerating `package-lock.json` writes
 outside `own` with nothing to catch it. Two fixes, both adopted:
@@ -604,7 +604,7 @@ Questions in one request (≤ 13 total):
   `<slug>` describes work that can be completed using only the files it owns"*. Phrased as a comparison of two given
   texts, not as a judgement, and now backstopped by the code check of §3.4 rule 8 [G11].
 
-Resolution is `resolveChoice` (`src/loop/stages/choose.ts:43`) with `PAIRED_NOUL_FLOOR = 0.5` (`choose.ts:10`), escape
+Resolution is `resolveChoice` (`src/jev-modes/stages/choose.ts:43`) with `PAIRED_NOUL_FLOOR = 0.5` (`choose.ts:10`), escape
 `none_of_these`, **fallback `no_split`**, and `annotateChoiceRows` (`choose.ts:73`) so the decisions pane shows
 `chosen | overridden | fallback`. An agent whose self-contained Noul is below `orchestrate.selfContainedFloor` (0.5) is
 dropped and its items merged into the agent owning the nearest directory; below 2 agents the result is `no_split`.
@@ -1097,7 +1097,7 @@ In order, first hit wins:
 2. `package.json` scripts, **only** the names `test`, `typecheck`, `lint`, and only when present → `npm run <name>`.
 3. `pyproject.toml` / `pytest.ini` / `tox.ini` → `pytest -q`; `Cargo.toml` → `cargo test`; `go.mod` → `go test ./...`;
    a `Makefile` with a `test:` target → `make test`.
-4. The synth oracle's runner when the workspace is one it handles (`src/synth/oracle`).
+4. The synth oracle's runner when the workspace is one it handles (`src/jev-modes/synth/oracle`).
 5. The parent's `lastTestRun.command` — whatever the parent actually ran and parsed.
 6. None → every code agent is downgraded to `research` (§3.4 rule 5) and the manifest says `no verification command
    found; agents are research-only (set orchestrate.verify to allow code agents)`.
@@ -1608,7 +1608,7 @@ review-pass defects [D1]–[D14]**.
 6. **Nothing from a record is executed or path-joined.** Slugs, globs, shas, branch names and paths are regex- and
    containment-validated before any git command; every git invocation goes through `runGit` (`src/workspace/git.ts:70`)
    as an **argv array**, never a shell string built from a record. (Where a command must be rendered for display,
-   `shellQuote` is `src/workspace/git.ts:50` — the winner cited `src/synth/verify/text.ts` [G19].)
+   `shellQuote` is `src/workspace/git.ts:50` — the winner cited `src/jev-modes/synth/verify/text.ts` [G19].)
 7. **No new network surface.** No listener, no port, no daemon, no mDNS. Agents are child processes and files.
 8. **`jevcode:` is the only lock reason we ever release**, and only when the owning heartbeat is dead on this device. A
    user's own `git worktree lock` is never touched.
@@ -1626,7 +1626,7 @@ review-pass defects [D1]–[D14]**.
 
 | Owner | Code | On disk |
 | --- | --- | --- |
-| **harness** | `src/orchestrate/**` (new): `split/{gate,enumerate,normalize,globs,questions,rank}.ts`, `canonical.ts` (the one canonical form behind both `manifestId` and the checksum — added 2026-09-22 so adoption cannot silently re-spawn), `manifest.ts`, `worktree.ts`, `commit.ts` [G1], `verify.ts`, `critic.ts`, `land.ts`, `preflight.ts`, `stall.ts`, `index.ts` (the one facade the surface imports); `src/loop/stages/decompose.ts`; `src/loop/engine.ts` (gate, stage, P9/P10, `own` refusal, `orchestration` options, events); `src/loop/stages/risk.ts` (the ownership filter); `src/checkpoint/store.ts` (`writeCache`, the `orchestrate/` dir); `src/core/types.ts` (additive, contract 1.5); `src/core/limits.ts`; `src/provider/prompts.ts` (`propose_split` + the `## Agents` section); `src/sandbox/seatbelt.ts` (the child deny list [G3]); `src/coordination/**` (the new `MessageType`s, `Lease.type 'agent'`); `src/synth/sieve/lanes.ts` (extract a binary-safe `dirtySnapshot` [G9]); `src/spend/meter.ts` (`hold`/`release` + `heldUsd` in `restore` [G6]); `src/bench/**` (the `split-on` arm) | `<runDir>/orchestrate/{manifest-<n>.json, agent-<slug>.task, agent-<slug>.seed.json, review-<n>.json, land.jsonl, land.lock}`; the worktrees and metadata **through CD's facade** [G16] |
+| **harness** | `src/orchestrate/**` (new): `split/{gate,enumerate,normalize,globs,questions,rank}.ts`, `canonical.ts` (the one canonical form behind both `manifestId` and the checksum — added 2026-09-22 so adoption cannot silently re-spawn), `manifest.ts`, `worktree.ts`, `commit.ts` [G1], `verify.ts`, `critic.ts`, `land.ts`, `preflight.ts`, `stall.ts`, `index.ts` (the one facade the surface imports); `src/loop/stages/decompose.ts`; `src/loop/engine.ts` (gate, stage, P9/P10, `own` refusal, `orchestration` options, events); `src/jev-modes/stages/risk.ts` (the ownership filter); `src/checkpoint/store.ts` (`writeCache`, the `orchestrate/` dir); `src/core/types.ts` (additive, contract 1.5); `src/core/limits.ts`; `src/provider/prompts.ts` (`propose_split` + the `## Agents` section); `src/sandbox/seatbelt.ts` (the child deny list [G3]); `src/coordination/**` (the new `MessageType`s, `Lease.type 'agent'`); `src/jev-modes/synth/sieve/lanes.ts` (extract a binary-safe `dirtySnapshot` [G9]); `src/spend/meter.ts` (`hold`/`release` + `heldUsd` in `restore` [G6]); `src/bench/**` (the `split-on` arm) | `<runDir>/orchestrate/{manifest-<n>.json, agent-<slug>.task, agent-<slug>.seed.json, review-<n>.json, land.jsonl, land.lock}`; the worktrees and metadata **through CD's facade** [G16] |
 | **TUI session** | `src/cli/session.ts` — **the `AgentSupervisor`** (one `Sandbox` per worktree [D10], spawn, bounded json reader, row fold, reaper, landing-queue driver, parent resume, the `[k]/[e]/[n]` exit gate, adoption, the parking blocker [G7]); `src/cli/agents.ts`; `src/cli/args.ts`; `src/tui/pane/agents.ts` + `model.ts` (`PaneTab 'a'`, `TAB_TITLE.a`, and `cycleTab`'s third argument [G20] [D7]); `src/tui/agents/lines.ts`; `src/tui/Pane.tsx`, `StatusLine.tsx`, `status/lines.ts`, `toasts.ts`; `src/tui/plain.ts` + `review/lines.ts` + `Review.tsx` (`ConfirmRequest.title`/`headline`/`body`/`badge` [G2] [D4] [D5]); `src/tui/budget/lines.ts` (`sessionRemainingUsd`'s third argument [D6]); `src/tui/why.ts`, `pane/timeline.ts` [G13]; `src/tui/keys/bindings.ts` (+ the `agents` `KeyContext`); `src/tui/commands/{registry,dispatch,parse}.ts`; `src/tui/useEngine.tsx`; `src/session/index.ts` (`agent:start`/`agent:end`/`land` kinds, `run:start.parentSessionId`, the child fold); `src/session/picker-lines.ts`; `src/session/seed.ts`; `src/config/**` (the `orchestrate.*` schema); `src/chat/{facts,replies}.ts`; `docs/{COMMANDS,KEYS}.md`; `test/pty/**` | `~/.jevcode/sessions/index.jsonl`, `<runDir>/ui.json` |
 
 Rules. (1) `src/orchestrate/**` imports nothing from `src/tui/**`, `src/cli/**`, `src/session/**` or `src/config/**` —
@@ -1709,7 +1709,7 @@ shut; zero Jev requests when only `no_split` survives).
 | --- | --- | --- | --- |
 | 17 | `src/orchestrate/worktree.ts` | the thin adapter over CD's `createWorktree`/`removeWorktree` [G16] + the **binary-safe** `dirtySnapshot` lifted from `lanes.ts` [G9], now also returning `syncedDirty: { path, sha256, mode }[]` [D2] + a real clean probe for the sweep that subtracts `carried ∪ syncedIgnored` [G10] [D2] | ~210 |
 | 18 | **`src/orchestrate/commit.ts`** [G1] [D2] [D10] | the **`addSet` computation** (`touched`, `dirtyNow`, sha-compared `carried`, 256-path chunking, `--literal-pathspecs`) and commit-after-step / commit-at-end through `runGit` with the neutralising flags and the supervisor's per-worktree `Sandbox`; `StepRecord.commit`; the `reset --soft HEAD~1` used by `drop --uncommit` | ~190 |
-| 19 | `src/loop/engine.ts` + `src/loop/stages/risk.ts` | the child differences of §2.5: `own` refusal in `computeTargets`, the `research` action space, the parking confirmer, **P10**, the post-`run` escape diff [G8], depth refusal | ~260 |
+| 19 | `src/loop/engine.ts` + `src/jev-modes/stages/risk.ts` | the child differences of §2.5: `own` refusal in `computeTargets`, the `research` action space, the parking confirmer, **P10**, the post-`run` escape diff [G8], depth refusal | ~260 |
 | 20 | `src/sandbox/seatbelt.ts` [G3] | the child deny list: `<commonDir>/refs/**`, `packed-refs`, `logs/**`, `worktrees/*/HEAD` when `orchestration.depth === 1` | ~40 |
 | 21 | `src/orchestrate/preflight.ts` | §3.6 | ~110 |
 
@@ -1792,7 +1792,7 @@ against the code on `main`; where the design text and the code differ, the code 
 | [D1] the card | `DecomposeFacts.dirtyOverlap` is derived **at manifest time**, by `dirtyOverlapOf(syncedDirty, own, fold)` against the CHOSEN split, and takes the first headline row whenever it is non-empty (`dirtyOverlapWarning`) | it cannot live in `RepoFacts`: before normalisation there are no `own` lists to intersect with. `fold` rides through to `ownsPath`, so on a case-folding volume a dirty `src/Foo/x.ts` IS owned by `src/foo/**` |
 | [G3] child seatbelt | `src/sandbox/seatbelt.ts` denies, for a depth-1 (`agentChild`) profile, the **main worktree's** `HEAD`, `index`, `ORIG_HEAD`, `MERGE_HEAD`, the `sequencer/` directory, and refs in all three storage formats (`refs/`, `packed-refs`, `reftable/`) | `extensions.refStorage = reftable` makes the first two inert on its own, so all three are denied rather than the two that happen to exist today. `ORIG_HEAD` / `MERGE_HEAD` / `sequencer/` are cheap to deny and each one steers what a resumed merge, rebase or cherry-pick does |
 | [G3] refusal | a depth-1 profile **without `gitCommonDir` is refused** — `ConfigError('a depth-1 (agentChild) seatbelt profile needs gitCommonDir: without it the [G3] ref denies would point at nothing', { setting: 'gitCommonDir' })` | fail closed. A deny list computed from an absent common dir is a deny list of nothing, which would have read as "profile applied" |
-| §2.4 belt 2 | an **empty `own` owns nothing**: the ownership filter returns `{ status: 'blocked', reason: '<prefix>… (owns nothing: this agent was spawned without a usable \`own\` list)' }` (`src/loop/stages/risk.ts:604`) | returning `null` there made belt 2 read "owns everything" — the one place in the design where a missing value inverted the safety property. `src/orchestrate/critic.ts` applies the same rule to an unparsable `own` glob |
+| §2.4 belt 2 | an **empty `own` owns nothing**: the ownership filter returns `{ status: 'blocked', reason: '<prefix>… (owns nothing: this agent was spawned without a usable \`own\` list)' }` (`src/jev-modes/stages/risk.ts:604`) | returning `null` there made belt 2 read "owns everything" — the one place in the design where a missing value inverted the safety property. `src/orchestrate/critic.ts` applies the same rule to an unparsable `own` glob |
 | §6.2 [G6] the meter | `SpendMeter.hold?(agentId, usd)`, `release?(agentId)` and `heldUsd?(): number` are **optional interface members**, always finite and `>= 0`, `heldUsd() === snapshot().heldUsd`; the hold belongs to the meter that took it, is never forwarded to the parent, and `exceeded()` does not count it [D6]. `restore` re-materialises the reserve under `RESTORED_HOLD_ID = '__restored__'` (`src/spend/meter.ts:50`) | optional because a fake meter in a test has no reserve to model; consumers read them with the call-optional idiom and the snapshot field as fallback (`5dfa1de`). Adoption must cross the restored total with the live `run.lock`s and then `release(RESTORED_HOLD_ID)`, or the reserve is counted twice — pinned by `test/unit/spend/meter.test.ts` |
 | §3.1 [G5] `hasLedger` | `OrchestrationOptions.hasLedger` is now **derived**: `hasLedger() = this.coord !== null \|\| opts.orchestration?.hasLedger === true` (`src/loop/engine.ts:3452`) | the field rode the orchestration options only because contract 1.4 had not yet landed `EngineOptions.coordination`. It has (W2b, `7efac12`), so the FACT comes from the handle; the field stays as the override contract 1.5's callers and fakes already set. Without it the drift [G5] warns about was exactly reachable: a parent delegating with no ledger to track the children in |
 | §3.6 pre-flight | `EngineDeps.preflightProbe?: PreflightProbe`, resolved by `createEngine` to `nodePreflightProbe()` (`engine.ts:242`, `:281`, `:3660`) | contract 1.4 (W2b) §3.6 added the seam so the disk / memory / cpu / fds pre-flight is testable without a machine. `src/orchestrate/preflight.ts` reports `unmeasured(limit)` for each quantity it could not read — `du -sk` past its ceiling is "unmeasured", not "enormous" |

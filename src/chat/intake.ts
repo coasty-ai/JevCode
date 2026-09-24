@@ -9,7 +9,7 @@
 import type { Answer, Decider, Decision, EngineMode, IntakeKind, Json, JsonObject, JevProvider, Question, StopReason, TestRunner, TokenUsage } from '../core/types.js';
 import { choice, pairedNouls, ref } from '../jev/questions.js';
 import { JEV_TOKEN_OVERHEAD } from '../jev/types.js';
-import { PAIRED_NOUL_FLOOR, annotateChoiceRows, resolveChoice, type ChoiceVerdict } from '../loop/stages/choose.js';
+import { PAIRED_NOUL_FLOOR, annotateChoiceRows, resolveChoice, type ChoiceVerdict } from '../jev-modes/stages/choose.js';
 import { clip, headTail } from '../core/text.js';
 import type { Fact } from './facts.js';
 import { buildFactQuestions } from './facts.js';

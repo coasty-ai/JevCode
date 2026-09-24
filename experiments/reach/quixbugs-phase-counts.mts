@@ -9,11 +9,11 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createMutationSource } from '../../src/synth/mutate/index.ts';
-import { analyse, blockAt, scopeAt } from '../../src/synth/py/structure.ts';
-import { createCompositeSource } from '../../src/synth/search/composite.ts';
-import { createTemplateSource } from '../../src/synth/templates/index.ts';
-import type { EnumerateOptions, Site, SourceFile } from '../../src/synth/types.ts';
+import { createMutationSource } from '../../src/jev-modes/synth/mutate/index.ts';
+import { analyse, blockAt, scopeAt } from '../../src/jev-modes/synth/py/structure.ts';
+import { createCompositeSource } from '../../src/jev-modes/synth/search/composite.ts';
+import { createTemplateSource } from '../../src/jev-modes/synth/templates/index.ts';
+import type { EnumerateOptions, Site, SourceFile } from '../../src/jev-modes/synth/types.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, '..', '..');

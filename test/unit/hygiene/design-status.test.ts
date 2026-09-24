@@ -52,7 +52,7 @@ function section(text: string, heading: string): string {
  * callback and `--quick` were written as prose, not as a backticked symbol).
  */
 const LANDED: readonly { symbol: string; definedIn: string; wave: string; phrases: readonly string[] }[] = [
-  { symbol: 'hedgeAfterMs', definedIn: 'src/synth/llm/source.ts', wave: 'S2', phrases: ['no `hedgeAfterMs`'] },
+  { symbol: 'hedgeAfterMs', definedIn: 'src/jev-modes/synth/llm/source.ts', wave: 'S2', phrases: ['no `hedgeAfterMs`'] },
   { symbol: 'LLM_HEDGES_PER_ROUND', definedIn: 'src/core/limits.ts', wave: 'S2', phrases: ['no `LLM_HEDGES_PER_ROUND`'] },
   { symbol: 'reportFirstByte', definedIn: 'src/provider/sse.ts', wave: 'S2', phrases: ['no TTFB callback'] },
   { symbol: 'quick', definedIn: 'src/bench/cli.ts', wave: 'S2', phrases: ['no `--quick`', '`--quick` in `src/bench/cli.ts`'] },

@@ -10,7 +10,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { createMockDecider } from '../../../src/jev/mock.js';
-import { buildContextQuestions, contextQuestionId } from '../../../src/loop/stages/context.js';
+import { buildContextQuestions, contextQuestionId } from '../../../src/jev-modes/stages/context.js';
 import type { AskOptions, Json, Question } from '../../../src/core/types.js';
 
 const opts: AskOptions = { signal: new AbortController().signal, stage: 'context', step: 1 };

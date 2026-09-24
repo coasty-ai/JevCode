@@ -6,7 +6,7 @@
  *
  * It lives here rather than in `test/unit/` because 41 programs x {buggy, correct} is 82 cold
  * `run_tests.py` processes plus 82 warm ones — minutes of real interpreter work, and the buggy
- * programs that hang cost a per-case cap each. `test/unit/synth/warm/parity.test.ts` keeps the
+ * programs that hang cost a per-case cap each. `test/unit/jev-modes/synth/warm/parity.test.ts` keeps the
  * shapes that can regress cheaply (JSON cases, module tests, an unimportable candidate, pytest,
  * a runaway output); this is the exhaustive run, and it is also the instrument that measures the
  * ONE thing the two paths can legitimately disagree about: a deadline.
@@ -24,11 +24,11 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { createSandbox } from '../../src/sandbox/run.js';
-import type { Lane } from '../../src/synth/search/types.js';
-import type { TestRunSummary } from '../../src/synth/types.js';
-import { summarize } from '../../src/synth/verify/index.js';
-import { quixbugsTestCommand } from '../../src/synth/verify/quixbugs.js';
-import { WarmPlane, WARM_OUTPUT_BYTES } from '../../src/synth/warm/index.js';
+import type { Lane } from '../../src/jev-modes/synth/search/types.js';
+import type { TestRunSummary } from '../../src/jev-modes/synth/types.js';
+import { summarize } from '../../src/jev-modes/synth/verify/index.js';
+import { quixbugsTestCommand } from '../../src/jev-modes/synth/verify/quixbugs.js';
+import { WarmPlane, WARM_OUTPUT_BYTES } from '../../src/jev-modes/synth/warm/index.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const QUIXBUGS = join(HERE, '../../bench/data/quixbugs');
@@ -142,7 +142,7 @@ const total = programs.length * 2;
 console.log(`\n${programs.length} programs x {buggy, correct} = ${total} pairs at --timeout ${TIMEOUT}, ${AGAINST === 'cold' ? 'COLD vs cold (control)' : 'warm vs cold'}, in ${Math.round((Date.now() - started) / 1000)} s`);
 console.log(`identical ${same}/${total}; cap-boundary disagreements ${timeoutOnly} (warm-only ${warmStricter}, cold-only ${coldStricter}); real parity breaks ${real.length}${real.length === 0 ? '' : `: ${real.join(', ')}`}`);
 // A warm-only cap hit is the safe direction and is handled: `runTests` discards any warm run
-// that hit a deadline and re-runs the command cold (src/synth/sieve/runner.ts, `hitADeadline`),
+// that hit a deadline and re-runs the command cold (src/jev-modes/synth/sieve/runner.ts, `hitADeadline`),
 // so it costs one cold run and cannot become a verdict. A cold-only cap hit is the dangerous
 // one — the warm screen would classify a candidate the cold path calls `timeout` — and it is
 // what subtracting the measured start-up allowance from the warm cap removes.

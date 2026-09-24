@@ -14,7 +14,7 @@
  *     code-generated input families, through the same probe shape the guard uses (one stdlib python3
  *     process per program: the candidate imported under the program's name with programs/ on sys.path,
  *     PYTHONHASHSEED=0, a SIGALRM timer per input, one JSON protocol line):
- *       (a) the perturbed inputs of src/synth/search/perturb.ts (JSON cases → ±1 / drop / duplicate /
+ *       (a) the perturbed inputs of src/jev-modes/synth/search/perturb.ts (JSON cases → ±1 / drop / duplicate /
  *           empty / singleton / word edits / swapped arguments; pytest Node chains → lengths ±1..3,
  *           acyclic and cyclic);
  *       (b) for the nine programs whose tests are pytest modules building Node/graph fixtures
@@ -43,8 +43,8 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import type { Json } from '../../src/core/types.ts';
-import { behaviourProbeCommand, linkedListInputs, linkedListShape, perturbedInputsFromCases, probeTimeoutMs, type PerturbedInput } from '../../src/synth/search/perturb.ts';
-import { shellQuote } from '../../src/synth/verify/text.ts';
+import { behaviourProbeCommand, linkedListInputs, linkedListShape, perturbedInputsFromCases, probeTimeoutMs, type PerturbedInput } from '../../src/jev-modes/synth/search/perturb.ts';
+import { shellQuote } from '../../src/jev-modes/synth/verify/text.ts';
 
 const exec = promisify(execFile);
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -630,7 +630,7 @@ run's bench workspace file (\`~/.jevcode/runs/bench-work/<benchId>/<task>/jev-on
 reference cases (\`bench/data/quixbugs/tests\`, the same cases the workspace exposes; there is no hidden suite).
 
 Verdicts: \`gold-identical\` = token-identical to \`bench/data/quixbugs/correct/<task>.py\` (comments, blank lines and whitespace
-width ignored); otherwise both programs ran on the reference cases, on the perturbed inputs \`src/synth/search/perturb.ts\`
+width ignored); otherwise both programs ran on the reference cases, on the perturbed inputs \`src/jev-modes/synth/search/perturb.ts\`
 derives from the visible tests (the guard's behaviour probe) and — for the nine programs whose tests are pytest modules
 building Node/graph fixtures — on ${graphN} random structures per program from seed ${seed} (DAGs judged by a validity
 oracle so any correct topological order counts, digraphs with a start and goal, linked lists with random cycles, weighted

@@ -9,7 +9,7 @@
 import { RISK_DIMENSIONS, type Decision, type Json, type StageName } from '../core/types.js';
 import { choiceConfidence, levelProb, riskFromProbabilities, scoreArgmax, uniformDistance } from '../jev/confidence.js';
 import { PAIRED_PREFIX } from '../jev/questions.js';
-import { PAIRED_NOUL_FLOOR } from '../loop/stages/choose.js';
+import { PAIRED_NOUL_FLOOR } from '../jev-modes/stages/choose.js';
 import { RISK_TAIL_FROM_LEVEL } from '../jev/confidence.js';
 import { clip } from '../core/text.js';
 import { eighthBar } from './bars.js';

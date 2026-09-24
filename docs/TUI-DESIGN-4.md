@@ -66,7 +66,7 @@ that lands them starts. Nothing in D-G … D-R (rounds 1–3) is reopened.
 *second*, separate allocator, §1.3); `<Static>` the only scrollback writer in classic; `lines()` twins; no new
 dependency; Jev decides; the review invariants (`app.test.tsx:342–461`, only `y` approves, Enter inert);
 `itemsFromEvent`/`formatTranscriptItem` as the one item source; `useAnimation(` only in `motion.ts`, `setInterval(` only
-in `spinner.ts`/`retry.ts`; `src/synth/**`, `src/bench/**`, `src/jev/**` read-only this round. `src/loop/**` is
+in `spinner.ts`/`retry.ts`; `src/jev-modes/synth/**`, `src/bench/**`, `src/jev/**` read-only this round. `src/loop/**` is
 read-only **except** `src/loop/stop.ts:56` (D-V deletes the `stop:` line) and `src/loop/engine.ts`'s `annotateBlock`
 (D-W) and checkpoint-degrade emit (D-AA) — three named edits, listed in §9.
 
@@ -1433,7 +1433,7 @@ the two classes are named: the compact-run frame above and F-E2 both show `· $0
 `(no proposal)` as today. (6) the risk `detail` passes `clipDetail`. (7) `--json` consumers read the **events**, never
 the item text. (8) every new text goes through `oneLine` + `clip(600)` as today. (9) **`RiskAssessment.reason` itself
 is not touched** — it is stored in `decisions.jsonl`, returned in `RunResult` and fed back to the generator as
-`recent[i].reason` (`src/loop/stages/risk.ts`), so changing it would change model behaviour and every bench baseline.
+`recent[i].reason` (`src/jev-modes/stages/risk.ts`), so changing it would change model behaviour and every bench baseline.
 A test asserts `reason` still contains `dominant level`. **What changes is only where it is printed:** the
 `outcome blocked/declined/failed` row above summarises it instead of interpolating it, and the raw string moves to
 the TUI-only `detail`. (10) **two further `k=v` producers reach the scrollback from modules that are read-only this
@@ -2984,7 +2984,7 @@ harness (`test/unit/tui/app-harness.tsx`, read-only this round) — never in `ap
 | **S5 conversation, file edits, the one item formatter** | **`src/tui/plain.ts`**, `src/tui/theme.ts`, `src/tui/Review.tsx`, `src/tui/review/lines.ts`, `src/tui/diff/**` (**new**), `src/chat/**` (`store.ts` **new**), `src/undo/{diff,plan,pager}.ts`, `src/workspace/patch.ts`, `src/cli/mock-trajectory.ts`, `src/loop/stop.ts` (**one line**, §3.6), `src/workspace/gitstate.ts`, `test/unit/tui/{plain,theme,review}*.test.ts*`, `test/unit/tui/diff/**` (new), `test/unit/chat/**`, `test/unit/undo/**`, `test/unit/workspace/patch.test.ts`, `test/unit/tui/round4-chat-app.test.tsx` (new) | §3.6, §3.7, §5.2, §5.4–§5.8, §6 |
 | **S6 hardening, faults, perf, pty, docs** | `src/tui/PaneBoundary.tsx`, `src/tui/faults.ts` (**new**), `src/tui/useEngine.tsx`, `src/tui/notify.ts`, `src/tui/status/lines.ts`, `src/tui/blocking/lines.ts`, `src/cli/{fatal,report,sessions}.ts`, `src/errors.ts`, `src/checkpoint/store.ts`, `src/session/index.ts`, `src/loop/engine.ts` (**two named edits**: `annotateBlock`, the degrade emit), **`src/perf/**`**, **`test/pty/**`**, **`test/unit/perf/**`**, `scripts/pty/{polish-check.mjs,decstbm-probe.sh}`, `docs/**`, `README.md`, `CHANGELOG.md`, `docs/live/tui/round-4/**` | §7, §10, §11, §12, §13 |
 
-`src/synth/**`, `src/bench/**`, `src/jev/**`, `src/provider/**` and the rest of `src/loop/**` are **read-only** this
+`src/jev-modes/synth/**`, `src/bench/**`, `src/jev/**`, `src/provider/**` and the rest of `src/loop/**` are **read-only** this
 round.
 
 ### 9.2 Shared files: the owner, and every change another slot needs

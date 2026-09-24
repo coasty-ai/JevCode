@@ -31,8 +31,8 @@ import { CONDITION_ORDER, engineModeOf, parseConditions, synthesizerGenerationOf
 import { runBenchWithSources } from '../../../src/bench/runner.js';
 import { STUB_DECIDER_MODEL } from '../../../src/bench/stub-decider.js';
 import { ConfigError } from '../../../src/errors.js';
-import { LLM_DEFAULT_GENERATION } from '../../../src/synth/llm/source.js';
-import { createSynthesizer } from '../../../src/synth/index.js';
+import { LLM_DEFAULT_GENERATION } from '../../../src/jev-modes/synth/llm/source.js';
+import { createSynthesizer } from '../../../src/jev-modes/synth/index.js';
 import type { Decider } from '../../../src/core/types.js';
 import { baseOptions, createFakeDeps, syntheticSource, tempDir, type EngineScript } from './helpers.js';
 

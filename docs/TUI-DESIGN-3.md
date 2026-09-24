@@ -47,7 +47,7 @@ them with the recommendation).
 **Kept from TD/TD2, untouched:** one modal slot, one `computeLayout`, `<Static>` the only scrollback writer, zero clears, `lines()`
 twins, no new dependency, Jev decides; the review invariants (`app.test.tsx:342–461`); `itemsFromEvent`/`formatTranscriptItem` as the
 one item source; `useAnimation(` only in `motion.ts`, `setInterval(` only in `spinner.ts`/`retry.ts` (`spinner.test.ts:99–116`);
-`src/synth/**`, `src/bench/**`, `src/loop/**` read-only this round.
+`src/jev-modes/synth/**`, `src/bench/**`, `src/loop/**` read-only this round.
 
 ---
 
@@ -1569,7 +1569,7 @@ Test rule: a slot that needs an App-level test writes it in **its own** `round3-
 | `test/pty/**`, `src/perf/**`, `test/unit/perf/**` | S5 | S2 (the §3 `.steps` rewrites and the `idle-frames` probe), S3 (the §1.10 re-pin), S4 (`commands-*.steps`, `--keybindings`, `trust-esc`), S1 (`theme-pink.steps`, `echoStep` SGR gap) | §8, §9 | W4 |
 | `docs/**`, `README.md`, `CHANGELOG.md` | S5 | every slot (the §1.10 doc list, §2.6 doc row, §3 TUI.md sentences, §4 COMMANDS/KEYS regen by S4) | §10, §11 | W4 |
 
-`src/synth/**`, `src/bench/**`, `src/loop/**`, `src/jev/**`, `src/session/**` are read-only this round.
+`src/jev-modes/synth/**`, `src/bench/**`, `src/loop/**`, `src/jev/**`, `src/session/**` are read-only this round.
 
 ### 7.3 Waves
 

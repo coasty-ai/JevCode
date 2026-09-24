@@ -59,14 +59,14 @@ describe('the jev-contract lint', () => {
   });
 
   it('accepts a router whose site proves the four clauses and names an existing fallback test', () => {
-    const root = tree({ 'src/synth/oracle/scope.ts': router(GOOD_BLOCK), 'test/unit/scope.test.ts': '// the fallback test\n' });
+    const root = tree({ 'src/jev-modes/synth/oracle/scope.ts': router(GOOD_BLOCK), 'test/unit/scope.test.ts': '// the fallback test\n' });
     const r = lint(root);
     expect(r.out).toContain('1 with a four-clause block');
     expect(r.code).toBe(0);
   });
 
   it('refuses a Jev call site with no contract block and no allow-list row', () => {
-    const root = tree({ 'src/synth/oracle/scope.ts': router('  // pick a scope') });
+    const root = tree({ 'src/jev-modes/synth/oracle/scope.ts': router('  // pick a scope') });
     const r = lint(root);
     expect(r.code).toBe(1);
     expect(r.out).toContain('no jev-contract block and no allow-list row');
@@ -74,21 +74,21 @@ describe('the jev-contract lint', () => {
 
   it('refuses a block that is missing a clause', () => {
     const block = GOOD_BLOCK.split('\n').filter((l) => !l.includes('no-gating:')).join('\n');
-    const root = tree({ 'src/synth/oracle/scope.ts': router(block), 'test/unit/scope.test.ts': '\n' });
+    const root = tree({ 'src/jev-modes/synth/oracle/scope.ts': router(block), 'test/unit/scope.test.ts': '\n' });
     const r = lint(root);
     expect(r.code).toBe(1);
     expect(r.out).toContain('missing the "no-gating:" clause');
   });
 
   it('refuses a fallback whose named unit test does not exist (clause 3: every fallback is driven by a throwing Decider)', () => {
-    const root = tree({ 'src/synth/oracle/scope.ts': router(GOOD_BLOCK) });
+    const root = tree({ 'src/jev-modes/synth/oracle/scope.ts': router(GOOD_BLOCK) });
     const r = lint(root);
     expect(r.code).toBe(1);
     expect(r.out).toContain('the named fallback test test/unit/scope.test.ts does not exist');
   });
 
   it('refuses an answer that feeds a correctness gate (clause 4)', () => {
-    const root = tree({ 'src/synth/oracle/scope.ts': router(GOOD_BLOCK, 'const complete = res.answers.run_first.choice !== "none_of_these";\n  return complete;'), 'test/unit/scope.test.ts': '\n' });
+    const root = tree({ 'src/jev-modes/synth/oracle/scope.ts': router(GOOD_BLOCK, 'const complete = res.answers.run_first.choice !== "none_of_these";\n  return complete;'), 'test/unit/scope.test.ts': '\n' });
     const r = lint(root);
     expect(r.code).toBe(1);
     expect(r.out).toContain('clause 4');
@@ -96,7 +96,7 @@ describe('the jev-contract lint', () => {
 
   it('refuses a hand-built Question in a file that asks (clause 1: the builders own the escape rule)', () => {
     const body = `import { x } from './y.js';\nexport async function ask(ctx) {\n  const q = { type: 'choice', instructions: 'pick', criteria: { a: null } };\n  return ctx.ask('propose', {}, { q });\n}\n`;
-    const root = tree({ 'src/synth/oracle/scope.ts': body });
+    const root = tree({ 'src/jev-modes/synth/oracle/scope.ts': body });
     const r = lint(root);
     expect(r.code).toBe(1);
     expect(r.out).toContain('clause 1: build the Question with src/jev/questions.ts');
@@ -114,17 +114,17 @@ describe('the jev-contract lint', () => {
   it('catches a call the formatter wrapped, and anchors it at the receiver so the block above still counts', () => {
     const wrapped = (block: string): string =>
       `import { choice } from '../jev/questions.js';\nexport async function routeRunFirst(ctx) {\n${block}\n  const res = await ctx.decider\n    .ask(state, { run_first: choice('which first?', scopes) }, opts);\n  return rank(res);\n}\n`;
-    const bare = lint(tree({ 'src/synth/oracle/scope.ts': wrapped('  // pick a scope') }));
+    const bare = lint(tree({ 'src/jev-modes/synth/oracle/scope.ts': wrapped('  // pick a scope') }));
     expect(bare.code).toBe(1);
     expect(bare.out).toContain('1 Jev call site(s) with no jev-contract block');
-    const annotated = lint(tree({ 'src/synth/oracle/scope.ts': wrapped(GOOD_BLOCK), 'test/unit/scope.test.ts': '\n' }));
+    const annotated = lint(tree({ 'src/jev-modes/synth/oracle/scope.ts': wrapped(GOOD_BLOCK), 'test/unit/scope.test.ts': '\n' }));
     expect(annotated.out).toContain('1 with a four-clause block');
     expect(annotated.code).toBe(0);
   });
 
   it('catches the other split too — the receiver line ending in the dot', () => {
     const body = `import { choice } from '../jev/questions.js';\nexport async function route(ctx) {\n  const res = await ctx.decider.\n    ask(state, { run_first: choice('which first?', scopes) }, opts);\n  return rank(res);\n}\n`;
-    const r = lint(tree({ 'src/synth/oracle/scope.ts': body }));
+    const r = lint(tree({ 'src/jev-modes/synth/oracle/scope.ts': body }));
     expect(r.code).toBe(1);
     expect(r.out).toContain('1 Jev call site(s) with no jev-contract block');
   });

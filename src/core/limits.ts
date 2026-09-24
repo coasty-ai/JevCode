@@ -83,7 +83,7 @@ export const OTHER_SESSIONS_SHARE = 0.05;
 
 /**
  * contract 1.4 (COORDINATION-DESIGN §8.8 column 3) / TUI-DESIGN-5 §8.2 R13: the share of ONE `propose_fix` sample's
- * user message that `SynthesisContext.contextText` may take (`src/synth/llm/source.ts`). The fix prompt's own sections
+ * user message that `SynthesisContext.contextText` may take (`src/jev-modes/synth/llm/source.ts`). The fix prompt's own sections
  * are bounded by `PROMPT_LIMITS_FIX` — `fixPromptCharBound()` is ~120 k chars at the 4-listing default — so 24 KiB is
  * a tenth of the message and ~7 k tokens at `CHARS_PER_TOKEN`: enough for the task, the plan, the files in view and
  * the recent steps, and never enough to displace the code the sample has to edit. A longer view is clipped HEAD-first
@@ -168,7 +168,7 @@ export const LAND_LOG_LINE_BYTES = 1024;
 /**
  * §2.3 [G9] / §3.1 / corner row 16: dirty workspace entries replayed into an agent worktree. Above it
  * the untracked entries are dropped from the sync and above it in TRACKED entries the gate is shut.
- * `src/synth/sieve/lanes.ts:45` holds the same number today and imports this one once the lift of
+ * `src/jev-modes/synth/sieve/lanes.ts:45` holds the same number today and imports this one once the lift of
  * `dirtySnapshot` into `src/orchestrate/worktree.ts` is complete (wave D2 item 17).
  */
 export const DIRTY_ENTRIES_MAX = 200;

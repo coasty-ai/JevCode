@@ -229,8 +229,8 @@ describe('docs/DECISIONS.md consistency', () => {
     const peer = ['loop', 'synth', 'coordination', 'orchestrate', 'import', 'models', 'provider', 'spend', 'checkpoint', 'core'];
     const tui = ['tui', 'cli', 'config', 'session', 'chat'];
     // directories created after this dated entry are placed by the ownership paragraph (the case above), never counted here:
-    // `src/agent` (docs/AGENT-LOOP-DESIGN.md §2.1, 2026-09-23)
-    const later = ['agent'];
+    // `src/agent` (docs/AGENT-LOOP-DESIGN.md §2.1, 2026-09-23), `src/jev-modes` (§14.6, 2026-09-23: the Jev-driven modules)
+    const later = ['agent', 'jev-modes'];
     const unlisted = dirs.filter((d) => !peer.includes(d) && !tui.includes(d) && !later.includes(d)).sort();
     expect(unlisted).toEqual(['bench', 'jev', 'perf', 'sandbox', 'undo', 'workspace']);
 

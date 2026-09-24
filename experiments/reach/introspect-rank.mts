@@ -1,7 +1,7 @@
 /**
  * Ranking check for the introspection-fed template sets (a little Jev, ≤ $0.05): at the gold site
  * of sympy-15345 (class-body gap) and sympy-17139 (the guard gap), the template source's set with
- * the introspection facts is handed to the real ranker (src/synth/rank, Q8/Q9/Q10 by N) with the
+ * the introspection facts is handed to the real ranker (src/jev-modes/synth/rank, Q8/Q9/Q10 by N) with the
  * oracle's FailureView and the enclosing listing, and the rank Jev gives the test-passing candidate
  * is recorded. The sieve would run the whole set on these fast oracles (t_run ≤ 2 s); this is the
  * RANK-mode picture the design uses on slow ones.
@@ -15,17 +15,17 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Decision, Json, Question, StageName } from '../../src/core/types.ts';
 import { createJevDecider } from '../../src/jev/client.ts';
-import { introspectRepro, vocabularyAdditions } from '../../src/synth/introspect/index.ts';
-import { chunksWithContext, extractBlocks } from '../../src/synth/oracle/index.ts';
-import type { TracebackFrame } from '../../src/synth/oracle/index.ts';
-import { indentOf } from '../../src/synth/py/edits.ts';
-import { createRanker } from '../../src/synth/rank/index.ts';
-import { programRange } from '../../src/synth/rank/questions.ts';
-import { ENUMERATE_CAP, taskIdentifiers, testLiterals } from '../../src/synth/search/subgoal.ts';
-import { createTemplateSource, familyOf } from '../../src/synth/templates/index.ts';
-import type { Candidate, EnumerateOptions, FailureView, Site } from '../../src/synth/types.ts';
-import { applyCandidate } from '../../src/synth/verify/apply.ts';
-import type { VerifyRunFn } from '../../src/synth/verify/types.ts';
+import { introspectRepro, vocabularyAdditions } from '../../src/jev-modes/synth/introspect/index.ts';
+import { chunksWithContext, extractBlocks } from '../../src/jev-modes/synth/oracle/index.ts';
+import type { TracebackFrame } from '../../src/jev-modes/synth/oracle/index.ts';
+import { indentOf } from '../../src/jev-modes/synth/py/edits.ts';
+import { createRanker } from '../../src/jev-modes/synth/rank/index.ts';
+import { programRange } from '../../src/jev-modes/synth/rank/questions.ts';
+import { ENUMERATE_CAP, taskIdentifiers, testLiterals } from '../../src/jev-modes/synth/search/subgoal.ts';
+import { createTemplateSource, familyOf } from '../../src/jev-modes/synth/templates/index.ts';
+import type { Candidate, EnumerateOptions, FailureView, Site } from '../../src/jev-modes/synth/types.ts';
+import { applyCandidate } from '../../src/jev-modes/synth/verify/apply.ts';
+import type { VerifyRunFn } from '../../src/jev-modes/synth/verify/types.ts';
 import { REPOS, applyHunksToLines, insertSiteAt, loadFile, normLines, parseHunks, replaceSiteAt, sh, splitLines, venvPython } from './lib.mts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));

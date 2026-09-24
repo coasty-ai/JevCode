@@ -3,7 +3,7 @@
  *
  * **This is a DENY-LIST, not a proof.** It recognises a small, fixed set of shapes that are destructive beyond
  * recovery; it does not and cannot decide that a command is safe. A `null` answer means "this list does not
- * recognise it", never "this is harmless" — which is why `codeRiskReason()` (`src/loop/stages/risk.ts`), an
+ * recognise it", never "this is harmless" — which is why `codeRiskReason()` (`src/jev-modes/stages/risk.ts`), an
  * ALLOW-list of cases that ARE safe, is the other half of the code-first verdict and neither half yields `allow`
  * for an arbitrary `run`.
  *

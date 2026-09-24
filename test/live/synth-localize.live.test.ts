@@ -11,9 +11,9 @@ import type { DeciderConfig } from '../../src/core/types.js';
 import { createJevDecider } from '../../src/jev/client.js';
 import { JEV_PROVIDERS } from '../../src/jev/providers.js';
 import { DEFAULT_JEV_BASE_URL, DEFAULT_JEV_MODEL } from '../../src/jev/types.js';
-import { createLocalizer } from '../../src/synth/localize/index.js';
-import { analyse } from '../../src/synth/py/index.js';
-import type { FailureView, JevAsk } from '../../src/synth/types.js';
+import { createLocalizer } from '../../src/jev-modes/synth/localize/index.js';
+import { analyse } from '../../src/jev-modes/synth/py/index.js';
+import type { FailureView, JevAsk } from '../../src/jev-modes/synth/types.js';
 
 const apiKey = process.env['JEV_API_KEY'] ?? process.env['OPENROUTER_API_KEY'] ?? '';
 const live = process.env['JEVCODE_LIVE'] === '1';

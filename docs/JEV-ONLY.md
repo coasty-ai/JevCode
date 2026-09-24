@@ -197,7 +197,7 @@ the linter verify. The question this document answers by experiment is which dec
   3-hunk `account` misses; four solved tasks still ran to the step budget with 6–14 blocked proposals,
   so the outer loop still spends steps it does not need. The QuixBugs insertion round repaired all four
   insertion bugs live (3 gold-identical); the skew-timeout and overfit rounds are in flight.
-- 2026-09-20: **issue oracle, measured** (`src/synth/oracle/`, `experiments/results/oracle-from-issue.md`,
+- 2026-09-20: **issue oracle, measured** (`src/jev-modes/synth/oracle/`, `experiments/results/oracle-from-issue.md`,
   69 unit tests). Code extracts fenced/REPL/traceback/expectation blocks from the issue text; one Jev
   batch per instance judges which block reproduces the bug and which lines show the expected and
   observed behaviour (Nouls `is_reproduction_i`, `shows_expected_i`, `shows_actual_i`, Choice
@@ -326,7 +326,7 @@ the linter verify. The question this document answers by experiment is which dec
   rejected by the httpbin oracle. Three commits on oracle instances all failed the evaluator (15315 dead code
   ×4, 15563 weak-oracle overfit, 2931 wrong passer). **Defect:** the history source's reversals carry their own
   site and the ranker throws `ranker: candidate "hist_…" is at <file>:<line>, not at the site being ranked`
-  (`src/synth/rank/index.ts:307`) — 43 occurrences in 12 runs; the nine `error` stops (8 without an oracle + sympy-11618, steps 4–6) are
+  (`src/jev-modes/synth/rank/index.ts:307`) — 43 occurrences in 12 runs; the nine `error` stops (8 without an oracle + sympy-11618, steps 4–6) are
   classified `wiring_defect_history_site`, not a search or oracle class (§21.7). **django-15315's oracle is a 1/8 coin that `PYTHONHASHSEED=0` does not fix**: 16 runs
   of the runner's own command give AssertionError ×13 / PASS ×3 in both workspace and lane, because
   `hash(None)` is address-based on CPython 3.9 (fixed in 3.12) — a lane `plausible` needs a confirming

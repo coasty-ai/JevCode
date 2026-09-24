@@ -10,7 +10,7 @@
  * come from ../ladder/pyworkspace.ts. Nothing here is the oracle: the evaluator runs
  * bench/data/quixbugs/run_tests.py at its defaults.
  */
-import { CASE_TIMEOUT_ENV, MAX_CASE_TIMEOUTS_ENV } from '../../synth/verify/quixbugs.js';
+import { CASE_TIMEOUT_ENV, MAX_CASE_TIMEOUTS_ENV } from '../../jev-modes/synth/verify/quixbugs.js';
 import type { QuixbugsCase } from './tasks.js';
 
 export { CASE_TIMEOUT_ENV, MAX_CASE_TIMEOUTS_ENV };
@@ -20,7 +20,7 @@ export const CASE_TIMEOUT_S = 2;
 export const DEFAULT_CASE_TIMEOUT_MS = CASE_TIMEOUT_S * 1000;
 /*
  * Two environment knobs, read by the generated module at import and set only by the
- * synthesizer's shadow lanes (src/synth/sieve/runner.ts); unset, as under the agent's own
+ * synthesizer's shadow lanes (src/jev-modes/synth/sieve/runner.ts); unset, as under the agent's own
  * `pytest -q` and the engine's `run` proposals, the module behaves as before. Grading never
  * sees them: the evaluator runs bench/data/quixbugs/run_tests.py at its 2 s default.
  *

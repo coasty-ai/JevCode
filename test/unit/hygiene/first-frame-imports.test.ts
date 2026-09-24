@@ -1,7 +1,7 @@
 /**
  * N9, the first-frame import rule (docs/TUI-DESIGN-5.md §1.3 N9, restated as an ordering contract at
  * src/cli/main.tsx:1-14): no module reachable from `src/cli/main.tsx` by a VALUE static import may pull in
- * `src/coordination/**`, `src/orchestrate/**`, `src/import/**`, `src/models/**`, `src/synth/**`, `src/bench/**`,
+ * `src/coordination/**`, `src/orchestrate/**`, `src/import/**`, `src/models/**`, `src/jev-modes/synth/**`, `src/bench/**`,
  * `src/perf/**` or Ink. Values enter behind `await import()`; types enter as `import type`, which erases.
  *
  * Both sessions maintained the rule by hand and it was enforced by nothing: the discipline holds at d297b29 (the
@@ -110,7 +110,7 @@ const FORBIDDEN: readonly { tree: RegExp; except: RegExp | null; why: string }[]
   { tree: /^src\/import\//, except: /^src\/import\/rules\.ts$/, why: 'the importer is a command, not a launch path' },
   // `ids.ts` is named by the design as the intended pure-id module; it is not on the tree yet, `static.ts` is
   { tree: /^src\/models\//, except: /^src\/models\/(ids|static)\.ts$/, why: 'instantCatalogue pulls http/cache/parse (§14.2 #35)' },
-  { tree: /^src\/synth\//, except: null, why: 'the synthesizer is built inside the engine, after the frame' },
+  { tree: /^src\/jev-modes\/synth\//, except: null, why: 'the synthesizer is built inside the engine, after the frame' },
   { tree: /^src\/bench\//, except: null, why: 'the bench command is a dynamic import' },
   { tree: /^src\/perf\//, except: /^src\/perf\/timeline\.ts$/, why: 'the perf command is a dynamic import' },
 ];

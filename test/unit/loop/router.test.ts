@@ -28,12 +28,12 @@ import { emptyPlan } from '../../../src/loop/plan.js';
 import { buildCommonState, type ExecutedInfo } from '../../../src/loop/state.js';
 import { RL2_CONTEXT_DEADLINE_MS, commitStepRouters, noteStepRoute, resetStepRouters, routersOn, stepTokenFor } from '../../../src/loop/routers.js';
 import type { RouteResult } from '../../../src/jev/router.js';
-import { INTENT_FALLBACK, codeIntentOrder, runIntentStage } from '../../../src/loop/stages/intent.js';
-import { CONTEXT_MAX_CANDIDATES, PRODUCT_CONTEXT_ASK, buildContextQuestions, runContextStage, selectCandidatesCode } from '../../../src/loop/stages/context.js';
-import { runJudgeStage } from '../../../src/loop/stages/judge.js';
-import { completionDecision, type CompletionFactInput } from '../../../src/loop/stages/complete.js';
-import { REPLAN_FALLBACK, runReplanStage } from '../../../src/loop/stages/replan.js';
-import { codeRiskFloor, codeRiskVerdict, escalateVerdict, runRiskStage } from '../../../src/loop/stages/risk.js';
+import { INTENT_FALLBACK, codeIntentOrder, runIntentStage } from '../../../src/jev-modes/stages/intent.js';
+import { CONTEXT_MAX_CANDIDATES, PRODUCT_CONTEXT_ASK, buildContextQuestions, runContextStage, selectCandidatesCode } from '../../../src/jev-modes/stages/context.js';
+import { runJudgeStage } from '../../../src/jev-modes/stages/judge.js';
+import { completionDecision, type CompletionFactInput } from '../../../src/jev-modes/stages/complete.js';
+import { REPLAN_FALLBACK, runReplanStage } from '../../../src/jev-modes/stages/replan.js';
+import { codeRiskFloor, codeRiskVerdict, escalateVerdict, runRiskStage } from '../../../src/jev-modes/stages/risk.js';
 import { DEFAULT_LIMITS, choiceOver, createFakeSandbox, createFakeWorkspace, execResult, makeEngine, noulA, passingTests, scoreA, turn, type FakeWorkspace, type Harness } from './fakes.js';
 
 /** the outage the head-to-head recorded */

@@ -206,7 +206,7 @@ export interface PromptInput {
    *
    * **Who asks** (F25, the finishing pass). Until then NOBODY did — the member was built and never set, which is
    * why the `jev-on-next` arm's `mechanisms.s2: true` was false in fact. `Engine.promptInput()` now sets it
-   * whenever the S2 switch resolves to anything but `'off'` (`s2Mode`, `src/synth/llm/hedge.ts`: `jev-on` only,
+   * whenever the S2 switch resolves to anything but `'off'` (`s2Mode`, `src/jev-modes/synth/llm/hedge.ts`: `jev-on` only,
    * `JEVCODE_S2=on`, default off). The default is what keeps `test/unit/loop/router-golden.test.ts` and every
    * `view: 'legacy'` golden valid without a re-capture: an S2-off run still asks for the legacy order.
    */

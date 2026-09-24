@@ -27,8 +27,8 @@ import { runBenchWithSources, synthesizerMismatch } from '../../../src/bench/run
 import { STUB_DECIDER_MODEL } from '../../../src/bench/stub-decider.js';
 import { planCapSentence } from '../../../src/bench/tuned-provider.js';
 import type { Decider } from '../../../src/core/types.js';
-import { createSynthesizer as createRealSynthesizer } from '../../../src/synth/index.js';
-import { LLM_DEFAULT_GENERATION } from '../../../src/synth/llm/source.js';
+import { createSynthesizer as createRealSynthesizer } from '../../../src/jev-modes/synth/index.js';
+import { LLM_DEFAULT_GENERATION } from '../../../src/jev-modes/synth/llm/source.js';
 import { baseOptions, createCaptured, createFakeDeps, createFakeMeter, createFakeProvider, createFakeSynthesizer, syntheticSource, tempDir, type EngineScript } from './helpers.js';
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -148,7 +148,7 @@ describe('arms (docs/LLM-JEV-DESIGN.md §10.1)', () => {
     const t = await tempDir();
     cleanups.push(t.cleanup);
     const script: EngineScript = () => ({ result: { steps: 1 } });
-    // src/synth's real factory: every arm is echoed (llm-jev and llm-sieve with the very generation object they were handed, or
+    // src/jev-modes/synth's real factory: every arm is echoed (llm-jev and llm-sieve with the very generation object they were handed, or
     // the source's default when none was). F06: llm-sieve is CONSTRUCTED as llm-jev and echoes its own mode — the arm's "every
     // Jev question replaced by its code default" is the stub in the DECIDER slot, not a second search — so `--conditions
     // llm-sieve` runs the arm instead of writing one `engine_create_failed` record per task

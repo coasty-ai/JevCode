@@ -16,8 +16,8 @@
 import { lookupPricing } from '../config/defaults.js';
 import type { BenchCondition, BenchDeps, BenchSuite, ConfigRecordValue, Confirmer, Decider, Engine, EngineMode, EngineOptions, GenerateReasoning, Provider, SpendMeter, Synthesizer, SynthesizerArmMode, SynthesizerGeneration } from '../core/types.js';
 import { AbortError, ConfigError } from '../errors.js';
-import { s2ReachableOn } from '../synth/llm/hedge.js';
-import { LLM_DEFAULT_GENERATION, LLM_DEFAULT_REASONING } from '../synth/llm/source.js';
+import { s2ReachableOn } from '../jev-modes/synth/llm/hedge.js';
+import { LLM_DEFAULT_GENERATION, LLM_DEFAULT_REASONING } from '../jev-modes/synth/llm/source.js';
 import { STUB_DECIDER_MODEL } from './stub-decider.js';
 import { JEV_OFF_MODEL, jevOffModeFrom } from '../jev/off.js';
 import { PLAN_CAP_CHARS, type TunedProviderParams } from './tuned-provider.js';
@@ -52,7 +52,7 @@ export function isNextArm(condition: BenchCondition): boolean {
  * arm table says.
  *
  * **Which modes CAN honour it moved under this function, and the predicate is no longer written here.** When F05
- * was written the §3 mechanisms lived only on the synthesizer sample path (`src/synth/llm/source.ts`), so this
+ * was written the §3 mechanisms lived only on the synthesizer sample path (`src/jev-modes/synth/llm/source.ts`), so this
  * clamp named `'llm-jev'`. F25 then built the reader on the OTHER mode: `EngineOptions.s2` (src/core/types.ts) is
  * resolved by `s2Mode(mode, opt, env)`, which honours it on `jev-on` and nothing else — the synthesizer path is
  * fed by `LlmSourceDeps` and nothing threads the option into it. Two hand-written mode lists, exact opposites, one
@@ -75,7 +75,7 @@ export function armMechanisms(condition: BenchCondition, observed?: S2State | nu
     // the clamp: a pinned claim survives only on an arm whose mode reaches the mechanisms; a MEASURED value always
     // wins. The predicate is `s2ReachableOn`, which asks `s2Mode` — the resolver that actually honours the option —
     // rather than repeating its mode list here, because a repeated list is exactly how F05 and F25 came to name
-    // opposite modes (see the function's own docblock in src/synth/llm/hedge.ts).
+    // opposite modes (see the function's own docblock in src/jev-modes/synth/llm/hedge.ts).
     s2: observed ?? (s2ReachableOn(engineModeOf(condition)) ? pinnedS2 : 'off'),
   });
   switch (condition) {
@@ -452,7 +452,7 @@ export function buildEngineOptions(input: EngineBuildInput, opts: BenchOptions):
  * recorded `mechanisms.s2: false`. It did not exist before F25 only because the variable was inert.
  * `JEVCODE_HEDGE` rides with it because it is the half-switch that turns a pinned `s2: 'on'` into `'partial'` —
  * an arm whose hedge counters read 0 for a reason its own row does not name is the same lie one level down, and
- * it also arms the SYNTHESIZER's own round hedge (`hedgeEnabled(deps.hedge, env)`, src/synth/llm/source.ts),
+ * it also arms the SYNTHESIZER's own round hedge (`hedgeEnabled(deps.hedge, env)`, src/jev-modes/synth/llm/source.ts),
  * which no `ConditionConfig.mechanisms` row records at all.
  *
  * **Consequence, recorded:** clearing it means a bench arm can no longer express either hedge through the

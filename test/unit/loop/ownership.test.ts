@@ -12,7 +12,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Harness } from './fakes.js';
 import { createFakeSandbox, createFakeWorkspace, execResult, makeEngine, turn } from './fakes.js';
-import { OWNERSHIP_REFUSAL_PREFIX, RESEARCH_REFUSAL_PREFIX, SCOPE_FIGHT_AFTER, isOwnershipRefusal, ownershipRefusal } from '../../../src/loop/stages/risk.js';
+import { OWNERSHIP_REFUSAL_PREFIX, RESEARCH_REFUSAL_PREFIX, SCOPE_FIGHT_AFTER, isOwnershipRefusal, ownershipRefusal } from '../../../src/jev-modes/stages/risk.js';
 import { PROPOSE_ACTION_TOOL, proposeActionToolFor } from '../../../src/provider/actions.js';
 import { RESEARCH_ACTION_KINDS } from '../../../src/core/types.js';
 import type { Action, ActionKind, OrchestrationOptions } from '../../../src/core/types.js';

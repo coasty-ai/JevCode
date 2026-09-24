@@ -1386,7 +1386,7 @@ describe('§14.2 item 13: the item formatter\'s static import graph', () => {
       'src/checkpoint/store.ts',
       // §6.3 edge 8: `isSecretPath`, purely lexical (sandbox/paths.ts:120–135 — "safe to run over a 5,000-entry listing")
       'src/core/atomic.ts',
-      // `src/orchestrate/{land,manifest,worktree}.ts` were here while `src/loop/stages/risk.ts` — which
+      // `src/orchestrate/{land,manifest,worktree}.ts` were here while `src/jev-modes/stages/risk.ts` — which
       // `src/tui/review/lines.ts` needs for `buildRiskQuestions` / `riskLevelTexts` — imported `ownsPath` /
       // `parseOwnGlob` from the orchestrate BARREL, which re-exports those three `node:fs` / `child_process`
       // importers. The harness session (OOS iteration 2) now imports the leaf `src/orchestrate/split/globs.ts`

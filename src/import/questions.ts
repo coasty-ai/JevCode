@@ -514,11 +514,11 @@ export async function askImport(batches: readonly QuestionBatch[], deps: AskDeps
 }
 
 // ---------------------------------------------------------------------------------------
-// The intake floors (`chat/intake.ts:166,214`, `loop/stages/choose.ts:10`)
+// The intake floors (`chat/intake.ts:166,214`, `jev-modes/stages/choose.ts:10`)
 // ---------------------------------------------------------------------------------------
 
 /**
- * `loop/stages/choose.ts:10 PAIRED_NOUL_FLOOR`, restated. `src/import/**` imports nothing from
+ * `jev-modes/stages/choose.ts:10 PAIRED_NOUL_FLOOR`, restated. `src/import/**` imports nothing from
  * `src/loop` (§7 ownership); `test/unit/import/questions.test.ts` asserts the two are equal, so a
  * change to the codebase's one confidence convention fails here rather than drifting.
  */

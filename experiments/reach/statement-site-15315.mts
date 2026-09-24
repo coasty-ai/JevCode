@@ -10,16 +10,16 @@
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { createDonorSource } from '../../src/synth/donor/index.ts';
-import { createMutationSource } from '../../src/synth/mutate/index.ts';
-import { analyse } from '../../src/synth/py/structure.ts';
-import { createCompositeSource } from '../../src/synth/search/composite.ts';
-import { ENUMERATE_CAP, isTestPath, taskIdentifiers, testLiterals } from '../../src/synth/search/subgoal.ts';
-import { sketchPool } from '../../src/synth/sketch/pool.ts';
-import { instantiates } from '../../src/synth/sketch/productions.ts';
-import { toks } from '../../src/synth/beam/tokens.ts';
-import { createTemplateSource } from '../../src/synth/templates/index.ts';
-import type { EnumerateOptions, FailureView, SourceFile } from '../../src/synth/types.ts';
+import { createDonorSource } from '../../src/jev-modes/synth/donor/index.ts';
+import { createMutationSource } from '../../src/jev-modes/synth/mutate/index.ts';
+import { analyse } from '../../src/jev-modes/synth/py/structure.ts';
+import { createCompositeSource } from '../../src/jev-modes/synth/search/composite.ts';
+import { ENUMERATE_CAP, isTestPath, taskIdentifiers, testLiterals } from '../../src/jev-modes/synth/search/subgoal.ts';
+import { sketchPool } from '../../src/jev-modes/synth/sketch/pool.ts';
+import { instantiates } from '../../src/jev-modes/synth/sketch/productions.ts';
+import { toks } from '../../src/jev-modes/synth/beam/tokens.ts';
+import { createTemplateSource } from '../../src/jev-modes/synth/templates/index.ts';
+import type { EnumerateOptions, FailureView, SourceFile } from '../../src/jev-modes/synth/types.ts';
 import { REPOS, loadFile, normLine, parseHunks, replaceSiteAt, sh } from './lib.mts';
 
 const ROOT = join(import.meta.dirname, '..', '..');

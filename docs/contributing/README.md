@@ -80,7 +80,7 @@ The block looks like this:
 // jev-contract: R1 run_first (§3.x)
 //   escape: choice() over the code-built scopes — the escape option, argmax only beyond the 0.05 margin
 //   guard: the scope-usability check and the code deny-list run after the answer
-//   fallback: scopeBuilderFor()'s narrowest code scope, then the full suite; test: test/unit/synth/oracle/scope.test.ts
+//   fallback: scopeBuilderFor()'s narrowest code scope, then the full suite; test: test/unit/jev-modes/synth/oracle/scope.test.ts
 //   no-gating: ordering only — completion stays a code fact about the harness's own test run
 ```
 

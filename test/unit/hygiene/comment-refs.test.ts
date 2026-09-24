@@ -76,8 +76,8 @@ const TODO_OWNER_RE = /TODO\(([^)]*)\)/g;
  * add a row below.
  */
 const OPEN_TODO_OWNERS: readonly { marker: string; owner: string; why: string }[] = [
-  { marker: 'stage 4, src/synth/oracle/search.ts', owner: 'src/synth/oracle/search.ts', why: "LlmOracleOutcome's `llm_valid` / `llm_weak` live in synth/llm/repro.ts until the oracle search carries them (docs/LLM-JEV-DESIGN.md §9.2 stage 4)" },
-  { marker: 'stage 4, src/synth/search/proposal.ts proposeRevert', owner: 'src/synth/search/proposal.ts', why: 'the revert marker is still the goal-text prefix `revert`; a typed member on the proposal is stage 4' },
+  { marker: 'stage 4, src/jev-modes/synth/oracle/search.ts', owner: 'src/jev-modes/synth/oracle/search.ts', why: "LlmOracleOutcome's `llm_valid` / `llm_weak` live in synth/llm/repro.ts until the oracle search carries them (docs/LLM-JEV-DESIGN.md §9.2 stage 4)" },
+  { marker: 'stage 4, src/jev-modes/synth/search/proposal.ts proposeRevert', owner: 'src/jev-modes/synth/search/proposal.ts', why: 'the revert marker is still the goal-text prefix `revert`; a typed member on the proposal is stage 4' },
 ];
 
 describe('source hygiene: a comment that points somewhere points at something', () => {

@@ -11,7 +11,7 @@
  *     jev-only leaves `proposer` null.
  *
  * So `JEVCODE_WARM=on --mode jev-only` reproduced exactly the silent no-op that `unsupported-runner` /
- * `unsupported-command` (src/synth/sieve/runner.ts, `warmPlaneFor`) exists to kill: the flag asked for a plane the
+ * `unsupported-command` (src/jev-modes/synth/sieve/runner.ts, `warmPlaneFor`) exists to kill: the flag asked for a plane the
  * oracle has no shape for, the step recorded nothing, and no artefact said so.
  *
  * `generate` stays gated — jev-only has no LLM channel and must never acquire one.

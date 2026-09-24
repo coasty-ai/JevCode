@@ -141,7 +141,7 @@ flowchart TD
 `runHarmOnlyRiskStage` and `runCodeJudgeStage` are not called by the engine directly. They are
 private branches taken inside `runRiskStage` and `runJudgeStage` when `ctx.mode === 'llm-jev'`,
 which is why the engine's call sites are identical in every mode.
-<!-- src/loop/stages/risk.ts:747, src/loop/stages/judge.ts:218 -->
+<!-- src/jev-modes/stages/risk.ts:747, src/jev-modes/stages/judge.ts:218 -->
 
 ## The stages
 
@@ -161,7 +161,7 @@ through `resolveChoice`. If the answer cannot be resolved the code fallback is
 ### intent — `runIntentStage`
 
 One request: a Choice over a fixed set of intents, one paired Noul per option, and
-`plan_still_valid`. `resolveChoice` (`src/loop/stages/choose.ts`) takes the answer's `choice`
+`plan_still_valid`. `resolveChoice` (`src/jev-modes/stages/choose.ts`) takes the answer's `choice`
 when its paired Noul is at or above `PAIRED_NOUL_FLOOR = 0.5`; otherwise the highest paired Noul
 above the floor; otherwise the stage's safe default. The verdict — `chosen`, `overridden`,
 `fallback` — is written onto the decision row, so the reason is visible rather than inferred.
@@ -189,7 +189,7 @@ This is the stage with four different bodies, chosen by mode and by one predicat
 
 `synthesizerHandles` is the predicate for the third row: the workspace needs a non-test Python
 source file and either a detected test command in a recognised layout or a repository shape.
-<!-- src/synth/index.ts:299 -->
+<!-- src/jev-modes/synth/index.ts:299 -->
 
 The fast path is in two halves so that declining is free. `fastPathArm` evaluates the cheap
 predicate outside any stage — it costs nothing and emits nothing. Only if it fires does
@@ -203,7 +203,7 @@ Before anything is asked, a code refusal runs: `ownershipRefusal` blocks a child
 writing outside the paths it owns. It is decided before the targets are even stat'ed, and it
 is a property of the child rather than of the mode — `jev-off` runs no risk stage, so its
 branch of the step calls the same function directly.
-<!-- src/loop/stages/risk.ts:675 and :737; src/loop/engine.ts:4281 -->
+<!-- src/jev-modes/stages/risk.ts:675 and :737; src/loop/engine.ts:4281 -->
 
 `ownershipRefusal` returns `null` for a parent run and for any run without a delegation, which
 is why nothing here changes an ordinary run.
@@ -256,7 +256,7 @@ outcome:
 | `read` | the same batch minus `error_present`, which is not built at all for a read: file contents are not a command failure |
 | interrupted, or a pause landed during the command | the judge is skipped; the command still ran to its own end and the step still commits |
 
-<!-- src/loop/stages/judge.ts:219-223 (`reduced`, `read`), :69 (error_present is skipped for a read),
+<!-- src/jev-modes/stages/judge.ts:219-223 (`reduced`, `read`), :69 (error_present is skipped for a read),
      docs/DESIGN.md §6 per-outcome table -->
 
 When the test output parsed, the parsed counts win. Jev's judgement of the same run is recorded

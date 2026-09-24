@@ -28,32 +28,32 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildVocabulary } from '../../src/synth/beam/vocab.ts';
-import { toks } from '../../src/synth/beam/tokens.ts';
-import { createDonorSource } from '../../src/synth/donor/index.ts';
-import { buildSlotVocabulary } from '../../src/synth/fill/state.ts';
-import { functionGapSlots } from '../../src/synth/localize/sites.ts';
-import { createMutationSource } from '../../src/synth/mutate/index.ts';
-import { indentOf } from '../../src/synth/py/edits.ts';
-import { analyse, blockAt, scopeAt, statementAt } from '../../src/synth/py/structure.ts';
-import type { PyModule } from '../../src/synth/py/structure.ts';
-import { tokenizeFragment } from '../../src/synth/py/tokenize.ts';
-import { createCompositeSource } from '../../src/synth/search/composite.ts';
-import { ENUMERATE_CAP, isTestPath, taskIdentifiers, testLiterals } from '../../src/synth/search/subgoal.ts';
-import { missingFromVocab, vocabularyOf } from '../../src/synth/sieve/queue.ts';
-import { sketchPool } from '../../src/synth/sketch/pool.ts';
-import { instantiates, productionsFor } from '../../src/synth/sketch/productions.ts';
-import { createTemplateSource } from '../../src/synth/templates/index.ts';
-import type { Candidate, CandidateSource, EnumerateOptions, FailureView, Site, SourceFile } from '../../src/synth/types.ts';
-import { applyCandidate } from '../../src/synth/verify/apply.ts';
+import { buildVocabulary } from '../../src/jev-modes/synth/beam/vocab.ts';
+import { toks } from '../../src/jev-modes/synth/beam/tokens.ts';
+import { createDonorSource } from '../../src/jev-modes/synth/donor/index.ts';
+import { buildSlotVocabulary } from '../../src/jev-modes/synth/fill/state.ts';
+import { functionGapSlots } from '../../src/jev-modes/synth/localize/sites.ts';
+import { createMutationSource } from '../../src/jev-modes/synth/mutate/index.ts';
+import { indentOf } from '../../src/jev-modes/synth/py/edits.ts';
+import { analyse, blockAt, scopeAt, statementAt } from '../../src/jev-modes/synth/py/structure.ts';
+import type { PyModule } from '../../src/jev-modes/synth/py/structure.ts';
+import { tokenizeFragment } from '../../src/jev-modes/synth/py/tokenize.ts';
+import { createCompositeSource } from '../../src/jev-modes/synth/search/composite.ts';
+import { ENUMERATE_CAP, isTestPath, taskIdentifiers, testLiterals } from '../../src/jev-modes/synth/search/subgoal.ts';
+import { missingFromVocab, vocabularyOf } from '../../src/jev-modes/synth/sieve/queue.ts';
+import { sketchPool } from '../../src/jev-modes/synth/sketch/pool.ts';
+import { instantiates, productionsFor } from '../../src/jev-modes/synth/sketch/productions.ts';
+import { createTemplateSource } from '../../src/jev-modes/synth/templates/index.ts';
+import type { Candidate, CandidateSource, EnumerateOptions, FailureView, Site, SourceFile } from '../../src/jev-modes/synth/types.ts';
+import { applyCandidate } from '../../src/jev-modes/synth/verify/apply.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, '..', '..');
 const REPOS = '/tmp/jevonly/repos';
 const OUT_DIR = join(HERE, 'out');
-/** src/synth/search/index.ts:44 — loadPythonFiles sorts the non-test .py paths and keeps the first 400 */
+/** src/jev-modes/synth/search/index.ts:44 — loadPythonFiles sorts the non-test .py paths and keeps the first 400 */
 const MAX_WORKSPACE_PY_FILES = 400;
-/** src/synth/index.ts:49 */
+/** src/jev-modes/synth/index.ts:49 */
 const BEAM_MAX_TOKENS = 25;
 /** search/sites.ts:97 GAP_FUNCTION_MAX_LINES */
 const GAP_FUNCTION_MAX_LINES = 40;

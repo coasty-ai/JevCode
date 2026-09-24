@@ -12,8 +12,8 @@ import type { DeciderConfig } from '../../src/core/types.js';
 import { createJevDecider } from '../../src/jev/client.js';
 import { JEV_PROVIDERS } from '../../src/jev/providers.js';
 import { DEFAULT_JEV_BASE_URL, DEFAULT_JEV_MODEL } from '../../src/jev/types.js';
-import type { JevAsk } from '../../src/synth/types.js';
-import { pickNextFailingTest, progress, summarize } from '../../src/synth/verify/index.js';
+import type { JevAsk } from '../../src/jev-modes/synth/types.js';
+import { pickNextFailingTest, progress, summarize } from '../../src/jev-modes/synth/verify/index.js';
 
 const apiKey = process.env['JEV_API_KEY'] ?? process.env['OPENROUTER_API_KEY'] ?? '';
 const live = process.env['JEVCODE_LIVE'] === '1';

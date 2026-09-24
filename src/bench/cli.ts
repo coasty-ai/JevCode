@@ -69,7 +69,7 @@ export async function runBenchFromFlags(rawFlags: BenchFlags): Promise<number> {
   const { createMockDecider } = await import('../jev/mock.js');
   const { createSpendMeter } = await import('../spend/meter.js');
   const { createSandbox } = await import('../sandbox/run.js');
-  const { createSynthesizer } = await import('../synth/index.js');
+  const { createSynthesizer } = await import('../jev-modes/synth/index.js');
 
   let liveProvider: Provider | undefined;
   let liveDecider: Decider | undefined;

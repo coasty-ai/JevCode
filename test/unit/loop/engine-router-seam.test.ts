@@ -21,7 +21,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Answer, AskResult, GenerateRequest, Json, Proposal, Question, StageName, StepRecord, Synthesizer } from '../../../src/core/types.js';
-import { HEDGE_TWIN_OFFSET, hedgeOriginOf } from '../../../src/synth/llm/source.js';
+import { HEDGE_TWIN_OFFSET, hedgeOriginOf } from '../../../src/jev-modes/synth/llm/source.js';
 import { resetStepRouters } from '../../../src/loop/routers.js';
 import { RL1_INTENT_DEADLINE_MS } from '../../../src/loop/routers.js';
 import { choiceOver, createFakeDecider, createFakeWorkspace, makeEngine, noulA, repoState, scoreA, turn, type DeciderCall, type FakeDecider, type Harness } from './fakes.js';

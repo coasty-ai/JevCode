@@ -13,7 +13,7 @@
 //   // jev-contract: R1 run_first (§3.x)
 //   //   escape: choice() over the code-built scopes — ESCAPE_KEY, argmax only beyond the 0.05 margin
 //   //   guard: the scope-usability check and the code deny-list run after the answer
-//   //   fallback: scopeBuilderFor() narrowest code scope, then the full suite; test: test/unit/synth/oracle/scope.test.ts
+//   //   fallback: scopeBuilderFor() narrowest code scope, then the full suite; test: test/unit/jev-modes/synth/oracle/scope.test.ts
 //   //   no-gating: ordering only — completion stays isCompleteByFact() on the harness's own run
 //
 // Existing, pre-design uses are grandfathered in ALLOW below, by file and by count: annotate a new site, or add a row
@@ -30,19 +30,19 @@ const ALLOW = [
   { file: 'src/loop/engine.ts', sites: 2, why: 'askRecorded, plus the decomposeContext seam that forwards into it (contract 1.5): the one metered, recorded path to the decider — the guard, not call sites' },
   { file: 'src/loop/stages/decompose.ts', sites: 1, why: 'the `deps.ask` forwarder into ctx.ask/askRecorded (contract 1.5); the Choice is built, floored and guarded in src/orchestrate/split/rank.ts, which carries the four-clause block' },
   { file: 'src/jev/router.ts', sites: 1, why: "contract 1.9 (Fastlane) §2.1: routeSpeculative's `input.ask(signal)` is the INJECTED thunk of the routed site — the stage's own ctx.ask, which reaches the decider through the engine's one metered path. The primitive builds no question and takes no decision; it only decides whether an answer arrives in time to be applied, and its single failure branch (deadline / JevError / 503 / abort / committed token) is what makes every routed site's clause-3 fallback structural. The four clauses belong to the calling site, which carries them." },
-  { file: 'src/chat/lookup.ts', sites: 1, why: 'TUI-DESIGN-2 §3.6 chat lookup Nouls: no workspace mutation reachable from the answer' },
+  { file: 'src/jev-modes/chat/lookup.ts', sites: 1, why: 'TUI-DESIGN-2 §3.6 chat lookup Nouls: no workspace mutation reachable from the answer' },
   { file: 'src/chat/intake.ts', sites: 1, why: 'TUI-DESIGN-2 §3.13 intake Choice: escape + can_* pairs, code fallback coding_task' },
   { file: 'src/undo/apply.ts', sites: 1, why: 'not Jev: the undo picker asks the human which checkpoint to restore' },
   { file: 'src/loop/coordination.ts', sites: 1, why: "not Jev: `input.ask(req)` is the lease-conflict BLOCKING PANE (COORDINATION-DESIGN \u00a74.3 step 4) through the engine's existing Confirmer/blocker seam \u2014 a `BlockingRequest` answered by a human with [w]/[c]/[t]/[q], not a Choice. \u00a72.1 keeps Jev off the coordination path entirely: no decider is reachable from this module, so jev-off, --no-input and an unreachable Jev are byte-identical here" },
   { file: 'src/perf/jev-latency.ts', sites: 1, why: 'the --live latency probe: fixed question batch, no action reachable' },
   { file: 'src/jev/cache.ts', sites: 1, why: 'createCachingDecider: a memoizing decorator that forwards the caller\'s own state and questions to `inner.ask` untouched — it builds no question and takes no decision, so the four clauses belong to the site that called it' },
-  { file: 'src/synth/index.ts', sites: 1, why: 'llm-jev dispatcher: the batch is built and guarded by the synthesizer stage that owns it' },
-  { file: 'src/synth/llm/repro.ts', sites: 1, why: 'Q13 repro selection among code-generated inputs; code fallback to the first input' },
-  { file: 'src/synth/oracle/search.ts', sites: 1, why: 'Q12 oracle Choice over code-enumerated commands; code fallback to the detected command' },
-  { file: 'src/synth/search/subgoal.ts', sites: 1, why: 'Q11 edit class over a fixed enum; code fallback to the code-ranked class' },
-  { file: 'src/synth/search/sites.ts', sites: 3, why: 'Q2–Q6 localisation: traceback frames stay in the listing whatever Jev answers' },
-  { file: 'src/synth/localize/index.ts', sites: 5, why: 'Q2–Q6 localisation asker (chunked): ranking only, code order is the fallback' },
-  { file: 'src/synth/donor/holes.ts', sites: 1, why: 'Q14 donor hole fill over code-mined candidates; the candidate still runs the tests' },
+  { file: 'src/jev-modes/synth/index.ts', sites: 1, why: 'llm-jev dispatcher: the batch is built and guarded by the synthesizer stage that owns it' },
+  { file: 'src/jev-modes/synth/llm/repro.ts', sites: 1, why: 'Q13 repro selection among code-generated inputs; code fallback to the first input' },
+  { file: 'src/jev-modes/synth/oracle/search.ts', sites: 1, why: 'Q12 oracle Choice over code-enumerated commands; code fallback to the detected command' },
+  { file: 'src/jev-modes/synth/search/subgoal.ts', sites: 1, why: 'Q11 edit class over a fixed enum; code fallback to the code-ranked class' },
+  { file: 'src/jev-modes/synth/search/sites.ts', sites: 3, why: 'Q2–Q6 localisation: traceback frames stay in the listing whatever Jev answers' },
+  { file: 'src/jev-modes/synth/localize/index.ts', sites: 5, why: 'Q2–Q6 localisation asker (chunked): ranking only, code order is the fallback' },
+  { file: 'src/jev-modes/synth/donor/holes.ts', sites: 1, why: 'Q14 donor hole fill over code-mined candidates; the candidate still runs the tests' },
 ];
 
 /** §1.2 "structurally excluded from Jev": ids that would make Jev an authority. Never a question id, anywhere. */

@@ -1,7 +1,7 @@
 /**
  * F25 — S2 on the `jev-on` propose path (contract 1.9 "Fastlane" §3.1–§3.4, docs/LLM-LOOP-DESIGN.md §3).
  *
- * All four S2 mechanisms lived in `src/synth/llm/source.ts`, which `jev-on` never enters: `PromptInput.prefixOrder`
+ * All four S2 mechanisms lived in `src/jev-modes/synth/llm/source.ts`, which `jev-on` never enters: `PromptInput.prefixOrder`
  * was never set, `onFirstByte` was forwarded only on the synthesizer's sample path, and the hedge and the
  * provider-order rotation were the round's. So the `jev-on-next` arm's `mechanisms.s2: true` was false in fact
  * and the §8.3 S2 row (TTFB p50/p90, hedges, cache) was structurally empty for every jev-on arm.
@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { GenerateOptions, GenerateRequest, GenerateResult } from '../../../src/core/types.js';
 import type { FakeProvider, Harness } from './fakes.js';
 import { createFakeSandbox, createFakeWorkspace, execResult, makeEngine, repoState, turn } from './fakes.js';
-import { HEDGE_TWIN_OFFSET, S2_ENV_FLAG, hedgeAfterMs, hedgeOriginOf, s2Mode } from '../../../src/synth/llm/hedge.js';
+import { HEDGE_TWIN_OFFSET, S2_ENV_FLAG, hedgeAfterMs, hedgeOriginOf, s2Mode } from '../../../src/jev-modes/synth/llm/hedge.js';
 import { summariseStepRows } from '../../../src/bench/step-records.js';
 
 const harnesses: Harness[] = [];

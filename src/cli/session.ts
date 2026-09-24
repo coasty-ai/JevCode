@@ -32,7 +32,7 @@ import { accessSync, appendFileSync, constants as fsConstants, existsSync, realp
 import { open as openFile, readFile } from 'node:fs/promises';
 import { homedir, hostname, uptime, userInfo } from 'node:os';
 import { basename, join, resolve as resolvePath, sep } from 'node:path';
-import type { SynthesizerOptions } from '../synth/index.js';
+import type { SynthesizerOptions } from '../jev-modes/synth/index.js';
 import type {
   Answer,
   BlockingAnswer,
@@ -104,7 +104,7 @@ import { resolveConfig as realResolveConfig, isEngineMode, modeFromParsedFlags, 
 import type { ResolvedConfigWithDiagnostics } from '../config/types.js';
 import { credentialsPath, generatorKeyEnvVar, readCredentialsFile, shadowingLine, writeConfigValue as realWriteConfigValue, writeCredentials as realWriteCredentials, type CredentialsPatch } from '../config/credentials.js';
 import { DEFAULT_MODE, JEV_ONLY_DEFAULT_SPEND_CAP_USD, MODE_BADGE_WORD, SETTINGS } from '../config/defaults.js';
-import { PRODUCT_CONTEXT_ASK } from '../loop/stages/context.js';
+import { PRODUCT_CONTEXT_ASK } from '../jev-modes/stages/context.js';
 import { parseModeHint } from '../config/launch.js';
 import { loadInstructions as realLoadInstructions, projectInstructionFile } from '../config/instructions.js';
 import { createTrustStore as realCreateTrustStore, decisionFromOption, probeTrustInputs as realProbeTrustInputs, trustKey, trustWorkspaceFlag, type TrustDecision, type TrustInputs, type TrustOption } from '../config/trust.js';
@@ -205,7 +205,7 @@ import { budgetItems, BUDGET_THRESHOLDS, type BudgetPct } from '../tui/budget/li
 import { buildIntakeState, filesBucket, routeOf, runIntake, testsFromCandidates, type ChatRoute, type IntakeResult } from '../chat/intake.js';
 import { REPLY_FALLBACK_KEY, fillReply, pickReply, replyByKey, type ReplyFacts } from '../chat/replies.js';
 import { AGENT_NO_DECISIONS_TEXT, branchOf, harnessFacts, peersNotOpenText, PEERS_UNAVAILABLE_TEXT, selectFacts, type FactsInput } from '../chat/facts.js';
-import { LOOKUP_READ_BYTES, lookupCode, lookupLines, type LookupInput } from '../chat/lookup.js';
+import { LOOKUP_READ_BYTES, lookupCode, lookupLines, type LookupInput } from '../jev-modes/chat/lookup.js';
 import { CHAT_FILES_MAX, CHAT_FILE_BYTES, CHAT_FIXED_INPUT_TOKENS, chatMaxTokens, llmChatTurn, type ChatIdentity, type LlmTurnInput } from '../chat/llm-turn.js';
 import { CHAT_LABELS, bubbleLines, type ChatRole } from '../chat/bubbles.js';
 import { createChatLedger, type ChatTurn } from '../chat/ledger.js';
@@ -1012,10 +1012,10 @@ export async function buildDecider(config: ResolvedConfigWithDiagnostics, flags:
  * llm-jev overrides, only the mode). Any other mode builds the jev-only synthesizer (the callers never ask for one).
  */
 export async function buildSynthesizer(config: ResolvedConfigWithDiagnostics, decider: Decider, mode: EngineMode = 'jev-only'): Promise<Synthesizer> {
-  const { createSynthesizer } = await import('../synth/index.js');
+  const { createSynthesizer } = await import('../jev-modes/synth/index.js');
   const opts: SynthesizerOptions =
     mode === 'llm-jev'
-      ? { decider, redact: config.redact, mode: 'llm-jev', generation: (await import('../synth/llm/source.js')).LLM_DEFAULT_GENERATION }
+      ? { decider, redact: config.redact, mode: 'llm-jev', generation: (await import('../jev-modes/synth/llm/source.js')).LLM_DEFAULT_GENERATION }
       : { decider, redact: config.redact, mode: 'jev-only' };
   return createSynthesizer(opts);
 }

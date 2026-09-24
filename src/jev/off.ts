@@ -14,7 +14,7 @@
  *
  *                   The Score polarity is the one place "no opinion" is not symmetric, and getting it wrong would
  *                   invert the safety principle. Every Score in this tree is a risk dimension whose levels run
- *                   ascending in severity (`src/loop/stages/risk.ts RISK_LEVEL_TEXTS`, `src/synth/oracle/questions.ts`,
+ *                   ascending in severity (`src/jev-modes/stages/risk.ts RISK_LEVEL_TEXTS`, `src/jev-modes/synth/oracle/questions.ts`,
  *                   `src/perf/jev-latency.ts`): level 0 of `destructive` is "nothing existing is lost" and of
  *                   `irreversible` is "no lasting effect". An inert level 0 would therefore answer every harm Score
  *                   with the most permissive reading available — `verdict ok, risk 0.000` on a proposal the mock

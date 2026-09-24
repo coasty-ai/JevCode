@@ -30,7 +30,7 @@ export type BenchSuiteSelector = BenchSuite | 'all';
 
 export type { SynthesizerArmMode } from '../core/types.js';
 
-/** What the runner hands the synthesizer factory (src/synth/index.ts `SynthesizerOptions`, the arm's `mode` and pinned `generation` required). */
+/** What the runner hands the synthesizer factory (src/jev-modes/synth/index.ts `SynthesizerOptions`, the arm's `mode` and pinned `generation` required). */
 export interface CreateSynthesizerOptions {
   decider: Decider;
   redact: (s: string) => string;
@@ -42,7 +42,7 @@ export interface CreateSynthesizerOptions {
 
 /**
  * BenchDeps plus the synthesizer factory (the shared BenchDeps in core/types.ts is frozen). Required when the
- * conditions include a synthesizer arm (jev-only, llm-jev, llm-sieve); bench/cli.ts passes src/synth.
+ * conditions include a synthesizer arm (jev-only, llm-jev, llm-sieve); bench/cli.ts passes src/jev-modes/synth.
  */
 export type BenchDepsWithSynth = BenchDeps & {
   createSynthesizer?: (opts: CreateSynthesizerOptions) => Synthesizer;
@@ -418,7 +418,7 @@ export interface PinnedGeneration {
    * contract 1.9 (Fastlane), docs/LLM-LOOP-DESIGN.md §3: the pinned S2 mechanisms of an arm that can RUN them.
    * Absent on every arm today (F05): the block rode on `jev-on-next*`, whose mode is `jev-on`, where no S2
    * mechanism is reachable — nothing sets `PromptInput.prefixOrder`, `onFirstByte` is forwarded only on the
-   * synthesizer sample path, and hedging plus the §3.4 cap live in `src/synth/llm/source.ts`. It comes back with
+   * synthesizer sample path, and hedging plus the §3.4 cap live in `src/jev-modes/synth/llm/source.ts`. It comes back with
    * F17 (§9.1), on whichever arm the mechanisms are wired onto. Absent is what "S2 is off here" means.
    */
   s2?: S2Generation;
@@ -448,7 +448,7 @@ export interface ArmMechanisms {
   /**
    * F05: what the RUN did, never a constant. `armMechanisms` yields the arm's pinned value and refuses to pin
    * anything but `'off'` on an arm whose mode cannot honour it — the predicate is `s2ReachableOn`
-   * (`src/synth/llm/hedge.ts`), which asks `s2Mode`, the resolver that reads `EngineOptions.s2`, rather than
+   * (`src/jev-modes/synth/llm/hedge.ts`), which asks `s2Mode`, the resolver that reads `EngineOptions.s2`, rather than
    * keeping a mode list of its own. (F05 kept one and it said `'llm-jev'`; F25 then built the reader on `jev-on`
    * and the two lists were exact opposites, which is why the question is now asked in one place.)
    * `conditionConfig`'s `observed` argument overrides the pin with the value read off the run's own records at the

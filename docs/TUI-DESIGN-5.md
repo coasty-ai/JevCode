@@ -127,7 +127,7 @@ ones marked **ratify** need the owner's word before the slot that lands them sta
 scrollback writer in classic; `lines()` twins; no new dependency; Jev decides; the review invariants
 (`test/unit/tui/app.test.tsx:342–461`, only `y` approves, Enter inert); `itemsFromEvent`/`formatTranscriptItem` as the
 one item source; `useAnimation(` only in `motion.ts`, `setInterval(` only in `spinner.ts`/`retry.ts`; the 10-cell
-gutter with dim continuation labels; the `◆ jevcode` strip prefix; palette Enter-cycling. `src/synth/**`,
+gutter with dim continuation labels; the `◆ jevcode` strip prefix; palette Enter-cycling. `src/jev-modes/synth/**`,
 `src/bench/**`, `src/jev/**` and all of `src/loop/**`, `src/orchestrate/**`, `src/coordination/**`, `src/import/**`,
 `src/models/**`, `src/provider/**` (other than the eight TUI-owned shadow tables of §6.3) are **read-only this round**
 — every change round 5 needs in them is a numbered REQUEST in §8.2.
@@ -2353,7 +2353,7 @@ row in §9.2 with the wave that lands it.
 | **R5-5 the import surface** | `src/cli/import.ts` (**new**), `src/config/imports.ts` (**new**), `src/tui/import/{reducer,lines,Report.tsx}` (**new**), `src/tui/onboarding/{reducer,lines,Wizard.tsx}` (the `'import'` step — **`lines.ts` is R5-5's alone; R5-6's §6.3 row-5 hunk arrives as a §9.2 request**, §14.2 #49), `src/tui/layout.ts` (`OverlayKind`/`OVERLAY_KINDS`/`COLLAPSING`/`OverlayData` — **`'import'` only; `'models'` is not an overlay**, §6.4), `src/tui/Overlay.tsx`, `test/unit/tui/import/**`, `test/unit/cli/import.test.ts`, `test/unit/tui/onboarding/**`, `test/unit/tui/round5-import-app.test.tsx` (new) | §5 |
 | **R5-6 provider, model picker, key setup** | `src/tui/models/{state,lines}` (**new** — the picker's rows and reducer; **the React component is `src/tui/Picker.tsx`'s new `'models'` arm, owned by R5-4**, §6.4), `src/cli/models.ts` (**new**), `src/config/credentials.ts`, `src/config/provider-tables.ts` (**new, zero-import — the R14 fallback only**, §6.3), `src/cli/login.ts`, `src/cli/main.tsx` (**the `switch (command)` arms for `import`, `models` and `agents` — shared, §9.2**), `src/cli/args.ts` (**the three `Command` members and every new flag — shared, §9.2**), `test/unit/tui/models/**`, `test/unit/cli/{models,login,args}.test.ts`, `test/unit/config/provider.test.ts`, `test/unit/tui/round5-models-app.test.tsx` (new) | §6 |
 
-`src/synth/**`, `src/bench/**`, `src/jev/**`, `src/loop/**`, `src/coordination/**`, `src/orchestrate/**`,
+`src/jev-modes/synth/**`, `src/bench/**`, `src/jev/**`, `src/loop/**`, `src/coordination/**`, `src/orchestrate/**`,
 `src/import/**`, `src/models/**`, `src/provider/**`, `src/spend/**`, `src/checkpoint/**`, `src/errors.ts` and
 `src/core/types.ts`'s non-TUI blocks are **read-only** this round. Everything round 5 needs in them is a numbered
 REQUEST in §8.2.

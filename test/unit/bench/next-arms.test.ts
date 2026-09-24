@@ -15,7 +15,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { CONDITIONS } from '../../../src/cli/args.js';
 import { resolveFastPathOption } from '../../../src/loop/engine.js';
-import { s2Mode, s2ReachableOn } from '../../../src/synth/llm/hedge.js';
+import { s2Mode, s2ReachableOn } from '../../../src/jev-modes/synth/llm/hedge.js';
 import { CONDITION_ORDER, MECHANISM_ENV_VARS, armMechanisms, buildEngineOptions, conditionConfig, engineModeOf, isNextArm, parseConditions, pinMechanismEnv, pinnedGeneration, requiresSerialBench, usesSynthesizer, usesTunedProvider } from '../../../src/bench/conditions.js';
 import { computeSuiteMetrics } from '../../../src/bench/metrics.js';
 import { evaluateAcceptRule, evaluatePredictions, FASTPATH_REASONS, FRESH_18, measurementRows, observedArmS2, recorded, RECORDED_BUILD } from '../../../src/bench/next-arms.js';
@@ -217,7 +217,7 @@ describe('the jev-on-next arms (§8.1)', () => {
  * nothing read the flag: `conditionConfig` applies `mech.fastPath` and `mech.routers` and `mech.s2` had
  * no reader anywhere in src. Both arms run `engineModeOf === 'jev-on'`, and in `jev-on` no S2 mechanism
  * is reachable — nothing sets `PromptInput.prefixOrder`, `onFirstByte` is forwarded only on the
- * synthesizer sample path, and hedging plus the §3.4 reasoning cap live in `src/synth/llm/source.ts`,
+ * synthesizer sample path, and hedging plus the §3.4 reasoning cap live in `src/jev-modes/synth/llm/source.ts`,
  * which `jev-on` never enters. The head-to-head is measured from that file days later.
  *
  * Two rules, and the second is what keeps the first from rotting:
@@ -416,7 +416,7 @@ describe('§8.1 the observed s2 reaches summary.json and the §8.3 table (F05 se
 });
 
 describe('the §5.5 bench bridge', () => {
-  // the rows below are the shapes the fast-path writer actually produces (src/loop/stages/fastpath.ts
+  // the rows below are the shapes the fast-path writer actually produces (src/jev-modes/stages/fastpath.ts
   // `declinedRecord` / `firedRecord`): `stage: 1` ONLY on a free decline, `stage: 2` on every row of a round that ran,
   // `decision: 'fired'` ONLY on a proposal, and `decision: 'failed'` with outcome timeout/refused/error otherwise.
   it('folds fastPath, router, riskSource and the S2 verify members out of steps.jsonl', () => {
@@ -735,7 +735,7 @@ describe('the §8.4 predictions and the §8.5 accept rule', () => {
  * F05's premise was true when it was written: `ArmMechanisms.s2` had no reader anywhere in `src`, so `jev-on-next`
  * recorded `s2: true` for a mechanism no `jev-on` engine could run, and F05 answered with a CLAMP — a pinned `s2`
  * survives only on an arm whose `engineModeOf` is `'llm-jev'`. F25 then BUILT the reader on the other mode:
- * `EngineOptions.s2` (`src/core/types.ts`), resolved by `s2Mode(mode, opt, env)` (`src/synth/llm/hedge.ts`), which
+ * `EngineOptions.s2` (`src/core/types.ts`), resolved by `s2Mode(mode, opt, env)` (`src/jev-modes/synth/llm/hedge.ts`), which
  * honours the pin on **`jev-on`** and on nothing else — `llm-jev`'s synthesizer sample path is fed by
  * `LlmSourceDeps`, and nothing threads `EngineOptions.s2` into it. So after the merge the clamp named exactly the
  * wrong mode, and the two defects the merge itself created are:

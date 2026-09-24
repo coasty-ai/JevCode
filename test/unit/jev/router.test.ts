@@ -176,7 +176,7 @@ describe('the ledger and the switch', () => {
    * contract 1.9 (Fastlane) §7.5 seam (b): the EXPLICIT OPTION WINS; `JEVCODE_ROUTERS` only fills an ABSENT one.
    * This used to OR the env in, so an exported `JEVCODE_ROUTERS=on` armed an arm whose own row said `'off'` —
    * the §8 head-to-head's control arms, armed, with `summary.json` still saying they were not.
-   * `resolveFastPathOption` has the same polarity (test/unit/loop/fastpath.test.ts).
+   * `resolveFastPathOption` has the same polarity (test/unit/jev-modes/stages/fastpath.test.ts).
    */
   it('routersEnabled: off by default, and the explicit option beats JEVCODE_ROUTERS both ways', () => {
     expect(routersEnabled(undefined, {})).toBe(false);

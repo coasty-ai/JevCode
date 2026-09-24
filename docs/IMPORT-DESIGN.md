@@ -1006,7 +1006,7 @@ options:
 + paired can_<option> Nouls, definition + 3 examples each side
 ```
 
-Decision: `p ≥ 0.6` **and** its paired Noul ≥ `PAIRED_NOUL_FLOOR` (0.5, `loop/stages/choose.ts:10`) → that
+Decision: `p ≥ 0.6` **and** its paired Noul ≥ `PAIRED_NOUL_FLOOR` (0.5, `jev-modes/stages/choose.ts:10`) → that
 kind; anything weaker → the code rule's verdict (row 11 → MEMORY, row 12 → `skip:unrelated`). This is exactly
 the intake idiom (`chat/intake.ts:166,214`), so the codebase has **one** confidence convention, not two.
 

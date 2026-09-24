@@ -379,7 +379,7 @@ export interface RiskDims {
 /**
  * §3.6 / §14.2 review item 14: the ONE dominant-dimension selection. `risk` and the `outcome blocked` row one line
  * below it must name the same dimension; they used to agree only because `assessRisk` happens to emit the at-max
- * clauses first (`src/loop/stages/risk.ts:274–284`), so any future reason whose first clause is not the at-max
+ * clauses first (`src/jev-modes/stages/risk.ts:274–284`), so any future reason whose first clause is not the at-max
  * dimension would have produced two contradicting rows. The dimension comes from `dims` (the numbers), the level
  * and its text from the matching clause of `reason` (the words).
  */

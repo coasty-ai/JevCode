@@ -24,13 +24,13 @@ explicit option wins and the environment only fills an ABSENT option** (`routers
 | --- | --- | --- | --- | --- |
 | `JEVCODE_JEV` | `off` / `0` / `escape` / `down` / `503` / `unreachable` (`off`,`0` → escape; `down`,`503` → unreachable) | unset — the real decider | Replaces the Decider with a deterministic double: every Choice takes the escape option, every Noul is inert at 0.5, every Score sits at its TOP level (so the destructive gate can only tighten). Bench/perf only — there is no `--jev off` row on `run` or `bench` in `src/cli/args.ts` (the `--jev` boolean at `:288` is `jevcode logout --jev`, an unrelated flag), and the single caller is the bench runner | `src/jev/off.ts` (`jevOffModeFrom`, `withJevOff`), applied at `src/bench/runner.ts` |
 | `JEVCODE_ROUTERS` | `on` (anything else is off) | off in every mode | Arms the contract 1.9 §2 speculative router table (`routeSpeculative`). An explicit `EngineOptions.routers` wins; the env fills only an absent option. The `jev-on` gate stays ahead of both | `src/jev/router.ts` (`routersEnabled`) |
-| `JEVCODE_S2` | `on` (anything else is off) | off in every mode | Arms the contract 1.9 §3 generation path on the **`jev-on`** propose call: the byte-stable prefix, the TTFB readings, the cache-share accounting and (unless `JEVCODE_HEDGE=off`) one hedge twin per step. An explicit `EngineOptions.s2` wins; the env fills only an absent option, and the `jev-on` gate stays ahead of both. Default OFF, so an S2-off run is byte-for-byte the pre-1.9 run — which is what keeps the router golden and every `view: 'legacy'` prompt golden valid without a re-capture. `EngineStatus.mechanisms.s2` reads `partial` when the measurement half is on and the hedge was switched off | `src/synth/llm/hedge.ts` (`s2Mode`, `s2Enabled`, `S2_ENV_FLAG`), pinned per bench arm in `src/bench/conditions.ts` |
+| `JEVCODE_S2` | `on` (anything else is off) | off in every mode | Arms the contract 1.9 §3 generation path on the **`jev-on`** propose call: the byte-stable prefix, the TTFB readings, the cache-share accounting and (unless `JEVCODE_HEDGE=off`) one hedge twin per step. An explicit `EngineOptions.s2` wins; the env fills only an absent option, and the `jev-on` gate stays ahead of both. Default OFF, so an S2-off run is byte-for-byte the pre-1.9 run — which is what keeps the router golden and every `view: 'legacy'` prompt golden valid without a re-capture. `EngineStatus.mechanisms.s2` reads `partial` when the measurement half is on and the hedge was switched off | `src/jev-modes/synth/llm/hedge.ts` (`s2Mode`, `s2Enabled`, `S2_ENV_FLAG`), pinned per bench arm in `src/bench/conditions.ts` |
 | `JEVCODE_FASTPATH` | `auto` / `off` | `auto` when the mode is `jev-on`, `off` otherwise | Arms route R9, the Ledger+Sieve fast path. An explicit `EngineOptions.fastPath` wins; the env fills only an absent option | `src/loop/engine.ts` (`resolveFastPathOption`) |
-| `JEVCODE_WARM` | `on` / `1` / `true` (anything else is off) | OFF for every runner | Asks for the warm verification plane (a persistent forked interpreter that SCREENS candidates; a passer is always re-verified by a cold spawn). A runner with no warm shape records `warm.mode: 'unsupported-runner'` instead of silently running cold. Also refuses the fast path outright (`reason: 'warm_plane'`) | `src/synth/warm/plane.ts` (`warmRequested`, `warmModeFor`) |
-| `JEVCODE_HEDGE` | `on` (anything else is off) | off | Arms the contract 1.9 §3.2 hedge: one twin per round fired after `hedgeAfterMs(p50 TTFB)`. A caller's `LlmSourceDeps.hedge` pin wins — but **no site under `src/` sets one**, so this variable is today the ONLY way the hedge can arm | `src/synth/llm/hedge.ts` (`hedgeEnabled`, `HEDGE_ENV_FLAG`), re-exported by `src/synth/llm/source.ts` and read by the loop's `hedgedCall` |
-| `JEVCODE_DEADLINE_GROWTH` | `served` / `always` | `always` (byte-identical to the behaviour before the switch existed) | `served`: a zero-token timeout backs a goal's deadline off only once a sample of that goal has actually been SERVED, so a provider that never answers stays at the class base. Recorded per run on `StepsSummary.deadlineGrowth` | `src/synth/llm/source.ts` (`deadlineGrowthFrom`, `DEADLINE_GROWTH_ENV_FLAG`; the type is `DeadlineGrowthMode`) |
-| `JEVCODE_CASE_TIMEOUT_MS` | a positive integer, milliseconds | 2000 ms (`CASE_TIMEOUT_S = 2`, run_tests.py's own `--timeout`) | The per-case limit compiled into the GENERATED QuixBugs pytest module (`src/bench/quixbugs/pytest.ts:95`), so an exported value binds the bench's own QuixBugs runs. It does NOT bind every sieve lane: `laneRunEnv` OVERWRITES it on a pytest lane that has a measured per-test timeout (`src/synth/sieve/runner.ts:115`), and a sieve `quixbugs` lane takes its limit on the command line instead (`quixbugsLaneCommand`, `:427`), where the environment is not consulted | `src/synth/verify/quixbugs.ts` (`CASE_TIMEOUT_ENV`), consumed by the module built in `src/bench/quixbugs/pytest.ts`, set per lane in `src/synth/sieve/runner.ts` |
-| `JEVCODE_MAX_CASE_TIMEOUTS` | a positive integer | unset — no limit (the sieve sets 1 on its own lanes, `LANE_MAX_CASE_TIMEOUTS`) | After this many case timeouts in one run the remaining cases are reported "not run" rather than called. This is what keeps a hanging candidate from costing the whole per-case budget on every case | `src/synth/verify/quixbugs.ts` (`MAX_CASE_TIMEOUTS_ENV`), consumed by `src/bench/quixbugs/pytest.ts`, set per lane in `src/synth/sieve/runner.ts` |
+| `JEVCODE_WARM` | `on` / `1` / `true` (anything else is off) | OFF for every runner | Asks for the warm verification plane (a persistent forked interpreter that SCREENS candidates; a passer is always re-verified by a cold spawn). A runner with no warm shape records `warm.mode: 'unsupported-runner'` instead of silently running cold. Also refuses the fast path outright (`reason: 'warm_plane'`) | `src/jev-modes/synth/warm/plane.ts` (`warmRequested`, `warmModeFor`) |
+| `JEVCODE_HEDGE` | `on` (anything else is off) | off | Arms the contract 1.9 §3.2 hedge: one twin per round fired after `hedgeAfterMs(p50 TTFB)`. A caller's `LlmSourceDeps.hedge` pin wins — but **no site under `src/` sets one**, so this variable is today the ONLY way the hedge can arm | `src/jev-modes/synth/llm/hedge.ts` (`hedgeEnabled`, `HEDGE_ENV_FLAG`), re-exported by `src/jev-modes/synth/llm/source.ts` and read by the loop's `hedgedCall` |
+| `JEVCODE_DEADLINE_GROWTH` | `served` / `always` | `always` (byte-identical to the behaviour before the switch existed) | `served`: a zero-token timeout backs a goal's deadline off only once a sample of that goal has actually been SERVED, so a provider that never answers stays at the class base. Recorded per run on `StepsSummary.deadlineGrowth` | `src/jev-modes/synth/llm/source.ts` (`deadlineGrowthFrom`, `DEADLINE_GROWTH_ENV_FLAG`; the type is `DeadlineGrowthMode`) |
+| `JEVCODE_CASE_TIMEOUT_MS` | a positive integer, milliseconds | 2000 ms (`CASE_TIMEOUT_S = 2`, run_tests.py's own `--timeout`) | The per-case limit compiled into the GENERATED QuixBugs pytest module (`src/bench/quixbugs/pytest.ts:95`), so an exported value binds the bench's own QuixBugs runs. It does NOT bind every sieve lane: `laneRunEnv` OVERWRITES it on a pytest lane that has a measured per-test timeout (`src/jev-modes/synth/sieve/runner.ts:115`), and a sieve `quixbugs` lane takes its limit on the command line instead (`quixbugsLaneCommand`, `:427`), where the environment is not consulted | `src/jev-modes/synth/verify/quixbugs.ts` (`CASE_TIMEOUT_ENV`), consumed by the module built in `src/bench/quixbugs/pytest.ts`, set per lane in `src/jev-modes/synth/sieve/runner.ts` |
+| `JEVCODE_MAX_CASE_TIMEOUTS` | a positive integer | unset — no limit (the sieve sets 1 on its own lanes, `LANE_MAX_CASE_TIMEOUTS`) | After this many case timeouts in one run the remaining cases are reported "not run" rather than called. This is what keeps a hanging candidate from costing the whole per-case budget on every case | `src/jev-modes/synth/verify/quixbugs.ts` (`MAX_CASE_TIMEOUTS_ENV`), consumed by `src/bench/quixbugs/pytest.ts`, set per lane in `src/jev-modes/synth/sieve/runner.ts` |
 | `JEVCODE_TIMELINE` | any value except `0` and `off` (`1` by convention) | unset — the recorder is off and every entry point is an early return | Arms the per-step span recorder and its §4.4 buckets (`jev`, `sample`, `store`, `listing:*`, `images:pre`/`images:post`). It is instrumentation, but it is in this table rather than out of scope because it **changes what the gated `harnessMs` contains** (`src/perf/step-overhead.ts`), so a perf number taken with it exported is not comparable with one taken without — `docs/HARNESS-NEXT-DESIGN.md` §9.1's bucket measurements were taken under it | `src/perf/timeline.ts` (`timelineEnabled`) |
 | `JEVCODE_BENCH_CONTEXT` | `relaxed` (anything else is legacy) | `legacy` | Flips **every** bench arm's `contextPolicy.view` from legacy to relaxed, i.e. changes the prompt every arm sends. An arm that wants the relaxed view should set `contextPolicy` on its own condition object; this switch is the whole-run override and is easy to leave exported | `src/bench/conditions.ts` |
 | `JEVCODE_PERF_WINDOW` | an absolute path | unset — `/tmp/jevcode-perf-window-open`, the shared-machine sentinel of `docs/DECISIONS.md` | Relocates the perf-window sentinel `jevcode perf` takes, polls and clears. It exists so a unit test can exercise the refusal without writing or deleting the machine's REAL window, which would corrupt whatever the other session is measuring — but an exported value is behaviour-changing in the dangerous direction: `perf` would then poll the wrong path and measure straight through a live window | `src/perf/main.ts` (`perfWindowPath`, `PERF_WINDOW_FILE`) |
@@ -61,7 +61,7 @@ Pooled (28 paired tasks):
 |---|---|---|---|---|---|---|---|---|
 | jev-off (baseline) | 19/28 | 16/22, 0 overfit (+ 3/6 SWE) | 391 s / 480 s | $0.5062 ($0.5062 + $0) | $0.0181 | $0.0266 | 10.8 | 0 |
 | jev-off-tuned | not run — `src/cli/args.ts:284 CONDITIONS` rejects the arm (exit 2, $0) | | | | | | | |
-| llm-sieve | not run at the time — `src/synth/index.ts` then threw ConfigError (not wired; the factory constructs the arm as of F06, so a re-run can fill this row) | | | | | | | |
+| llm-sieve | not run at the time — `src/jev-modes/synth/index.ts` then threw ConfigError (not wired; the factory constructs the arm as of F06, so a re-run can fill this row) | | | | | | | |
 | llm-jev, as run | 22/28 | 17/22, **5 overfit** (+ 0/6 SWE) | 80 s / 126 s | $0.2704 ($0.0695 + $0.2010) | $0.0097 | $0.0123 | 3.6 | 741 |
 | llm-jev, 3 Jev-outage SWE runs replaced by the re-run | 23/28 | 17/22, 5 overfit (+ 1/6 SWE) | 80 s / 114 s | $0.3024 ($0.0715 + $0.2309) | $0.0108 | $0.0131 | 3.6 | 838 |
 
@@ -129,11 +129,11 @@ Code, not a suite: the three items that §9 of `experiments/results/llm-jev-head
 test-fitting seed when only seeds are in the clusters), class C′ (31 of 100 samples cut at the fixed 20 s / 30 s deadline) and class E′
 (`sympy-11618` re-claiming `done partial` against 43 pre-existing collection errors) — are now built: the probe's majority decides an
 all-seed split of equal support before any special-case count (`seedOnlySplit` / `probeMajorityCluster`, `CodeRule 'probe_majority'`,
-`src/synth/search/guard.ts`); the per-sample deadline adapts as `clamp(2 × the running p90 of SERVED samples, the class default,
+`src/jev-modes/synth/search/guard.ts`); the per-sample deadline adapts as `clamp(2 × the running p90 of SERVED samples, the class default,
 45 s cheap / 90 s repository)` and a provider whose served p90 is past the class default makes the run cap every further sample's
-`reasoning: {maxTokens}` at 512, one-way (`LLM_DEADLINE_ADAPT`, `sampleDeadlineMs`, `providerSlow`, `src/synth/llm/source.ts`); and the
+`reasoning: {maxTokens}` at 512, one-way (`LLM_DEADLINE_ADAPT`, `sampleDeadlineMs`, `providerSlow`, `src/jev-modes/synth/llm/source.ts`); and the
 base commit's known failures travel on the claiming run's evidence, so the completion fact and the code judge compare against them
-instead of against zero (`KnownFailuresEvidence`, `unexpectedFailures`, `src/loop/stages/complete.ts`, `judge.ts`; the count is measured
+instead of against zero (`KnownFailuresEvidence`, `unexpectedFailures`, `src/jev-modes/stages/complete.ts`, `judge.ts`; the count is measured
 at the base commit and may only be lowered by a later re-baseline, `search/index.ts`). Design text: DESIGN §22.3 / §22.5 / §22.6,
 LLM-JEV-DESIGN §4.8 rev 3, §6.2 rev 3, §6.6 rev 3.
 
@@ -248,12 +248,12 @@ Full report `experiments/results/llm-jev-iter1.md`, script output `…-iter1.too
 the SIEVE batch goes out to the lanes, `0 tested on 8 lanes (nothing ran)`, and the wall cap takes the run in step 1 —
 five fresh-slice QuixBugs records at `wall_time` with 0–1 steps and `execMs: 0`, and three runs wedged at 0 % CPU with no
 child processes for 59 minutes. A five-point $0 offline A/B on one task at `--concurrency 1` pins it on the **warm
-verification plane** (`src/synth/warm/`, `7c99ce0` + `6cd0e76`, HARNESS-NEXT wave S1 M6), not on this iteration's work and
+verification plane** (`src/jev-modes/synth/warm/`, `7c99ce0` + `6cd0e76`, HARNESS-NEXT wave S1 M6), not on this iteration's work and
 not on the bundle: `066816f` 6 steps / 2,896 tested, `168a599` 0/0, `751e3bf` tsx 0/0, `751e3bf` bundle 0/0,
 `751e3bf` with `JEVCODE_WARM=off` **6 steps / 2,180 tested in 80.8 s**. ~~`warmModeFor` defaults the plane on for every
 `quixbugs` and `pytest` runner.~~ **Re-tensed 2026-09-22 at `d297b29`: that was true AT `751e3bf` and is no longer true of any
 tree since `11e1acc` (merged `0556f1a`).** The plane is OPT-IN for every runner: `warmRequested(env)`
-(`src/synth/warm/plane.ts:149`) is false unless `JEVCODE_WARM` is `on` / `1` / `true`, and `warmModeFor` returns `null` before
+(`src/jev-modes/synth/warm/plane.ts:149`) is false unless `JEVCODE_WARM` is `on` / `1` / `true`, and `warmModeFor` returns `null` before
 it looks at the runner (`:123`). Everything below therefore ran with `JEVCODE_WARM=off`, which is now simply the default;
 the plane's own defects were fixed by `warm-plane-fix-2` and the default stays OFF until pass parity holds
 (`docs/DECISIONS.md`, the warm A/B).
@@ -336,7 +336,7 @@ iteration 1's `nothing ran` / `LaneError` signature never appears, and Ring 1 wi
 loses QuixBugs tasks cold solves — `topological_ordering` **twice independently** (loadavg 150 and 35) and
 `shortest_path_length` once, 4 cold-wins against 2 warm-wins over 54 paired tasks (the two ladder pairs are at
 parity: 5/6 both ways in the back-to-back pair, both missing only `route_match`). The cause is a calibration
-defect, not the transport: `src/synth/sieve/runner.ts:847` teaches `tRunMs` from cold runs only, and with the
+defect, not the transport: `src/jev-modes/synth/sieve/runner.ts:847` teaches `tRunMs` from cold runs only, and with the
 plane on the only candidates reaching the cold path are those whose hot screen hit a deadline (`:740-750`,
 `newDeadlineHit` → `deadlineRecheck()`), so the sample is **nothing but timeouts** — `run median 11,655 ms`
 against 510 ms cold on the same batch — `refineTRun` writes it into the run plan, `runs left` collapses 1,315 → 16
@@ -345,7 +345,7 @@ timeout instead of the lane run cap, `:736`) and re-run the matched pair before 
 Also recorded: `JEVCODE_WARM=on` is a **no-op on SWE-bench** — `warmModeFor` admits only the `quixbugs` and
 `pytest` runners and the SWE oracle's runner is `other` — so the A/B covers 14 of the 18 tasks, and nothing in the
 output says so. And the warm counters live **only** in the live `transcript.log`, which `--archive-runs` does not
-copy (`src/synth/search/types.ts:129-141`); every warm number above was harvested by hand.
+copy (`src/jev-modes/synth/search/types.ts:129-141`); every warm number above was harvested by hand.
 
 ## 2026-09-22 — the `jev-on-next` arm: what the LLM-loop wave will be measured with (no rows yet)
 
@@ -416,14 +416,14 @@ the mode is claimed here.
 `elif`/`else` whose body leaves the suite) is late when a preceding sibling DEREFERENCES its operand's exact dotted
 path — `p.attr`, `p[…]`, `p.method(…)`, a use the rejected value would make fail — and nothing in front BINDS that
 path's root and nothing in front NARROWS it with an exiting guard of its own
-(`src/synth/py/structure.ts` `guardClauses` / `isLateGuard` / `OperandPlacement`, differenced by
-`src/synth/search/guard.ts` `newlyLateGuards`).
+(`src/jev-modes/synth/py/structure.ts` `guardClauses` / `isLateGuard` / `OperandPlacement`, differenced by
+`src/jev-modes/synth/search/guard.ts` `newlyLateGuards`).
 
 The review killed the shipped version: its shape (b) ("nothing in front binds it, so it could stand at the top")
 degenerated to "not the first statement", because nothing ever binds a parameter; and its shape (a) counted any
 occurrence of the operand ROOT, so `self.logger.debug(…)` was evidence about `self.handler`. It fired on
 `bench/data/swebench-verified-30.gold.json` → `sympy__sympy-17139`, a real gold, and on seven other correct shapes.
-All of those are now silent (`test/unit/synth/search/late-guard.test.ts`, 16 cases + the sympy gold).
+All of those are now silent (`test/unit/jev-modes/synth/search/late-guard.test.ts`, 16 cases + the sympy gold).
 
 The sweep, and it is the reason the signal lost its pool role:
 
@@ -543,8 +543,8 @@ against this branch's `src` (the only diff is the Q16 snapshot); `late-guard.tes
 *Fixture property* — asserts what the corpus contains, not what the code does: `late-guard.test.ts`'s three sweep
 cases and its corpus-coverage case; `gold-free-pool.test.ts`'s Q16 wording cases.
 
-Files: `src/synth/py/{structure,index}.ts`, `src/synth/search/{guard,llm,sites,subgoal,index,types}.ts`,
-`src/synth/llm/source.ts`, `src/synth/localize/{index,types}.ts`, `src/bench/{step-records,types}.ts`,
+Files: `src/jev-modes/synth/py/{structure,index}.ts`, `src/jev-modes/synth/search/{guard,llm,sites,subgoal,index,types}.ts`,
+`src/jev-modes/synth/llm/source.ts`, `src/jev-modes/synth/localize/{index,types}.ts`, `src/bench/{step-records,types}.ts`,
 `src/core/types.ts`. Flag: **`JEVCODE_DEADLINE_GROWTH`** (`served` | `always`, default `always`).
 
 ## 2026-09-22 — iteration 4 (implemented, unmeasured)
@@ -556,7 +556,7 @@ while another live bench held the machine at load 79–118, so they are reported
 replace-site order (the `kth` loss iteration 3 handed over by name), the data-flow signal the iteration-3 author asked
 for, the gold sweeps of the three signals nobody had swept, and the lone-vs-pool bound asymmetry.
 
-**A. The replace-site order when there is no Jev ranking** (`src/synth/search/sites.ts`, `subgoal.ts`).
+**A. The replace-site order when there is no Jev ranking** (`src/jev-modes/synth/search/sites.ts`, `subgoal.ts`).
 
 The mechanism, exactly. With no Choice answered — `--jev off`, the request budget spent mid-beam, or every line
 Choice escaped — every `ScoredReplace.jev` is 0 and every `sbflRank` is `+Infinity`, so `buildGoalSites` step 4's tail
@@ -686,8 +686,8 @@ empirical question: over 1,180 runs and 903 Q5n request groups, **401 groups are
 Jev never returned one.
 
 **B. `guards_derived_local` — the data-flow signal, and why it ends the iteration lone-passer-only**
-(`src/synth/py/structure.ts` `parameterDerivedLocals` / `guardsDerivedLocal`, differenced by
-`src/synth/search/guard.ts` `newlyDerivedLocalGuards`).
+(`src/jev-modes/synth/py/structure.ts` `parameterDerivedLocals` / `guardsDerivedLocal`, differenced by
+`src/jev-modes/synth/search/guard.ts` `newlyDerivedLocalGuards`).
 
 The iteration-3 author's disagreement 1, as code. A function's contract is about its PARAMETERS, so a guard on a
 parameter is a precondition and belongs at the top; a guard on a value the function computed for itself, placed
@@ -948,12 +948,12 @@ written at the code that carries it):
 - **defect 14** — item D's method caveats, recorded above with the corrected counts (15 `units` runs, 3
   reserve-spent, 20 of 28 single-file patches).
 
-Files: `src/synth/py/{structure,index}.ts`, `src/synth/search/{sites,subgoal,guard}.ts`. No flag. `testLiterals` and
+Files: `src/jev-modes/synth/py/{structure,index}.ts`, `src/jev-modes/synth/search/{sites,subgoal,guard}.ts`. No flag. `testLiterals` and
 `taskIdentifiers` moved from `subgoal.ts` to `sites.ts` (which `subgoal.ts` re-exports, so no caller changed) because
-the code-side order reads them and the other direction would be an import cycle. `test/unit/synth/search/gold-corpus.helpers.ts`
+the code-side order reads them and the other direction would be an import cycle. `test/unit/jev-modes/synth/search/gold-corpus.helpers.ts`
 lifts iteration 3's sweep harness out of `late-guard.test.ts`, unchanged, so every sweep in the repository reads the
 same 198 patches.
 
 Gates on this tree: `tsc --noEmit` clean; `scripts/no-any.mjs` ok (src, test, perf, scripts); `scripts/jev-contract.mjs`
-ok (32 Jev call sites, 2 four-clause blocks, 30 allow-listed); `vitest --project unit --maxWorkers=2 test/unit/synth
+ok (32 Jev call sites, 2 four-clause blocks, 30 allow-listed); `vitest --project unit --maxWorkers=2 test/unit/jev-modes/synth
 test/unit/jev test/unit/loop test/unit/bench` → **205 files / 2,798 passed**.

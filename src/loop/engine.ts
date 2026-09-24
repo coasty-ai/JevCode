@@ -178,33 +178,32 @@ import { PLAN_MAX_HARNESS_PROBLEMS, applyPlanDraft, boundHarnessProblems, emptyP
 import { buildCommonState, isChangeAction, testsCurrent, type Redact } from './state.js';
 import { assembleRunResult, classifyAbort, exitCodeFor, isFinishedStop, serializeError, stopTranscriptLine, tokenSeriesOrZeros } from './stop.js';
 import { buildWindowEntry, foldStepRecord, pushWindow } from './window.js';
-import { completionDecision, isComplete, isCompleteByFact, type CompletionFactInput } from './stages/complete.js';
+import { completionDecision, isComplete, isCompleteByFact, type CompletionFactInput } from '../jev-modes/stages/complete.js';
 // contract 1.9 (Fastlane) §7.5 — the engine seam of the router table: the switch (§0.3), the per-step commit of the
 // token and the ledger (§2.6, §5.2). `src/loop/routers.ts` owns all three; the engine calls them and nothing else.
 import { commitStepRouters, discardStepRouters, routersOn, stepTokenFor } from './routers.js';
-import { prefilterCandidates, runContextStage } from './stages/context.js';
-import type { ContextAskPolicy } from './stages/context.js';
+import { prefilterCandidates, runContextStage } from '../jev-modes/stages/context.js';
+import type { ContextAskPolicy } from '../jev-modes/stages/context.js';
 // contract 1.5 (ORCHESTRATION-DESIGN §3, §8.2 D1 item 15): the decompose stage
 import { checkpointOrchestration, decomposeShutByOptions, measureRepoFacts, parseSplitDraft, runDecomposeStage, splitPrefixTree, type DecomposeFacts, type DecomposeStageContext } from './stages/decompose.js';
 import { runExecuteStage } from './stages/execute.js';
-import { isTestCommand } from '../workspace/tests.js';
 // contract 1.9 (Fastlane) docs/LLM-LOOP-DESIGN.md §4 (route R9): the bounded sieve fast path — a pure engine-side
 // predicate and budget here, the round itself behind the synth facade.
-import { declinedRecord, fastPathBudget, fastPathRunWallCapMs, fastPathStage1Free, fastPathStage1Workspace, firedRecord } from './stages/fastpath.js';
-import { FastPathRunner, fastPathFailingIds, fastPathFingerprint, fastPathSuspects } from '../synth/search/fastpath.js';
-import type { FastPathBudget, FastPathRunState } from '../synth/search/fastpath.js';
-import { detectLayout } from '../synth/search/index.js';
-import { isRepositoryWorkspace } from '../synth/oracle/index.js';
-import { synthesizerHandles } from '../synth/index.js';
+import { declinedRecord, fastPathBudget, fastPathRunWallCapMs, fastPathStage1Free, fastPathStage1Workspace, firedRecord } from '../jev-modes/stages/fastpath.js';
+import { FastPathRunner, fastPathFailingIds, fastPathFingerprint, fastPathSuspects } from '../jev-modes/synth/search/fastpath.js';
+import type { FastPathBudget, FastPathRunState } from '../jev-modes/synth/search/fastpath.js';
+import { detectLayout } from '../jev-modes/synth/search/index.js';
+import { isRepositoryWorkspace } from '../jev-modes/synth/oracle/index.js';
+import { synthesizerHandles } from '../jev-modes/synth/index.js';
 // contract 1.9 (Fastlane) §3.2: a hedge twin's sample index carries its origin — the one fact `noteSampleStart` needs
 // to tell "a second copy of a sample of the open round" from "a new round"
-import { LLM_DEADLINE_ADAPT, hedgeOriginOf } from '../synth/llm/source.js';
-import { hedgedCall, providerOrderFor, s2Mode } from '../synth/llm/hedge.js';
-import { warmPlaneEnabled } from '../synth/warm/index.js';
-import { scopeUsable } from '../workspace/tests.js';
-import { runIntentStage, INTENT_FALLBACK, PLAN_STALE_THRESHOLD, type IntentStageResult } from './stages/intent.js';
+import { LLM_DEADLINE_ADAPT, hedgeOriginOf } from '../jev-modes/synth/llm/source.js';
+import { hedgedCall, providerOrderFor, s2Mode } from '../jev-modes/synth/llm/hedge.js';
+import { warmPlaneEnabled } from '../jev-modes/synth/warm/index.js';
+import { isTestCommand, scopeUsable } from '../workspace/tests.js';
+import { runIntentStage, INTENT_FALLBACK, PLAN_STALE_THRESHOLD, type IntentStageResult } from '../jev-modes/stages/intent.js';
 import { codeJudge, ledgerGoalsOf } from './judge-code.js';
-import { runJudgeStage } from './stages/judge.js';
+import { runJudgeStage } from '../jev-modes/stages/judge.js';
 // docs/AGENT-LOOP-DESIGN.md §2.1, §2.2 (slice S4): the agent-mode propose stage and the engine seam's pure helpers
 import {
   AGENT_MAX_BLOCKS,
@@ -230,11 +229,11 @@ import {
 import { isReplyOnlyRun } from '../core/agent-run.js';
 import { ABSENT_DECIDER_MODEL } from '../jev/absent.js';
 import { settingIsExplicit } from '../config/resolve.js';
-import { runProposeStage, type ProposeStageResult } from './stages/propose.js';
-import { runReplanStage } from './stages/replan.js';
+import { runProposeStage, type ProposeStageResult } from '../jev-modes/stages/propose.js';
+import { runReplanStage } from '../jev-modes/stages/replan.js';
 import { createCachingDecider, type CachingDecider } from '../jev/cache.js';
-import { runSynthStage } from './stages/synth.js';
-import { computeTargets, isOwnershipRefusal, ownershipRefusal, runRiskStage, MATCHES_INTENT_THRESHOLD, SCOPE_FIGHT_AFTER, type VerifiedCompletion } from './stages/risk.js';
+import { runSynthStage } from '../jev-modes/stages/synth.js';
+import { computeTargets, isOwnershipRefusal, ownershipRefusal, runRiskStage, MATCHES_INTENT_THRESHOLD, SCOPE_FIGHT_AFTER, type VerifiedCompletion } from '../jev-modes/stages/risk.js';
 // contract 1.5 (ORCHESTRATION-DESIGN §8.1 rule 2): orchestration is imported through the ONE facade, never a file below it.
 import {
   commitStep,
@@ -474,7 +473,7 @@ export interface StageContext {
  * `'auto'` in `jev-on` and `'off'` in every other mode — the engine derives the default, so there is no `src/config`
  * and no `src/cli` change. `JEVCODE_FASTPATH=off|auto` fills an **absent** option, which is how a bisect and a
  * worker process turn it off without rebuilding; it is read here for the same reason `JEVCODE_WARM` is read inside
- * `src/synth/warm/plane.ts`. Any other value is ignored rather than throwing: an env typo must not end a run.
+ * `src/jev-modes/synth/warm/plane.ts`. Any other value is ignored rather than throwing: an env typo must not end a run.
  *
  * **The explicit option wins** (§7.5 seam (b); it used to read the env FIRST in
  * both directions). An exported `JEVCODE_FASTPATH=off` ran `jev-on-next` disarmed while `summary.json` recorded
@@ -1189,7 +1188,7 @@ class EngineImpl implements Engine {
   private lastTestRunScopeUsable = false;
   /**
    * contract 1.9 (Fastlane) §0.3 / §4: the bounded sieve fast path. `'auto'` in `jev-on`, `'off'` everywhere else;
-   * `JEVCODE_FASTPATH=off|auto` overrides, read here exactly as `JEVCODE_WARM` is read in `src/synth/warm/plane.ts`
+   * `JEVCODE_FASTPATH=off|auto` overrides, read here exactly as `JEVCODE_WARM` is read in `src/jev-modes/synth/warm/plane.ts`
    * (no `src/config` and no `src/cli` change). With `'off'` the runner is never built and the three `if`s below are
    * all false, which is the whole of I2 (byte identity).
    */
@@ -4165,7 +4164,7 @@ class EngineImpl implements Engine {
    * order. The first leg with a result wins, the other is cancelled and booked, and the counters land on
    * `StepRecord.verify` so the §8.3 S2 row is a measurement rather than an intention.
    *
-   * The decision half — the threshold, the twin index, the rotation — is `src/synth/llm/hedge.ts`, the same module
+   * The decision half — the threshold, the twin index, the rotation — is `src/jev-modes/synth/llm/hedge.ts`, the same module
    * the synthesizer's round uses. What is NOT shared is the round's scheduling: the dollar hold, `samplesLeft` and
    * the arrival ledger have no meaning for one call.
    */

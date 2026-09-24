@@ -23,8 +23,8 @@
 import type { TestCommand, TestCounts, TestRunner } from '../core/types.js';
 
 /**
- * The id `src/synth/verify/text.ts` gives the failure it synthesises for a run that produced no
- * parsed result. Declared here rather than imported so this module stays free of `src/synth`
+ * The id `src/jev-modes/synth/verify/text.ts` gives the failure it synthesises for a run that produced no
+ * parsed result. Declared here rather than imported so this module stays free of `src/jev-modes/synth`
  * (the dependency runs the other way); `test/unit/workspace/tests-scope.test.ts` pins them equal.
  */
 const RUN_FAILURE_ID = '<test run>';

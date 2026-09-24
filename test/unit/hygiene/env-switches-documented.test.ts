@@ -242,8 +242,8 @@ describe('docs/LLM-JEV.md §5a — every behaviour-changing env switch is in the
     // Review F22-4: the row said an exported value "changes every lane of every QuixBugs run". It does not — the
     // sieve overwrites it on a pytest lane with a measured per-test timeout, and a sieve QuixBugs lane takes its
     // limit on the command line. Both halves are pinned against the source here, not just against the prose.
-    const sieve = SRC.find((f) => f.path === 'src/synth/sieve/runner.ts');
-    expect(sieve, 'src/synth/sieve/runner.ts should exist').toBeDefined();
+    const sieve = SRC.find((f) => f.path === 'src/jev-modes/synth/sieve/runner.ts');
+    expect(sieve, 'src/jev-modes/synth/sieve/runner.ts should exist').toBeDefined();
     const text = (sieve as { text: string }).text;
     expect(text, 'laneRunEnv sets the switch only for a pytest lane with a measured timeout').toContain(
       "if (oracle.runner === 'pytest' && oracle.perTestTimeoutMs !== null) {",

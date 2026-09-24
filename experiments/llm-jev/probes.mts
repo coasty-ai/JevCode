@@ -44,11 +44,11 @@ import { percentile } from '../../src/core/time.ts';
 import type { CancelledGeneration, GenerateReasoning, GenerateRequest, GenerateResult, GeneratorCallRecord, GeneratorConfig, Json } from '../../src/core/types.ts';
 import { ProviderHttpError } from '../../src/errors.ts';
 import { createOpenRouterProvider } from '../../src/provider/openrouter.ts';
-import { anchorHunk } from '../../src/synth/llm/candidates.ts';
-import { buildFixSystemPrompt, buildFixUserMessage, hintSchedule, type FixPromptInput, type Listing, type LocalisationLine } from '../../src/synth/llm/prompt.ts';
-import { PROPOSE_FIX_TOOL, PROPOSE_FIX_TOOL_NAME, isLengthStop, parseProposeFix, type PatchSpec } from '../../src/synth/llm/schema.ts';
-import { LLM_MAX_TOKENS, LLM_MAX_TOKENS_REASONING, sampleSeed, sampleTemperature } from '../../src/synth/llm/source.ts';
-import type { FailureView } from '../../src/synth/types.ts';
+import { anchorHunk } from '../../src/jev-modes/synth/llm/candidates.ts';
+import { buildFixSystemPrompt, buildFixUserMessage, hintSchedule, type FixPromptInput, type Listing, type LocalisationLine } from '../../src/jev-modes/synth/llm/prompt.ts';
+import { PROPOSE_FIX_TOOL, PROPOSE_FIX_TOOL_NAME, isLengthStop, parseProposeFix, type PatchSpec } from '../../src/jev-modes/synth/llm/schema.ts';
+import { LLM_MAX_TOKENS, LLM_MAX_TOKENS_REASONING, sampleSeed, sampleTemperature } from '../../src/jev-modes/synth/llm/source.ts';
+import type { FailureView } from '../../src/jev-modes/synth/types.ts';
 import { flag, parseArgs } from './results.ts';
 
 const exec = promisify(execFile);

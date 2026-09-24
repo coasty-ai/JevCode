@@ -2,10 +2,10 @@ import { describe, expect, it } from 'vitest';
 import type { JsonObject, ProposalEvidence } from '../../../src/core/types.js';
 import { emptyPlan } from '../../../src/loop/plan.js';
 import { buildCommonState, buildContextState, buildIntentState, buildJudgeState, buildRiskState, commonChangeUnverified, commonLastRun, commonRemaining, evidenceVerified, ledgerItems, recentOutputAt, testsCurrent } from '../../../src/loop/state.js';
-import { buildContextQuestions, prefilterCandidates, selectCandidates } from '../../../src/loop/stages/context.js';
-import { buildIntentQuestions } from '../../../src/loop/stages/intent.js';
-import { buildJudgeQuestions } from '../../../src/loop/stages/judge.js';
-import { buildReplanQuestions } from '../../../src/loop/stages/replan.js';
+import { buildContextQuestions, prefilterCandidates, selectCandidates } from '../../../src/jev-modes/stages/context.js';
+import { buildIntentQuestions } from '../../../src/jev-modes/stages/intent.js';
+import { buildJudgeQuestions } from '../../../src/jev-modes/stages/judge.js';
+import { buildReplanQuestions } from '../../../src/jev-modes/stages/replan.js';
 import { assertQuestionBatch } from '../../../src/jev/questions.js';
 import { execResult } from './fakes.js';
 

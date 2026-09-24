@@ -7,9 +7,9 @@
  * Usage: node node_modules/.bin/tsx experiments/reach/composite-timing.mts <instance_id> <file> <line> [--donor-units]
  */
 import { join } from 'node:path';
-import { createCompositeSource } from '../../src/synth/search/composite.ts';
-import { ENUMERATE_CAP, isTestPath } from '../../src/synth/search/subgoal.ts';
-import type { EnumerateOptions, SourceFile } from '../../src/synth/types.ts';
+import { createCompositeSource } from '../../src/jev-modes/synth/search/composite.ts';
+import { ENUMERATE_CAP, isTestPath } from '../../src/jev-modes/synth/search/subgoal.ts';
+import type { EnumerateOptions, SourceFile } from '../../src/jev-modes/synth/types.ts';
 import { REPOS, loadFile, replaceSiteAt, sh } from './lib.mts';
 
 const [id, path, lineArg, ...flags] = process.argv.slice(2);

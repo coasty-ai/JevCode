@@ -8,7 +8,7 @@ import type { Harness } from './fakes.js';
 import { answer, createFakeSandbox, intentIs, makeEngine, noulA, passingTests } from './fakes.js';
 import type { GenerateRequest, SynthesisContext, Synthesizer } from '../../../src/core/types.js';
 import { createNullProvider } from '../../../src/provider/null.js';
-import { createSynthesizer } from '../../../src/synth/index.js';
+import { createSynthesizer } from '../../../src/jev-modes/synth/index.js';
 import { isCheckpointState } from '../../../src/checkpoint/store.js';
 import { formatTranscriptItem, itemsFromEvent } from '../../../src/tui/plain.js';
 

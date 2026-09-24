@@ -282,7 +282,7 @@ function ring0(): GateRow[] {
  * every Choice escaped and every Noul inert, the localiser returns **no site at all**
  * (`GoalSearchTrace.sitesConsidered: 0`, `outcome: 'exhausted'`, the step parks with "no site located for …"), so
  * the sieve has nothing to enumerate and the run replans into the cap with `candidatesTested: 0`. The allow-list
- * row for `src/synth/localize/index.ts` claims "ranking only, code order is the fallback"; the measurement says
+ * row for `src/jev-modes/synth/localize/index.ts` claims "ranking only, code order is the fallback"; the measurement says
  * the code order is not taken when Jev has no opinion — the candidate list is dropped instead. Closing this is the
  * localiser's own change (fall through to the SBFL/code ranking when no option clears its bar) and it belongs with
  * the wave that gives every site a named, tested fallback (§1.2 clause 3, waves S1/S4), not with S0's

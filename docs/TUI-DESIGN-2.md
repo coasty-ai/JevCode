@@ -41,7 +41,7 @@ new dependency, Jev decides.
 
 **Kept from TD, untouched:** `itemsFromEvent`/`formatTranscriptItem` as the one item source, the `NullProvider` path
 (`session.ts:457–460`), `alwaysDecline`, `createTuiConfirmer`, `LIVE_FLUSH_MS = 50`, `DECISIONS_KEPT = 12`, the review
-invariants (`app.test.tsx:342–461`), S0–S7 plus §3.1's rows, `src/synth/**` read-only, `src/bench/**` unchanged.
+invariants (`app.test.tsx:342–461`), S0–S7 plus §3.1's rows, `src/jev-modes/synth/**` read-only, `src/bench/**` unchanged.
 
 ---
 
@@ -435,7 +435,7 @@ export function buildIntakeQuestions(): Record<string, Question> {   // jev/ques
 export const INTAKE_RUN_FLOOR = 0.6;   // a paid run needs Jev's own `coding_task` at p ≥ 0.6 and its paired Noul ≥ 0.5 (PAIRED_NOUL_FLOOR); anything weaker asks
 export interface IntakeResolution { kind: IntakeKind; verdict: ChoiceVerdict; answer: string; probability: number; pairedNoul: number; near: boolean }
 export function resolveIntake(answers: Record<string, Answer>): IntakeResolution {
-  const r = resolveChoice<IntakeKind>({ choiceId: 'intake', answers, options: INTAKE_KINDS, escape: 'none_of_these', fallback: 'ambiguous' });   // loop/stages/choose.ts:45
+  const r = resolveChoice<IntakeKind>({ choiceId: 'intake', answers, options: INTAKE_KINDS, escape: 'none_of_these', fallback: 'ambiguous' });   // jev-modes/stages/choose.ts:45
   const near = Math.abs(r.probability - INTAKE_RUN_FLOOR) <= 0.03;
   if (r.option === 'coding_task' && (r.verdict !== 'chosen' || r.probability < INTAKE_RUN_FLOOR)) return { ...r, kind: 'ambiguous', near };
   return { ...r, kind: r.option, near };
@@ -530,8 +530,8 @@ value in any text.
 
 ### 3.6 `question_about_the_code`
 
-**jev-only — the honest lookup (`src/chat/lookup.ts`), no engine run.** The jev-only synthesizer proposes no `read`
-under any intent (`src/synth/search/index.ts:634–638`) and opens with the baseline test run (`:568–582`), so a forced
+**jev-only — the honest lookup (`src/jev-modes/chat/lookup.ts`), no engine run.** The jev-only synthesizer proposes no `read`
+under any intent (`src/jev-modes/synth/search/index.ts:634–638`) and opens with the baseline test run (`:568–582`), so a forced
 "investigate" run would be a test run ending in `max_replans`. What jev-only does well is select: one request of Nouls
 over candidate files (`contextNoul`, `src/jev/questions.ts:52`), then code-computed excerpts.
 
@@ -1614,7 +1614,7 @@ W0: items 1–13 plus the fakes (`test/unit/bench/helpers.ts`, `test/fixtures/tu
 | `src/cli/login.ts` (`commandLogin`) | S2 | S1 (`jevProvider` in `CredentialsPatch`, provider inference by §2.3 rules 2a–2d) | §1.4, §2.3 |
 | `test/pty/**` | S5 | S3, S4 (new sentinels: placeholders, `[you]`, `[jevcode]`, `jev-only`) | §8.2 |
 
-A request is a diff in the owner's slot notes with the section number, landed in the owner's next PR. `src/synth/**` and `src/bench/**` are read-only.
+A request is a diff in the owner's slot notes with the section number, landed in the owner's next PR. `src/jev-modes/synth/**` and `src/bench/**` are read-only.
 
 ### 7.3 Waves
 

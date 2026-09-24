@@ -6,11 +6,11 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { indentOf } from '../../src/synth/py/edits.ts';
-import { analyse, blockAt, scopeAt, statementAt } from '../../src/synth/py/structure.ts';
-import type { PyModule } from '../../src/synth/py/structure.ts';
-import { tokenizeFragment } from '../../src/synth/py/tokenize.ts';
-import type { Site, SourceFile } from '../../src/synth/types.ts';
+import { indentOf } from '../../src/jev-modes/synth/py/edits.ts';
+import { analyse, blockAt, scopeAt, statementAt } from '../../src/jev-modes/synth/py/structure.ts';
+import type { PyModule } from '../../src/jev-modes/synth/py/structure.ts';
+import { tokenizeFragment } from '../../src/jev-modes/synth/py/tokenize.ts';
+import type { Site, SourceFile } from '../../src/jev-modes/synth/types.ts';
 
 export const REPOS = '/tmp/jevonly/repos';
 export const BARE = '/tmp/jevonly/repos/.bare';

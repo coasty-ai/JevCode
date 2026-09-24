@@ -17,7 +17,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Answer, AskResult, Decider, Json, Question } from '../../../src/core/types.js';
 import { JevHttpError } from '../../../src/errors.js';
 import { ESCAPE_KEY, PAIRED_PREFIX, assertQuestionBatch } from '../../../src/jev/questions.js';
-import { PAIRED_NOUL_FLOOR as CHOOSE_PAIRED_FLOOR } from '../../../src/loop/stages/choose.js';
+import { PAIRED_NOUL_FLOOR as CHOOSE_PAIRED_FLOOR } from '../../../src/jev-modes/stages/choose.js';
 import { INTAKE_RUN_FLOOR } from '../../../src/chat/intake.js';
 import { JEV_INPUT_USD_PER_TOKEN as CLIENT_PRICE, JEV_TOKENS_PER_CHAR as CLIENT_PER_CHAR, JEV_TOKEN_OVERHEAD as CLIENT_OVERHEAD } from '../../../src/jev/types.js';
 import { IMPORT_LIMITS } from '../../../src/core/limits.js';

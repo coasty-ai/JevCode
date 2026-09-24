@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { summariseGeneratorRecords } from '../../../src/bench/generator-records.js';
 import { createTunedProvider, estimateDroppedUsage, planCapSentence, withPlanCap, type TunedProviderParams } from '../../../src/bench/tuned-provider.js';
 import type { GenerateOptions, GenerateRequest, GenerateResult, Provider } from '../../../src/core/types.js';
-import { DROPPED_CALL_STOP_REASON } from '../../../src/loop/stages/propose.js';
+import { DROPPED_CALL_STOP_REASON } from '../../../src/jev-modes/stages/propose.js';
 import { makeEngine, type Harness } from '../loop/fakes.js';
 
 const params: TunedProviderParams = { maxTokens: 1500, reasoning: { effort: 'low' }, deadlineMs: 20_000, lengthHandling: 'double-once', servedRate: { inputPerM: 0.15, outputPerM: 0.5 }, planCapChars: 200 };

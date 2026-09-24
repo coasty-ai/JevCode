@@ -58,7 +58,7 @@ flowchart LR
   subgraph sg_write["who writes the code"]
     PROVIDER["src/provider/registry.ts"]
     MODELS["src/models/index.ts"]
-    SYNTH["src/synth/index.ts — createSynthesizer"]
+    SYNTH["src/jev-modes/synth/index.ts — createSynthesizer"]
   end
   subgraph sg_exec["execute — src/sandbox, src/workspace"]
     SANDBOX["sandbox/run.ts"]
@@ -134,7 +134,7 @@ top-level modules. Reproduce with `find src \( -name '*.ts' -o -name '*.tsx' \) 
 
 | module | lines | what it owns |
 |---|---:|---|
-| `src/synth` | 45,551 | The Ledger + Sieve synthesizer of the `llm-jev` and `jev-only` modes: localisation, candidate generation, shadow-lane verification, the overfit guard. See [The synthesizer](synthesizer.md). |
+| `src/jev-modes/synth` | 45,551 | The Ledger + Sieve synthesizer of the `llm-jev` and `jev-only` modes: localisation, candidate generation, shadow-lane verification, the overfit guard. See [The synthesizer](synthesizer.md). |
 | `src/tui` | 37,255 | The interactive terminal interface: transcript, the streaming reply block, panes, composer, slash commands, review panels, the mini indicator. |
 | `src/loop` | 15,781 | The engine every mode runs on, the agent seam, the legacy modes' stages, budgets, loop detection, the context policy, the commit rule. |
 | `src/cli` | 13,750 | Argument parsing, the command dispatch, the session controller, login, the machine-readable stream. |
@@ -272,4 +272,4 @@ mentions one says so again.
 | task splitting into child agents | **off** (`split: 'off'`) | the orchestration policy |
 | the bounded sieve fast path | `auto`, **but only under `jev-on`** | `JEVCODE_FASTPATH=off` disables it |
 
-<!-- src/loop/routers.ts routersOn; src/jev/router.ts routersEnabled; src/synth/warm/plane.ts warmPlaneEnabled; src/orchestrate/types.ts DEFAULT_SPLIT_POLICY; src/loop/engine.ts:442 resolveFastPathOption -->
+<!-- src/loop/routers.ts routersOn; src/jev/router.ts routersEnabled; src/jev-modes/synth/warm/plane.ts warmPlaneEnabled; src/orchestrate/types.ts DEFAULT_SPLIT_POLICY; src/loop/engine.ts:442 resolveFastPathOption -->

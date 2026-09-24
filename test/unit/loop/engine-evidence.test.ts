@@ -10,7 +10,7 @@ import type { Harness } from './fakes.js';
 import { answer, choiceOver, createFakeSandbox, intentIs, makeEngine, noulA, passingTests, turn } from './fakes.js';
 import type { Answer, JsonObject, ProposalEvidence, Synthesizer } from '../../../src/core/types.js';
 import type { DeciderRule } from './fakes.js';
-import { EVIDENCE_CONSISTENT_ID } from '../../../src/loop/stages/risk.js';
+import { EVIDENCE_CONSISTENT_ID } from '../../../src/jev-modes/stages/risk.js';
 
 const harnesses: Harness[] = [];
 afterEach(() => {

@@ -1,7 +1,7 @@
 /**
  * Q7 re-measurement with the CLEAN edit-class wording (experiments/results/jev-only-audit.md §3.2:
  * the measured Q7 option examples were ten QuixBugs gold fixes). This is experiments/grammar-synthesis/
- * sketch-probe.mts unchanged except that EDIT_CLASSES is imported from src/synth/sketch/questions.ts
+ * sketch-probe.mts unchanged except that EDIT_CLASSES is imported from src/jev-modes/synth/sketch/questions.ts
  * (the wording the synthesizer sends) instead of the local copy, and the output goes to
  * experiments/inspect/out/q7-clean-<mode>-<tag>.json. Same request shape (Q12 sketch + Q7 edit_class
  * in one request over the same state), same corpus, same gold edit class rule, so the numbers are
@@ -32,7 +32,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadCorpus, tokenize, detokenize, makeJev, pool, p50, MARK, type Item, type Tok } from '../probe-tokens/common.mts';
 import { choice, contextNoul } from '../../src/jev/questions.ts';
-import { EDIT_CLASSES as CLEAN_EDIT_CLASSES } from '../../src/synth/sketch/questions.ts';
+import { EDIT_CLASSES as CLEAN_EDIT_CLASSES } from '../../src/jev-modes/synth/sketch/questions.ts';
 import type { Json, Question } from '../../src/core/types.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));

@@ -13,8 +13,8 @@ import { join } from 'node:path';
 import { isFiniteNumber, isJsonObject, isString, parseJson } from '../core/json.js';
 import { percentile } from '../core/time.js';
 import type { GeneratorCallRecord } from '../core/types.js';
-import { DROPPED_CALL_STOP_REASON } from '../loop/stages/propose.js';
-import { isLengthStop } from '../synth/llm/schema.js';
+import { DROPPED_CALL_STOP_REASON } from '../jev-modes/stages/propose.js';
+import { isLengthStop } from '../jev-modes/synth/llm/schema.js';
 import type { GeneratorCallsSummary, LatencySummary } from './types.js';
 
 export const GENERATOR_FILE = 'generator.jsonl';

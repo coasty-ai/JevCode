@@ -3,7 +3,7 @@ import type { Answer, Decision } from '../../../src/core/types.js';
 import { GLYPHS, cellWidth } from '../../../src/tui/glyphs.js';
 import { WHY_KEPT_STEPS, WHY_MAX_LINES, findDecision, findIntakeDecision, intakeConsumedBy, parseWhyRef, stepWhyBlocks, whyBlock, whyErrorText, whyHead, whyRef } from '../../../src/tui/why.js';
 import { INTAKE_KINDS, answersOfRows, buildAllIntakeQuestions, decisionRows, resolveIntake } from '../../../src/chat/intake.js';
-import { annotateChoiceRows } from '../../../src/loop/stages/choose.js';
+import { annotateChoiceRows } from '../../../src/jev-modes/stages/choose.js';
 import { harnessFacts } from '../../../src/chat/facts.js';
 import { ESCAPE_KEY } from '../../../src/jev/questions.js';
 import { mkDecision } from '../../fixtures/tui/fixtures.js';

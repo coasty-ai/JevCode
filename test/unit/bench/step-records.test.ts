@@ -1,7 +1,7 @@
 /**
  * F19 — the §3.3 prefix-pinning measurement needs a DENOMINATOR at run level.
  *
- * `StepVerifySummary.cacheHitRate` is written per step (`src/synth/search/index.ts fastlaneCounts`:
+ * `StepVerifySummary.cacheHitRate` is written per step (`src/jev-modes/synth/search/index.ts fastlaneCounts`:
  * `cacheRead / cacheInput`), but until this change `cacheInput` itself was computed, used once and
  * thrown away — it reached neither `StepRecord.verify` nor `StepsSummary.s2`. A run-level hit rate
  * was therefore unrecoverable: the only thing a reader could do with n per-step ratios is average

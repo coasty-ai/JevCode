@@ -35,7 +35,7 @@
  * Usage: node_modules/.bin/tsx experiments/inspect/ladder-verdicts.mts [resultsDir] [--out <file>] [--seed <int>] [--per-fn-cap <N>]
  *   default resultsDir bench/results/jev-only-ladder-7-final, default out <resultsDir>/verdicts.md
  * Nothing here asks Jev; python3 is the only external program. The harvest/replay harness is
- * src/synth/search/perturb.ts LADDER_HARNESS, shared with the guard's ladder-class behaviour probe
+ * src/jev-modes/synth/search/perturb.ts LADDER_HARNESS, shared with the guard's ladder-class behaviour probe
  * (the guard replays the same perturbed calls per passer; this script judges the committed tree).
  */
 import { execFile } from 'node:child_process';
@@ -45,7 +45,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
-import { LADDER_HARNESS } from '../../src/synth/search/perturb.ts';
+import { LADDER_HARNESS } from '../../src/jev-modes/synth/search/perturb.ts';
 
 const exec = promisify(execFile);
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -221,7 +221,7 @@ async function tokenIdentical(patched: string, reference: string): Promise<{ sam
 }
 
 // ---------------------------------------------------------------------------------------
-// The harness: `harvest` on the gold tree, `replay` on each tree — src/synth/search/perturb.ts
+// The harness: `harvest` on the gold tree, `replay` on each tree — src/jev-modes/synth/search/perturb.ts
 // LADDER_HARNESS, the same generator the guard's ladder-class behaviour probe runs (2026-09-21;
 // it lived here first). Written to a file once per run and invoked per mode.
 // ---------------------------------------------------------------------------------------

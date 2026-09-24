@@ -9,7 +9,7 @@ import { RISK_DIMENSIONS, type Decision, type DecisionVerdict, type EngineMode, 
 import { riskFromProbabilities } from '../../jev/confidence.js';
 import { PAIRED_PREFIX } from '../../jev/questions.js';
 import { clip } from '../../core/text.js';
-import { PAIRED_NOUL_FLOOR } from '../../loop/stages/choose.js';
+import { PAIRED_NOUL_FLOOR } from '../../jev-modes/stages/choose.js';
 import { PLAN_ACCEPT_THRESHOLD, PLAN_REJECT_THRESHOLD } from '../../loop/plan.js';
 import type { AgentRow } from '../../core/types.js';
 import { focusedTail } from '../agents/lines.js';

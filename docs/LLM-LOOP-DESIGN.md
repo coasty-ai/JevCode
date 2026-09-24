@@ -3,7 +3,7 @@
 **Status:** normative design, ratified from three competing designs and two independent judgements (2026-09-22).
 **Winner:** *Fastlane S2/S4 — the sieve as a step the loop can take*, with twelve grafts from design 1 (*Route-first
 jev-on*) and design 3 (*week-1 cut first*) and two factual corrections carried in from verification.
-**Scope:** harness only. `src/loop/**`, `src/synth/**`, `src/jev/**`, `src/provider/**`, `src/bench/**`,
+**Scope:** harness only. `src/loop/**`, `src/jev-modes/synth/**`, `src/jev/**`, `src/provider/**`, `src/bench/**`,
 `src/core/types.ts` (additive members inside the existing contract blocks), `src/core/limits.ts` (additive),
 `experiments/**`, `docs/**`, `scripts/jev-contract.mjs`, `test/**`.
 **Never touched:** `src/tui`, `src/cli`, `src/config`, `src/session`, `src/chat`.
@@ -56,7 +56,7 @@ invariant (`routerWaitMs === 0`) covers the whole table.
 
 Two new `EngineOptions` members. Both are real options with env overrides, both default **off** on `main`
 (graft, judge 1 §1). No `src/config` and no `src/cli` change is needed: the engine derives the default from the
-mode, and the env overrides are read inside `src/loop`, exactly as `JEVCODE_WARM` is read in `src/synth/warm/plane.ts:30`.
+mode, and the env overrides are read inside `src/loop`, exactly as `JEVCODE_WARM` is read in `src/jev-modes/synth/warm/plane.ts:30`.
 
 | option | type | default on `main` | default in the bench arm | env override |
 |---|---|---|---|---|
@@ -149,13 +149,13 @@ dropped in the same commit.
 
 **C1 — `testWallLeftMs` does bound a long batch.** Two of the three designs justified their abort belt with
 "`testWallLeftMs` is only written at batch end (`runner.ts:1039`), so it cannot bound a long batch". That is
-**false**. `wallLeft()` (`src/synth/sieve/runner.ts:661`) is a live closure over `wallAtStart` and `batchStart`
+**false**. `wallLeft()` (`src/jev-modes/synth/sieve/runner.ts:661`) is a live closure over `wallAtStart` and `batchStart`
 and it bounds dispatch at `:679`, the per-run cap at `:730`, the streaming park at `:960` and the retry loop at
 `:1017`. Keep the `AbortSignal` ceiling, but justify it as **defence in depth**, not as the only intra-batch
 bound.
 
 **C2 — `deps.rank` line drift.** `docs/HARNESS-NEXT-DESIGN.md` cites the `deps.rank` sites at `:848` / `:1575`;
-on current `main` they are **`src/synth/search/subgoal.ts:864` and `:1617`**.
+on current `main` they are **`src/jev-modes/synth/search/subgoal.ts:864` and `:1617`**.
 
 ---
 
@@ -180,12 +180,12 @@ on current `main` they are **`src/synth/search/subgoal.ts:864` and `:1617`**.
 
 | # | site | what it decides today | file:line |
 |---|---|---|---|
-| 1 | risk Q19/Q20 | the verdict; a failed ask means ask-or-decline | `src/loop/stages/risk.ts:688`, `:741` |
-| 2 | completion Q22 `task_complete` | consumed in `jev-on` (recorded-only in `llm-jev`) | built at `src/loop/stages/complete.ts:16`, **decided at `src/loop/engine.ts:4514` `completeAfter`**, read at `:4091`, `:5117`, `:5268` |
-| 3 | replan Q18 `next_move` | `stop_and_report` ends the run | `src/loop/stages/replan.ts:215` |
+| 1 | risk Q19/Q20 | the verdict; a failed ask means ask-or-decline | `src/jev-modes/stages/risk.ts:688`, `:741` |
+| 2 | completion Q22 `task_complete` | consumed in `jev-on` (recorded-only in `llm-jev`) | built at `src/jev-modes/stages/complete.ts:16`, **decided at `src/loop/engine.ts:4514` `completeAfter`**, read at `:4091`, `:5117`, `:5268` |
+| 3 | replan Q18 `next_move` | `stop_and_report` ends the run | `src/jev-modes/stages/replan.ts:215` |
 
 **Correction to two of the three designs (graft, judge 1 §4):** the completion change lives in
-`Engine.completeAfter` at `engine.ts:4514`, **not** in `src/loop/stages/complete.ts`. `complete.ts` only builds
+`Engine.completeAfter` at `engine.ts:4514`, **not** in `src/jev-modes/stages/complete.ts`. `complete.ts` only builds
 the question and holds the pure `isCompleteByFact` predicate (`complete.ts:243`, verified). A slot that claims to
 demote completion without editing `engine.ts` has not demoted completion.
 
@@ -196,11 +196,11 @@ Any Jev throw in intent / context / risk / judge / replan today falls to `handle
 
 | ask | file:line | shape | code fallback that already exists |
 |---|---|---|---|
-| Q7 intent Choice | `src/loop/stages/intent.ts:195` | `resolveChoice<Intent>` with `escape: 'none_of_these'` | `INTENT_FALLBACK = 'investigate'` |
-| Q2–Q6 context Nouls | `src/loop/stages/context.ts:94` | ordering only | the code pre-filter (mention count, then recency) |
-| risk Q19/Q20 | `src/loop/stages/risk.ts:688` | Scores + `matches_intent` / `evidence_consistent` Nouls | `codeRiskReason()` at `risk.ts:364` — **an allow-list of safe cases**, returns `null` for an arbitrary `run` |
-| judge Q19/Q21/Q22 | `src/loop/stages/judge.ts:226`, `:261`, `:283` | outcome + completion | the harness's own parsed test counts |
-| Q18 replan | `src/loop/stages/replan.ts:215` | `resolveChoice<ReplanOption>` | `REPLAN_FALLBACK = 'change_approach'`; `task_impossible` is already not asked on the synth path (`replan.ts:213`) |
+| Q7 intent Choice | `src/jev-modes/stages/intent.ts:195` | `resolveChoice<Intent>` with `escape: 'none_of_these'` | `INTENT_FALLBACK = 'investigate'` |
+| Q2–Q6 context Nouls | `src/jev-modes/stages/context.ts:94` | ordering only | the code pre-filter (mention count, then recency) |
+| risk Q19/Q20 | `src/jev-modes/stages/risk.ts:688` | Scores + `matches_intent` / `evidence_consistent` Nouls | `codeRiskReason()` at `risk.ts:364` — **an allow-list of safe cases**, returns `null` for an arbitrary `run` |
+| judge Q19/Q21/Q22 | `src/jev-modes/stages/judge.ts:226`, `:261`, `:283` | outcome + completion | the harness's own parsed test counts |
+| Q18 replan | `src/jev-modes/stages/replan.ts:215` | `resolveChoice<ReplanOption>` | `REPLAN_FALLBACK = 'change_approach'`; `task_impossible` is already not asked on the synth path (`replan.ts:213`) |
 
 Every one of these is **awaited inline** through `askRecorded` (`engine.ts:2847`), so today each contributes its
 full latency to `jevWaitMs`. Measured Jev latency: p50 237 ms, p95 547 ms.
@@ -214,23 +214,23 @@ test") is asserted in prose in the allow-list `why` and nowhere in code. Slot B 
 
 ### 1.5 The synthesizer's step lifecycle (what the fast path must not re-implement)
 
-`LedgerSieveSynthesizer.synthesize()` → `step()` (`src/synth/search/index.ts:679`) → `rebaseline()`
+`LedgerSieveSynthesizer.synthesize()` → `step()` (`src/jev-modes/synth/search/index.ts:679`) → `rebaseline()`
 (`:1244`, **private**). `rebaseline` is where the step becomes possible at all: it installs `mem.oracle`
 (`fitOracle` at `:1261`), `mem.stepBudget` (`freshBudget` at `:1262`), `mem.bases`, `mem.tried`,
 `mem.passersThisStep` and the ledger/window protocol.
 
 A caller entering *below* that — at the exported `searchSubGoal` — gets a fresh `createMemory` carrying
-`emptyStepBudget()` (`src/synth/search/memory.ts:164`), whose `exhausted: () => true`. The round returns an
+`emptyStepBudget()` (`src/jev-modes/synth/search/memory.ts:164`), whose `exhausted: () => true`. The round returns an
 instant `{ kind: 'budget' }` **indistinguishable from an honest decline**. That is precisely the failure that
 would make the bench attribute nothing to the fast path while it tested nothing. **The fast path therefore calls
 the public `synthesize()`.**
 
 ### 1.6 The budget arithmetic (and why the two obvious shortcuts are wrong)
 
-- `freshBudget(limits, oracle, wallRemainingMs, opts)` — `src/synth/search/budget.ts:796`. Line `:798`:
+- `freshBudget(limits, oracle, wallRemainingMs, opts)` — `src/jev-modes/synth/search/budget.ts:796`. Line `:798`:
   `const wallRemaining = Number.isFinite(wallRemainingMs) ? Math.max(0, Math.min(wallRemainingMs, limits.maxWallMs)) : limits.maxWallMs;`
   It derives the entire `StepBudget` — test runs, test wall, lanes, Jev requests, LLM rounds — from that number.
-- `wallRemaining(ctx, scratch)` — `src/synth/search/index.ts:667`:
+- `wallRemaining(ctx, scratch)` — `src/jev-modes/synth/search/index.ts:667`:
   `Math.max(0, ctx.limits.maxWallMs - (this.deps.now() - scratch.startedMs))`.
 - `oracleClass(oracle)` — `budget.ts:648`. `quixbugs_class` = goal-subset < 2 000 ms **and** full suite < 10 000 ms.
 - `poolFitsRunBudget(n, left)` — `budget.ts:222`, `n <= left`. This is the **entire** SIEVE cut as of the OOS
@@ -249,7 +249,7 @@ exactly the wasted wall the fast path exists to avoid and exactly what would poi
 
 **The adopted mechanism** is an explicit `ControllerOptions.fastPath` member and a ~6-line clamp inside
 `LedgerSieveSynthesizer.freshBudget` (§4.3). `ControllerOptions` today has two members (`llmJev`, `generation`)
-at `src/synth/search/index.ts:163`; the addition is inside that block.
+at `src/jev-modes/synth/search/index.ts:163`; the addition is inside that block.
 
 ### 1.7 The measured regimes
 
@@ -272,7 +272,7 @@ shape a losing fast path would deepen, and §8 pre-registers against it.
   `choiceProbs` dropped the escape and left every other option at probability 0, so the site list came back
   empty and the step parked with "no site located"). `oos-iter-2` landed the fix at **`0d61eef`** (*"an escaped
   Choice falls through to the code order, not to no site at all"*, with
-  `test/unit/synth/localize/jev-off-fallback.test.ts`). **But `docs/DECISIONS.md` still records the iteration-1
+  `test/unit/jev-modes/synth/localize/jev-off-fallback.test.ts`). **But `docs/DECISIONS.md` still records the iteration-1
   verdict, and iteration 2's own decision text says it "is measured on the same 18 + 28 before any of it is
   called an improvement" — so the gate is fixed in code and not yet green in measurement.** The fast path
   routes through that same localiser, so with Jev off a still-broken localiser would make it arm, enumerate
@@ -281,13 +281,13 @@ shape a losing fast path would deepen, and §8 pre-registers against it.
   *re-measurement*, not a fix slot B must write.
 - ~~**`runFactsRef` is process-global.**~~ **FIXED on `main` at `c7ae106`, outside this wave (swept 2026-09-22 at
   `d297b29`).** `grep -rn runFactsRef src/` is empty. The facts are a per-`runId` registry:
-  `src/synth/introspect/facts.ts` holds a module `Map<string, RunFacts>` bounded by `RUN_FACTS_MAX = 8` with
+  `src/jev-modes/synth/introspect/facts.ts` holds a module `Map<string, RunFacts>` bounded by `RUN_FACTS_MAX = 8` with
   `setRunFacts(runId, …)` / LRU eviction, so two interleaved synthesizers in one `src/bench/runner.ts` process read
   their own run's facts across an await. **Consequence for the plan:** the `--concurrency 1` pin on the fast-path arms
   is no longer forced by this defect (Q9, below, says the same); if the arms keep it, they keep it for measurement
   noise, which is a different and weaker reason.
 - **Nothing drops a run's search memory.** `memories` is a module-level `Map` with `MEMORIES_MAX = 4`
-  (`src/synth/search/memory.ts:200`, LRU eviction at `:207`, `dropMemory` at `:219`) and no run-end hook. A
+  (`src/jev-modes/synth/search/memory.ts:200`, LRU eviction at `:207`, `dropMemory` at `:219`) and no run-end hook. A
   Django-scale memory is ~0.4 GB.
 - **`DANGEROUS_COMMAND` is mock-only.** `src/jev/mock.ts:24`:
   `/rm -rf|git push --force|sudo|curl[^|]*\|\s*sh|mkfs|:\(\)\{/`, used only at `mock.ts:194` and referenced in a
@@ -380,7 +380,7 @@ default is already running — R9 is the only one in this wave.
 | **RL4** | judge Q19/Q21, `stages/judge.ts:226`, `:261` | **recorded-only** (adopting `llm-jev`'s rule) | the code comparison of parsed failing counts — › *judge outcome is the parsed counts when the decider throws* | 400 ms | the plan note | none: a wrong Noul is data |
 | **RL5** | completion Q22, built `stages/complete.ts:16`, **decided `engine.ts:4514`** | **recorded-only on evidence-bearing steps** (§2.5) | `isCompleteByFact()` (`complete.ts:243`) over the harness's own current, passing run — › *completion is the engine's own run when the decider throws* | — | the stop rule | none |
 | **RL6** | Q18 `next_move`, `stages/replan.ts:215` | order route for the **directive**; `stop_and_report` and `task_impossible` become **recorded-only** | `REPLAN_FALLBACK = 'change_approach'`; stopping is the loop detector, the step cap and the wall cap — › *replan continues on the code directive when the decider throws* | 500 ms | the next step's directive text | a worse directive for one step |
-| **RS1** | *(new)* Q23 `run_first`, `src/synth/oracle/scope.ts` | order route | `scopeBuilderFor` order — › *scope order is the code builder's when the decider throws* | 250 ms | which scope runs first | a worse first run |
+| **RS1** | *(new)* Q23 `run_first`, `src/jev-modes/synth/oracle/scope.ts` | order route | `scopeBuilderFor` order — › *scope order is the code builder's when the decider throws* | 250 ms | which scope runs first | a worse first run |
 | **RS2** | Q7 edit class, `search/subgoal.ts:156` | order route | `null` prior = the code site order — › *edit class prior is null when the decider throws* | 300 ms | site ordering | a worse site order |
 | **RS3** | `gateHeldPartial`, `search/subgoal.ts:763` | order route | the code hold rule — › *held partials use the code rule when the decider throws* | 300 ms | hold release | a partial held one round longer |
 | **RS4** | `deps.rank`, `search/subgoal.ts:864` **and `:1617`** (C2: *not* `:848`/`:1575`) | order route | enumeration order (`llmJobPrior`) — › *rank falls to enumeration order when the decider throws* | 600 ms | top-k | **never fires inside a fast-path round** (SIEVE only) |
@@ -423,7 +423,7 @@ Every routed site carries this block immediately above its `.ask(`, and its allo
 `scripts/jev-contract.mjs` is **deleted or tightened** in the same commit (I11). The four clauses are: an escape
 option, a guard, a fallback **naming its own test**, and no gating.
 
-**RL1 — `src/loop/stages/intent.ts`:**
+**RL1 — `src/jev-modes/stages/intent.ts`:**
 
 ```
 // jev-contract (RL1, docs/LLM-LOOP-DESIGN.md §2.2):
@@ -437,7 +437,7 @@ option, a guard, a fallback **naming its own test**, and no gating.
 //             action, or withhold a candidate.
 ```
 
-**RL2 — `src/loop/stages/context.ts`:**
+**RL2 — `src/jev-modes/stages/context.ts`:**
 
 ```
 // jev-contract (RL2, §2.2):
@@ -450,7 +450,7 @@ option, a guard, a fallback **naming its own test**, and no gating.
 //   no gate:  ordering only. No file is withheld by a missing answer.
 ```
 
-**RL3 — `src/loop/stages/risk.ts` (a gate, not a router):**
+**RL3 — `src/jev-modes/stages/risk.ts` (a gate, not a router):**
 
 ```
 // jev-contract (RL3, §2.4) — THIS SITE IS A GATE, NOT A ROUTER, and its polarity is ratified in
@@ -461,13 +461,13 @@ option, a guard, a fallback **naming its own test**, and no gating.
 //             neither yields `allow` for an arbitrary `run`. Jev's Scores may only ESCALATE the code verdict
 //             (allow -> review -> block); they can never de-escalate and never block alone.
 //   fallback: a dropped or failed ask leaves the CODE verdict with StepRecord.jevUnavailable = true and
-//             StepRecord.riskSource = 'code'. Test: test/unit/loop/stages/risk.test.ts › "a throwing decider
+//             StepRecord.riskSource = 'code'. Test: test/unit/jev-modes/stages/risk.test.ts › "a throwing decider
 //             yields the code verdict, jevUnavailable and riskSource 'code'".
 //   no gate:  Jev does not gate — code does. A Jev outage cannot allow what code blocks, and cannot block what
 //             code allows.
 ```
 
-**RL4 — `src/loop/stages/judge.ts`:**
+**RL4 — `src/jev-modes/stages/judge.ts`:**
 
 ```
 // jev-contract (RL4, §2.2):
@@ -479,7 +479,7 @@ option, a guard, a fallback **naming its own test**, and no gating.
 //   no gate:  recorded-only.
 ```
 
-**RL5 — `src/loop/stages/complete.ts` (question) + `src/loop/engine.ts:4514` (decision):**
+**RL5 — `src/jev-modes/stages/complete.ts` (question) + `src/loop/engine.ts:4514` (decision):**
 
 ```
 // jev-contract (RL5, §2.5):
@@ -492,7 +492,7 @@ option, a guard, a fallback **naming its own test**, and no gating.
 //   no gate:  a missing or wrong Noul cannot complete a run and cannot prevent one completing.
 ```
 
-**RL6 — `src/loop/stages/replan.ts`:**
+**RL6 — `src/jev-modes/stages/replan.ts`:**
 
 ```
 // jev-contract (RL6, §2.2):
@@ -505,14 +505,14 @@ option, a guard, a fallback **naming its own test**, and no gating.
 ```
 
 **RS1–RS4** carry the same shape against `scopeBuilderFor`, the null prior, the code hold rule and
-`llmJobPrior` respectively, each naming its own test in `test/unit/synth/search/router.test.ts`.
+`llmJobPrior` respectively, each naming its own test in `test/unit/jev-modes/synth/search/router.test.ts`.
 
 ### 2.4 RL3 in full: the risk polarity change
 
 This is the one safety-relevant change in the wave and it is **not** a corner-case footnote.
 
 Today: a failed Q20 means **ask-or-decline, never allow**. That is stated in `docs/HARNESS-NEXT-DESIGN.md` §1.2
-and in the allow-list row for `src/loop/stages/risk.ts` (`jev-contract.mjs:34`: *"code deny-list first, a failed
+and in the allow-list row for `src/jev-modes/stages/risk.ts` (`jev-contract.mjs:34`: *"code deny-list first, a failed
 ask means ask/decline, never allow"*).
 
 Under `routers: 'on'`: a dropped or failed harm ask yields the **code verdict**.
@@ -533,7 +533,7 @@ Under `routers: 'on'`: a dropped or failed harm ask yields the **code verdict**.
    auditable after the fact. That is what makes the ratified change reversible **on evidence** rather than on
    argument.
 
-The allow-list row `{ file: 'src/loop/stages/risk.ts', sites: 2, why: '… a failed ask means ask/decline, never
+The allow-list row `{ file: 'src/jev-modes/stages/risk.ts', sites: 2, why: '… a failed ask means ask/decline, never
 allow' }` is deleted and replaced by the two four-clause blocks of §2.3.
 
 In session mode `classifyBlocking` still offers the `jev-unreachable` pause; it is simply no longer the only
@@ -550,7 +550,7 @@ a **behaviour change named in CHANGELOG**, not smuggled in as additive.
 **RL6 (replan stop).** Demoting `stop_and_report` removes a stop the tree relies on: the iteration-1 record
 shows **every** `llm-jev` SWE run ending in `replan_stop` at 5 steps of a 25-step budget. `main` has already
 moved *part* of the way here without this wave — `oos-iter-2` change 9 (`9a161a1`) makes a refused completion
-claim climb `PHASE_ESCALATION` (`src/loop/stages/replan.ts:138`) before any move may end the run, because that
+claim climb `PHASE_ESCALATION` (`src/jev-modes/stages/replan.ts:138`) before any move may end the run, because that
 deadlock, not a mis-routed Q18, was the actual cause of the 5-step stops. RL6 is the remaining, larger step: it
 removes the Jev-decided stop entirely. Those runs will then burn their step cap instead. The polarity is right under I1 — a mis-routed Q18 is currently a *lost task* — and the code loop
 detector, the step cap and the wall cap are unchanged, so the worst case is a **cap exit instead of an early
@@ -600,7 +600,7 @@ behaviour change: `onFirstByte?: (ms: number) => void` is threaded through `src/
 
 ### 3.2 Hedging
 
-In `src/synth/llm/source.ts` and `src/synth/search/llm.ts`:
+In `src/jev-modes/synth/llm/source.ts` and `src/jev-modes/synth/search/llm.ts`:
 
 - `hedgeAfterMs = clamp(2 × running TTFB p50, 3_000, 8_000)`.
 - `LLM_HEDGES_PER_ROUND = 1` (`src/core/limits.ts`, additive).
@@ -609,7 +609,7 @@ In `src/synth/llm/source.ts` and `src/synth/search/llm.ts`:
   a hedge storm cannot leave a goal with zero rounds.
 - The twin rotates the provider order, so a 429 on the original leaves the twin live.
 - The hedge never increases `PROPOSE_MAX_ATTEMPTS` (still 2) and never re-asks a call the provider dropped at its
-  own deadline (`DROPPED_CALL_STOP_REASON`, `src/loop/stages/propose.ts:27`).
+  own deadline (`DROPPED_CALL_STOP_REASON`, `src/jev-modes/stages/propose.ts:27`).
 - Recorded as `hedges` / `hedgeWins` on `StepVerifySummary`.
 
 ### 3.3 Byte-stable prefix
@@ -648,7 +648,7 @@ row landed in `src/cli/args.ts` at `0fb7af3` (`:86` in `BOOLEAN_FLAGS`, `:278` i
 
 **`src/core/limits.ts` is additive only**, and constants that belong to one owner live beside that owner —
 `LLM_HEDGES_PER_ROUND` in limits (shared), `ROUTER_DEADLINE_MS` in `src/jev/router.ts`, the `FASTPATH_*` constants
-in `src/loop/stages/fastpath.ts`. This is what keeps slots A and C from colliding in limits.ts.
+in `src/jev-modes/stages/fastpath.ts`. This is what keeps slots A and C from colliding in limits.ts.
 
 ### 3.6 As built (slot A, after review — 2026-09-22)
 
@@ -716,7 +716,7 @@ split. Therefore **the fast path owns its own synthesizer**: the facade lazily c
 createSynthesizer({ decider: <the engine's>, redact, mode: 'jev-only' })
 ```
 
-on first trigger, **once per run**, keyed by `runId`. Verified reachable: `src/synth/index.ts:320` —
+on first trigger, **once per run**, keyed by `runId`. Verified reachable: `src/jev-modes/synth/index.ts:320` —
 `if (mode === 'jev-only') return Object.assign(new LedgerSieveSynthesizer(searchDeps()), { mode });` — no LLM
 source, no `generate`, no throw.
 
@@ -747,8 +747,8 @@ All must hold.
 
 | # | condition | source |
 |---|---|---|
-| T1 | `mode === 'jev-on'` and `fastPath === 'auto'`, and the warm plane is OFF (`warmPlaneEnabled()`, I8 — §4.5) | option, `src/synth/warm/plane.ts` |
-| T2 | `synthesizerHandles(wsInfo, files)` true (cached once per run) | `src/synth/index.ts:305` |
+| T1 | `mode === 'jev-on'` and `fastPath === 'auto'`, and the warm plane is OFF (`warmPlaneEnabled()`, I8 — §4.5) | option, `src/jev-modes/synth/warm/plane.ts` |
+| T2 | `synthesizerHandles(wsInfo, files)` true (cached once per run) | `src/jev-modes/synth/index.ts:305` |
 | T3 | the last executed action was a test `run` (`isTestCommand`, `stages/execute.ts:33`) whose parse is **`scopeUsable`** with `failed + errors >= 1` | `src/workspace/tests.ts:540` |
 | T4 | no workspace write since that run (`lastChangeStep` / `changedFiles`) | engine state |
 | T5 | `lastTestRun.durationMs <= FASTPATH_MAX_T_RUN_MS = 800` | **new contract-1.9 member** (§5) |
@@ -809,7 +809,7 @@ failure, and **RS4 (`deps.rank`) never fires inside a fast-path round.**
 
 Installed explicitly, never inferred, and never by lying to the synthesizer about the run's limits (§1.6).
 
-`ControllerOptions` (`src/synth/search/index.ts:163`) gains:
+`ControllerOptions` (`src/jev-modes/synth/search/index.ts:163`) gains:
 
 ```ts
   /** contract 1.9 (Fastlane) §4.4: the one-round clamp the fast path installs; absent = the unclamped round */
@@ -863,7 +863,7 @@ run-wide ledger row above rather than by a per-step number that does not exist.
 
 **Three bounds, in order of who actually stops the round:**
 
-1. `budget.testWallLeftMs` via `wallLeft()` (`src/synth/sieve/runner.ts:661`), which bounds dispatch at `:679`,
+1. `budget.testWallLeftMs` via `wallLeft()` (`src/jev-modes/synth/sieve/runner.ts:661`), which bounds dispatch at `:679`,
    the per-run cap at `:730`, the streaming park at `:960` and the retry loop at `:1017`. **This is the real
    intra-batch bound** (correction C1).
 2. `AbortSignal.any([ctx.signal, AbortSignal.timeout(fastWallMs + reserve + FASTPATH_GRACE_MS)])` — **defence in
@@ -882,7 +882,7 @@ other ask; the measured median is 4.5 per QuixBugs task and `FASTPATH_JEV_MAX` c
 - `kind === 'commit'`, **and**
 - the proposal's action is a `patch`, **and**
 - `proposal.evidence` exists with `newlyFailing.length === 0` and a non-empty `newlyPassing`, **and**
-- the passer was **cold-confirmed**: `isPlausible()` (`src/synth/search/guard.ts:1147`) saw the goal-subset run
+- the passer was **cold-confirmed**: `isPlausible()` (`src/jev-modes/synth/search/guard.ts:1147`) saw the goal-subset run
   **and** a non-timed-out full-suite regression run with nothing newly failing.
 
 With `JEVCODE_WARM` off (I8, mandatory here) every run is already cold, so this reduces to the regression run
@@ -910,7 +910,7 @@ facade surfaces `GuardFields.dropped / structuralDrops / held / signals` into th
 
 ### 4.6 State ownership
 
-- **`dropMemory(runId)`** (`src/synth/search/memory.ts:219`) is called by the engine at run end, beside
+- **`dropMemory(runId)`** (`src/jev-modes/synth/search/memory.ts:219`) is called by the engine at run end, beside
   `sandbox.killAll()` (`engine.ts:1578`, `:5378`). Today nothing does, and the module-level `memories` map
   (`MEMORIES_MAX = 4`) leaks a repository corpus (~0.4 GB) until the process exits.
 - **The synthesizer instance is per-`runId`** and dropped with the memory. `scratch.startedMs` is per-instance and
@@ -1135,7 +1135,7 @@ rows read zero for a reason that has nothing to do with the fast path.
 | 2 | **Full Jev outage for a whole run** | the run completes on code order, code risk, code completion and code directives | this is the fix for the three dead runs (`sympy-17139`, `django-15128`, `django-15315`) | `routerWaitMs` 0, `jevUnavailable` on the risk steps |
 | 3 | **Generator 429 mid-hedge** | a 429 on either leg cancels only that leg; the round succeeds on the survivor. Both legs 429 → the existing propose retry (`PROPOSE_MAX_ATTEMPTS = 2`), then the existing stage failure | `Retry-After` honoured once per leg, never doubled; the hedge budget is shared, not per-leg | `hedges`, `hedgeWins`, and the cancelled-leg cost still reaches `generator.jsonl` via `flushGeneratorRecords` |
 | 4 | **Fast-path passer fails the cold confirm** | `isPlausible` never yields a `commit`; if the confirm run itself times out inside the reserve the facade returns `{kind:'failed', reason:'confirm timeout'}`, **disarms**, marks the T10 fingerprint, and the LLM proposes | no unconfirmed patch ever reaches `draft.proposal` | `outcome: 'refused'`, `confirmedCold: false` |
-| 5 | **Fast path on a repository** | refused **three** times: T8 at stage 1, `oracleClass !== 'quixbugs_class'` at stage 2, and `decideRunPlan → RANK` at stage 2 | this is the `sympy-16792` shape; repository rounds also route through `runRepositoryQueue` (`src/synth/oracle/verify.ts`), a path this design does not claim to cover. Without T8 the synth's own `rebaseline` would fire a full-suite run of up to `REPO_BASELINE_TIMEOUT_MS = 300_000` inside a ≤ 45 s share | `reason: 'repository_class'` or `'pool_exceeds_run_budget'` — a **counted** decline, not a silent no-op |
+| 5 | **Fast path on a repository** | refused **three** times: T8 at stage 1, `oracleClass !== 'quixbugs_class'` at stage 2, and `decideRunPlan → RANK` at stage 2 | this is the `sympy-16792` shape; repository rounds also route through `runRepositoryQueue` (`src/jev-modes/synth/oracle/verify.ts`), a path this design does not claim to cover. Without T8 the synth's own `rebaseline` would fire a full-suite run of up to `REPO_BASELINE_TIMEOUT_MS = 300_000` inside a ≤ 45 s share | `reason: 'repository_class'` or `'pool_exceeds_run_budget'` — a **counted** decline, not a silent no-op |
 | 6 | **Loop detector trips** | the detector is code and evaluates at step boundaries, so it cannot fire mid-round. On the next step T12 keeps the fast path out and the step opens at `replan`, as `jev-on` does today. A trip whose signature is a repeated fast-path patch additionally **disarms** the fast path | RL6 may re-order the directive but cannot stop the run; T10 is **not** cleared by a replan, because the same cluster against a monotone `mem.tried` would enumerate nothing | `reason: 'loop_tripped'`, `disarmed: true` |
 | 7 | **Pause point lands inside a round** | the round IS a propose stage — `this.stage('propose', …)` wraps it, so it emits one matched `stage:start` / `stage:end` pair, holds `currentStage` for its whole length and records a `stepTimeline` span (stage 1 stays outside: a decline must cost nothing and emit nothing, and a step whose round fired and declined has two matched propose spans, the round's and the LLM's). It runs under `AbortSignal.any([ctx.signal, timeout])`, so a `human_pause` aborts it exactly like any in-flight propose: `searchSubGoal` returns on `ctx.signal.aborted`, lanes are torn down by the engine's layer-4 `sandbox.killAll()`. The partial round is **discarded**, never cached as a replayable proposal | no new pause point and no new `PausePoint.phase`, because the fast path is not a stage | `outcome: 'error'`, `wallMs`, `interruptedAt: { stage: 'propose' }` |
 | 8 | **Resume after a process restart** | `lastTestRunOutput` is in-memory only, so the predicate **cannot arm** until the next verification run — which is correct. `LastTestRun.durationMs` survives, so T5 is evaluable as soon as one does | the round is not resumed; the fingerprint is re-evaluated from scratch and `mem.tried` is fresh | `reason: 'no_parsed_run'` — recorded, never silent |
@@ -1145,7 +1145,7 @@ rows read zero for a reason that has nothing to do with the fast path.
 | 12 | **Second fast path on the same cluster** | `mem.tried` is monotone, so the second round enumerates nothing. T10 and T11 make it unreachable rather than merely fast | three mechanisms take hashes back out (`forgetUnchangedTried`, `requeueScreened`, a re-baseline) and the facade assumes none of them ran | `reason: 'fingerprint_seen'` / `'attempts_exhausted'` |
 | 13 | **`emptyStepBudget` trap** | cannot occur: the fast path calls the public `synthesize()`, so `rebaseline` installs `mem.stepBudget` (`search/index.ts:1262`) | a caller entering at `searchSubGoal` would get `exhausted: () => true` (`memory.ts:164`) and an instant `{kind:'budget'}` indistinguishable from an honest decline | the facade's **first unit test** asserts `candidatesTested > 0` on a known-solvable cluster |
 | 14 | **Narrow test command reads green** | T3 applies `scopeUsable` to the engine's own last test run before the fast path trusts it; the record carries the verdict the TRIGGER saw (snapshotted into the draft at propose time), because this step's own run replaces it before the row is written | closes the hole **for the trigger**; the same hole in the **judge** remains and is deferred with an owner (§9.1). **As built, corrected 2026-09-22 (`d297b29`):** §5.2 asked for the member on every step, and I2 — `fastPath: 'off'` is byte-identical to today's `jev-on` — forbids a new row on a step that today writes none. I2 wins, so **the member is written only on an ARMED step** (`src/loop/engine.ts:5651`, inside the `draft.fastPath !== null` guard; the sentence is `src/core/types.ts:580–587`): the bench arm carries it and a `--fast-path off` run's `steps.jsonl` is unchanged. Writing it unconditionally is NOT the fix for the judge hole — it would break I2 | `scopeUsable: false`, `reason: 'scope_unusable'` — on armed steps only |
-| 15 | **Two concurrent fast paths in one process** | ~~`runFactsRef` (`src/synth/index.ts:83`) is process-global and read after awaits~~ — **struck 2026-09-22 (`d297b29`): the ref is gone.** The facts are a per-`runId` registry (`src/synth/introspect/facts.ts`, `RUN_FACTS_MAX = 8`, LRU), so two fast paths in one `src/bench/runner.ts` process cannot cross facts | the hazard this row existed for is closed in code, at `c7ae106` | **the `jev-on-next` arm still runs at `--concurrency 1`**, asserted by slot D — now purely a measurement-noise choice, no longer a correctness pin |
+| 15 | **Two concurrent fast paths in one process** | ~~`runFactsRef` (`src/jev-modes/synth/index.ts:83`) is process-global and read after awaits~~ — **struck 2026-09-22 (`d297b29`): the ref is gone.** The facts are a per-`runId` registry (`src/jev-modes/synth/introspect/facts.ts`, `RUN_FACTS_MAX = 8`, LRU), so two fast paths in one `src/bench/runner.ts` process cannot cross facts | the hazard this row existed for is closed in code, at `c7ae106` | **the `jev-on-next` arm still runs at `--concurrency 1`**, asserted by slot D — now purely a measurement-noise choice, no longer a correctness pin |
 | 16 | **A late router answer after step commit** | `token.valid === false` → recorded `dropped`, applied nowhere (I4) | the only concurrency this wave introduces | `router.dropped` |
 | 17 | **Both the LLM proposal and a fast-path round succeed** | cannot happen: R9 is a branch route, not a race. The predicate is evaluated before the generator call; when it holds the round runs first and the generator is called only if the round did not commit | prompt assembly (pure, no network) may proceed in parallel — that is the overlap saving | `proposer: 'fastpath'` or `'generic'`, never both |
 | 18 | **`fastPath: 'off'` + `routers: 'off'`** | byte-identical to today (I2) | three `if` statements, all false | asserted in slot B's **and** slot C's test files, on the existing `jev-on` goldens |
@@ -1186,12 +1186,12 @@ and `:5063`). **No two slots hold `engine.ts` at the same time.**
 
 **Files (exclusive):**
 
-- `src/loop/stages/fastpath.ts` *(new)* — the stage-1 predicate (T1–T12), the budget arithmetic, the acceptance
+- `src/jev-modes/stages/fastpath.ts` *(new)* — the stage-1 predicate (T1–T12), the budget arithmetic, the acceptance
   rule, the record builder. Pure where it can be.
-- `src/synth/search/fastpath.ts` *(new)* — the facade: the lazy per-`runId` `createSynthesizer({mode:'jev-only'})`,
+- `src/jev-modes/synth/search/fastpath.ts` *(new)* — the facade: the lazy per-`runId` `createSynthesizer({mode:'jev-only'})`,
   the stage-2 predicate, the abort ceiling, the `commit` → `Proposal` acceptance, the `GuardFields` surfacing,
   `observeWindow`, its own clock diff.
-- `src/synth/search/index.ts` — **≈ 6 lines only**: `ControllerOptions.fastPath` and the `freshBudget` clamp
+- `src/jev-modes/synth/search/index.ts` — **≈ 6 lines only**: `ControllerOptions.fastPath` and the `freshBudget` clamp
   (§4.4). Lands in C's **first** commit, before any other synth work on the branch.
 - `src/loop/engine.ts` — the guarded branch in the propose dispatch's final `else` (near `:3906`); `dropMemory(runId)`
   at run end beside `sandbox.killAll()`; `observeWindow` every step of an armed run; the `scopeUsable` record on
@@ -1199,7 +1199,7 @@ and `:5063`). **No two slots hold `engine.ts` at the same time.**
 - `src/core/types.ts` — `StepFastPath`, `FastPathReason`, `StepTiming.fastPathMs` / `fastPathJevMs`,
   `StepProposer 'fastpath'`, `LastTestRun.durationMs`, `EngineOptions.fastPath`, `StepRecord.fastPath` /
   `scopeUsable`. Inside existing blocks, tagged `contract 1.9 (Fastlane)`.
-- `test/unit/loop/fastpath.test.ts`, `test/unit/synth/search/fastpath.test.ts`.
+- `test/unit/jev-modes/stages/fastpath.test.ts`, `test/unit/jev-modes/synth/search/fastpath.test.ts`.
 
 **Gates (all must be green before C merges):**
 
@@ -1253,8 +1253,8 @@ over a recorded run directory showing the new columns non-empty; the `--concurre
 - `src/jev/off.ts` — router-aware escapes; the `:21` comment updated to point at `danger.ts`.
 - `src/loop/stages/{intent,context,judge,complete,replan,risk}.ts` — the six conversions and their four-clause
   blocks (§2.3).
-- `src/synth/oracle/scope.ts` *(new)* — RS1.
-- `src/synth/search/subgoal.ts` — RS2 (`:156`), RS3 (`:763`), RS4 (`:864` and `:1617`).
+- `src/jev-modes/synth/oracle/scope.ts` *(new)* — RS1.
+- `src/jev-modes/synth/search/subgoal.ts` — RS2 (`:156`), RS3 (`:763`), RS4 (`:864` and `:1617`).
 - `src/loop/engine.ts` — the `askRecorded` router seam; `completeAfter` (`:4514`); the
   `consecutiveStageFailures` exclusion (`:5039`, `:5063`).
 - `src/core/types.ts` — `StepRouter`, `StepTiming.routerWaitMs`, `StepRecord.router` / `riskSource` /
@@ -1262,7 +1262,7 @@ over a recorded run directory showing the new columns non-empty; the `--concurre
 - `scripts/jev-contract.mjs` — the five loop allow-list rows deleted or tightened (`intent.ts`, `context.ts`,
   `risk.ts`, `judge.ts`, `replan.ts`), plus `subgoal.ts` tightened.
 - `test/unit/jev/router.test.ts`, `test/unit/jev/danger.test.ts` (table-driven),
-  `test/unit/loop/router.test.ts`, `test/unit/loop/stages/**`, `test/unit/synth/search/router.test.ts`.
+  `test/unit/loop/router.test.ts`, `test/unit/loop/stages/**`, `test/unit/jev-modes/synth/search/router.test.ts`.
 
 **Deferred to slot B's post-C commit, and only that commit** (§7.1: no two slots hold `src/loop/engine.ts` at
 once, and slot C held it while slot B landed). **All five landed at `c811899`** (branch `llm-loop-seam`, on the
@@ -1290,7 +1290,7 @@ The five members are no longer **RESERVED** in `src/core/types.ts`: each names i
 6. **The `docs/DECISIONS.md` ratification row for §2.4 exists and is merged.** B does not land without it.
 7. **I2 golden** under `routers: 'off'`; and a **re-captured** `jev-on` golden under `routers: 'on'`, with the
    header saying which capture is which.
-8. **Ring 1 re-measured green under `--jev off`**, and the `src/synth/localize/index.ts` allow-list row
+8. **Ring 1 re-measured green under `--jev off`**, and the `src/jev-modes/synth/localize/index.ts` allow-list row
    (`jev-contract.mjs:48`) justified by that run or replaced — a hard merge gate (§7.7).
 9. `npm test`, `npm run check`.
 
@@ -1334,7 +1334,7 @@ batch** (contract 1.4 §12.0.2 P3), so `PausePoint.llmRound.round` named a round
 the batch wall restarted mid-round. CONFIRMED at the engine seam by a test that fires a twin in that window and
 reads the pause cache. `noteSampleStart` now takes the sample index and `hedgeOriginOf()` decides: a twin takes
 the open batch's wall and never the round counter; every other index is unchanged, so the PausePoint contract
-tests read what they read before. **Not** confirmed as reachable through today's `src/synth/llm/source.ts`
+tests read what they read before. **Not** confirmed as reachable through today's `src/jev-modes/synth/llm/source.ts`
 wiring: every path from the engine's `finally` to `settle`'s `clearHedgeTimer` is microtask-only
 (`generateWithDeadline`'s `.then/.finally`, `handleEnd`'s non-result branch has no `await`, and its result
 branch calls `st.served.add(k)` before any), and a `setTimeout` cannot interleave with a microtask chain. The
@@ -1365,7 +1365,7 @@ As built now:
   when Jev does *not* answer, and nothing else;
 - with the routers **off** the stage is the pre-1.9 stage: one `if`, false — no token is minted, no key is
   opened (I2's half of the switch, pinned in `test/unit/loop/router.test.ts`);
-- `scripts/jev-contract.mjs`'s `src/loop/stages/context.ts` row is **deleted** and the site carries the
+- `scripts/jev-contract.mjs`'s `src/jev-modes/stages/context.ts` row is **deleted** and the site carries the
   four-clause block of §2.3 (the ratchet is two-sided, so the row could not merely be left behind).
 
 **Open against RL2 (review defect A7): its 400 ms deadline is measured on a different batch.** RL2 sends the
@@ -1378,9 +1378,9 @@ row (`StepRecord.router.rows[].drop`), so the first `jev-on-next` run answers th
 
 **Files (exclusive):** `src/provider/sse.ts`, `src/provider/types.ts`, `src/provider/http.ts`,
 `src/provider/{anthropic,openai-compat,openrouter}.ts`, `src/provider/prompts.ts`, `src/provider/generate.ts`,
-`src/synth/llm/source.ts`, `src/synth/llm/prompt.ts`, `src/synth/search/llm.ts`, `src/bench/cli.ts` (`--quick`
+`src/jev-modes/synth/llm/source.ts`, `src/jev-modes/synth/llm/prompt.ts`, `src/jev-modes/synth/search/llm.ts`, `src/bench/cli.ts` (`--quick`
 only), `src/core/limits.ts` (additive), `src/core/types.ts` (the `StepVerifySummary` members),
-`test/unit/provider/**`, `test/unit/synth/llm/**`.
+`test/unit/provider/**`, `test/unit/jev-modes/synth/llm/**`.
 
 **Gates:** `npm run check`; `npm test` (the unit project bounds itself to 3 workers); the `view: 'legacy'` prompt golden — **unchanged, or
 the change is stated and the golden re-captured with a reason** (§3.3); a budget-refusal test proving a hedge is
@@ -1389,7 +1389,7 @@ declined when the budget cannot hold one more estimated-full-cost sample; cancel
 
 #### 7.6a S2 on the `jev-on` propose path, as built (the finishing pass, F25)
 
-Slot A built all four S2 mechanisms **inside `src/synth/llm/source.ts`**, which `jev-on` never enters. So the
+Slot A built all four S2 mechanisms **inside `src/jev-modes/synth/llm/source.ts`**, which `jev-on` never enters. So the
 `jev-on-next` arm recorded `mechanisms.s2: true` while, on its own propose call: `PromptInput.prefixOrder` was
 never set (§3.3 off), `onFirstByte` was forwarded only on the synthesizer's sample path (§3.1 unmeasured — and
 therefore §3.2's threshold had no input), and the hedge and the provider-order rotation belonged to the round
@@ -1398,7 +1398,7 @@ because nothing was wired.
 
 As built now:
 
-- **the switch** is `s2Mode(mode, env)` in `src/synth/llm/hedge.ts` — `jev-on` only and **default off**
+- **the switch** is `s2Mode(mode, env)` in `src/jev-modes/synth/llm/hedge.ts` — `jev-on` only and **default off**
   (§0.3's rule for a new mechanism), armed by `JEVCODE_S2=on`. `'partial'` is the honest middle: the §3.1 /
   §3.3 / §3.4 measurement half on and the §3.2 hedge off because `JEVCODE_HEDGE=off` said so, so a hedge
   counter of 0 in a record means "switched off" rather than "nothing was slow enough".
@@ -1409,7 +1409,7 @@ As built now:
 - **§3.1** the propose call forwards `onFirstByte`; the readings feed `Engine.p50TtfbMs()` (with the
   synthesizer's own `LLM_DEADLINE_ADAPT.minSamples` floor, review defect 8) and this step's
   `StepRecord.verify.ttfbMs`. Bounded at `TTFB_READINGS_MAX`.
-- **§3.2** `hedgedCall` (`src/synth/llm/hedge.ts`) races the one call: the origin goes out at once, and if it
+- **§3.2** `hedgedCall` (`src/jev-modes/synth/llm/hedge.ts`) races the one call: the origin goes out at once, and if it
   has produced no first byte for `hedgeAfterMs(p50)` one twin follows it on the **rotated** upstream order,
   under the twin's own sample index (`HEDGE_TWIN_OFFSET`, which `hedgeOriginOf` reads back). The first result
   wins, the loser is aborted and **booked** through the same estimator the synthesizer's loser uses
@@ -1422,9 +1422,9 @@ As built now:
 - **`EngineStatus.mechanisms: { s2, routers, fastPath }`** (optional, additive) is the engine's own answer about
   what it resolved, as against `ConditionConfig.mechanisms`, which records what an arm intended.
 
-**What the shared helper is, exactly.** `src/synth/llm/hedge.ts` owns the DECISION half of §3.2 / §3.4 — the
+**What the shared helper is, exactly.** `src/jev-modes/synth/llm/hedge.ts` owns the DECISION half of §3.2 / §3.4 — the
 threshold, the twin index, the rotation, the reasoning-cap composition, the switch — and `source.ts` imports and
-re-exports every one of them unchanged (its behaviour is byte-identical; `test/unit/synth/llm/hedge.test.ts`,
+re-exports every one of them unchanged (its behaviour is byte-identical; `test/unit/jev-modes/synth/llm/hedge.test.ts`,
 `source.test.ts`, `cache-and-reasoning-cap.test.ts` and `test/unit/provider/provider-order.test.ts` are the
 pin). What is **not** shared is the round's scheduling: the dollar hold, `samplesLeft`, the heartbeat row and
 the arrival ledger have no meaning for a single call, and moving them would have been a rewrite of the round
@@ -1440,7 +1440,7 @@ Ten defects came back against 7.6a. Nine are fixed here; the tenth (A7) is §2.2
   as the origin's rejection was settled and unobserved when the origin's rejection was taken: the filter
   dropped it, `live` emptied, and the origin's error was thrown over a result already in hand. Two legs of one
   request against one upstream settling together is not a corner case. Legs are now identified by `sample` and
-  leave the race only when observed. `test/unit/synth/llm/hedged-call.test.ts` drives the review's probe.
+  leave the race only when observed. `test/unit/jev-modes/synth/llm/hedged-call.test.ts` drives the review's probe.
 - **A2 — a twin win leaked `hedgeAfterMs` (3–8 s) into `harnessMs`.** Only the winner's provider-reported
   `latencyMs` reached `draft.timing.generatorMs`, and a twin's own latency starts at the hedge threshold, so
   the origin's whole silent wait fell into no named bucket and the commit's residual formula charged it all to
@@ -1494,14 +1494,14 @@ Ring 1 with `JEVCODE_JEV=off` must complete all five tasks.
 iteration 1 the ring was red (`gcd`, `mergesort`, `units` lost) because the localiser returned
 `sitesConsidered: 0`. `oos-iter-2` landed the fix at **`0d61eef`** — an escaped Choice now falls through to the
 code order rather than to no site at all — with a named unit test
-(`test/unit/synth/localize/jev-off-fallback.test.ts`). **It has not been re-measured:** `docs/DECISIONS.md` still
+(`test/unit/jev-modes/synth/localize/jev-off-fallback.test.ts`). **It has not been re-measured:** `docs/DECISIONS.md` still
 carries the iteration-1 verdict, and iteration 2's own text says it is measured on the same 18 + 28 before any
 of it is called an improvement.
 
 So the gate stands, with its content changed from *write a fix* to *produce the measurement*:
 
 - **Before B merges**, Ring 1 under `--jev off` must be **run and green**, and the allow-list row for
-  `src/synth/localize/index.ts` (`jev-contract.mjs:48`, still claiming "code order is the fallback") must be
+  `src/jev-modes/synth/localize/index.ts` (`jev-contract.mjs:48`, still claiming "code order is the fallback") must be
   either justified by that green run or replaced by a four-clause block. The claim is now true in code; the row
   should stop resting on prose.
 - **Before C merges**, the same green run, because the fast path routes through that same localiser: with Jev
@@ -1536,7 +1536,7 @@ gate on the merged tree. Commits use explicit paths — never `git add -A`, neve
 
 **S2 is NOT on these arms, and the table used to say it was** (F05). Both run `engineModeOf === 'jev-on'`, and every
 §3 mechanism lives on the llm-jev sample path: nothing sets `PromptInput.prefixOrder`, `onFirstByte` is forwarded only
-from that path, and hedging plus the §3.4 reasoning cap are in `src/synth/llm/source.ts`, which `jev-on` never enters.
+from that path, and hedging plus the §3.4 reasoning cap are in `src/jev-modes/synth/llm/source.ts`, which `jev-on` never enters.
 `armMechanisms` now clamps a pinned `s2` to `'off'` outside `llm-jev`, `pinnedGeneration` no longer carries the S2
 block on these arms, and `measurementRows` carries an `R-s2` row that reads `not_evaluable` with the reason — naming
 the arm's own mode, since the function takes any `BenchCondition` (B6). What summary.json records is the OBSERVED
@@ -1716,12 +1716,12 @@ It is one cheap run and it is the only thing that turns I2 from an assertion int
 "making `jev-on` primary" a baseline at all. **Default: yes, run it; it is the cheapest arm in the plan.** If
 budget forces a cut, cut the **in-sample 28** for `jev-on-next-nofast` before cutting this.
 
-**Q9 — Who fixes `runFactsRef` (`src/synth/index.ts:83`)?**
+**Q9 — Who fixes `runFactsRef` (`src/jev-modes/synth/index.ts:83`)?**
 ~~It is a latent correctness defect today (a process-global read after awaits, with `src/bench/runner.ts` running
 concurrent tasks in one process) and the reason every fast-path arm is pinned to `--concurrency 1`.~~
 **ANSWERED AND CLOSED: it was fixed on `main` at `c7ae106`, outside this wave** (ratified in `docs/DECISIONS.md`
 2026-09-22, "The LLM-loop wave lands with both switches off", Q9). `grep -rn runFactsRef src/` is empty; the facts
-are a per-`runId` registry (`src/synth/introspect/facts.ts`, `RUN_FACTS_MAX = 8`, LRU). The `--concurrency 1`
+are a per-`runId` registry (`src/jev-modes/synth/introspect/facts.ts`, `RUN_FACTS_MAX = 8`, LRU). The `--concurrency 1`
 assertion in slot D stands, but it is now a measurement-noise choice, not a correctness pin.
 
 ### 9.1 Deferred, with reasons
@@ -1729,7 +1729,7 @@ assertion in slot D stands, but it is now a measurement-noise choice, not a corr
 **Filed 2026-09-22 at `d297b29` by the finishing pass (F21) — two BEHAVIOUR deferrals it deliberately did not change,
 each with an owner, so neither is mistaken for an oversight:**
 
-- **The fast path's blanket `warm_plane` refusal** (`src/loop/stages/fastpath.ts:183`,
+- **The fast path's blanket `warm_plane` refusal** (`src/jev-modes/stages/fastpath.ts:183`,
   `if (i.warmEnabled) return 'warm_plane';`, T1's free stage, ahead of everything that could spend). It was written
   for I8 while the warm plane was unmeasured. Since `JEVCODE_WARM` became opt-in the cost changed shape: under
   `JEVCODE_WARM=on` the refusal now costs **route R9 entirely** — every step of every `jev-on` run declines with
@@ -1744,7 +1744,7 @@ each with an owner, so neither is mistaken for an oversight:**
 
 Persistent Jev cache + `--jev-cache off` (the exact-digest cache in `src/jev/cache.ts` already landed).
 A `searchOneRound` API at the `searchSubGoal` altitude (§1.5 — `rebaseline` is private for good reasons).
-Repository-class fast path (`src/synth/oracle/verify.ts`'s `runRepositoryQueue`).
+Repository-class fast path (`src/jev-modes/synth/oracle/verify.ts`'s `runRepositoryQueue`).
 Routers R3, R4, R5, R7, R8 (§2.2).
 The warm plane (I8).
 `screened` / `screenMismatches` in `ProposalEvidence` / `GoalSearchTrace`.
@@ -1763,19 +1763,19 @@ The default-mode flip.
 - **F17 — S2 on the `jev-on` path.** `armMechanisms` pinned `s2: true` for `jev-on-next` /
   `jev-on-next-nofast` while no S2 mechanism is reachable in `jev-on`: nothing sets `PromptInput.prefixOrder`,
   `onFirstByte` is forwarded only on the synthesizer sample path, and hedging plus the §3.4 reasoning cap live in
-  `src/synth/llm/source.ts`, which `jev-on` never enters. The finishing pass made the RECORD match the run (F05:
+  `src/jev-modes/synth/llm/source.ts`, which `jev-on` never enters. The finishing pass made the RECORD match the run (F05:
   `s2: false` off the `llm-jev` path, no `PinnedGeneration.s2` there, and an `S2` row reading `not_evaluable`);
   wiring the mechanisms onto `jev-on` is a mechanism change and is **slot A's F25**, which exposes a runtime
   `mechanisms.s2: 'on' | 'partial' | 'off'` for summary.json to record instead of a constant.
 - **F26 — `cacheInput` counts only the rounds the provider reported cache for.** `cacheCountsOf`
-  (`src/synth/llm/source.ts`) returns `{}` when a round's samples reported neither a cache read nor a cache write,
+  (`src/jev-modes/synth/llm/source.ts`) returns `{}` when a round's samples reported neither a cache read nor a cache write,
   so a round that priced 1,000 uncached input tokens contributes no denominator; `subgoal.ts`'s trace fold and
-  `fastlaneCounts` (`src/synth/search/index.ts`) repeat the same `cacheRead > 0 || cacheWrite > 0` guard. A step
+  `fastlaneCounts` (`src/jev-modes/synth/search/index.ts`) repeat the same `cacheRead > 0 || cacheWrite > 0` guard. A step
   that served 1,000 tokens on a miss beside one that served 90/100 therefore prints 90 %, not 8.2 %, and §3.3 cannot
   see a prefix break on a provider that does not report cache writes. The fix is three guarded spreads — emit
   `cacheInput` (and the rate) whenever `input > 0`, keeping `cacheRead`/`cacheWrite` absent when the provider
   reported none — but it CHANGES what the §3.4 instrument reports on every provider and contradicts a pinned
-  decision (`test/unit/synth/llm/cache-and-reasoning-cap.test.ts`: "reports NOTHING rather than a zero when the
+  decision (`test/unit/jev-modes/synth/llm/cache-and-reasoning-cap.test.ts`: "reports NOTHING rather than a zero when the
   provider caches nothing"), so it is a mechanism change and not a finishing fix, exactly as F17 is. Owner = §3.4
   (slot A). Until then §3.4 above and `src/bench/report.ts`'s S2 row say what the denominator covers.
 - **`llm-sieve` still runs L2.** F06 constructs the arm (it used to throw, turning `--conditions llm-sieve` into a

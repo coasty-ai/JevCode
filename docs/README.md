@@ -67,7 +67,7 @@ flowchart LR
   subgraph sg_write["who writes the code"]
     PROVIDER["src/provider/registry.ts"]
     MODELS["src/models/index.ts"]
-    SYNTH["src/synth/index.ts — createSynthesizer"]
+    SYNTH["src/jev-modes/synth/index.ts — createSynthesizer"]
   end
   subgraph sg_exec["execute — src/sandbox, src/workspace"]
     SANDBOX["sandbox/run.ts"]

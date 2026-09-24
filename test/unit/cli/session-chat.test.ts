@@ -13,7 +13,7 @@ import type { GenerateRequest, IntakeKind, Provider } from '../../../src/core/ty
 import { CREDITS_EXHAUSTED, DO_IT_OFFER, offerWanted, INTAKE_UNREACHABLE, JEV_KEY_REJECTED, LLM_KEY_REJECTED, LLM_UNPRICED_REFUSAL, LLM_UNREACHABLE, MISSING_GENERATOR_KEY, MISSING_JEV_KEY, MOCK_CHAT_GENERATOR, ON_IT_LINE, RUN_LIVE_ERROR, SESSION_CAP_CHAT_REFUSAL, STILL_THINKING_TOAST, STOPPED_THINKING_TOAST, chatEstimateUsd, mockIntakeOverride, mockIntakeRules, mockJevLatencyMs, type ChatUiAction, type WizardReason } from '../../../src/cli/session.js';
 import { writeJsonStream } from '../../../src/cli/json-stream.js';
 import { readIndex } from '../../../src/session/index.js';
-import { LOOKUP_FOOTER, LOOKUP_HEADER, lookupMissText } from '../../../src/chat/lookup.js';
+import { LOOKUP_FOOTER, LOOKUP_HEADER, lookupMissText } from '../../../src/jev-modes/chat/lookup.js';
 import { PEERS_UNAVAILABLE_TEXT, WHAT_IT_IS_TEXT, peersFactText } from '../../../src/chat/facts.js';
 import { REPLY_FALLBACK_KEY, fillReply, replyByKey } from '../../../src/chat/replies.js';
 import { MOCK_CHAT_REPLY } from '../../../src/provider/mock.js';

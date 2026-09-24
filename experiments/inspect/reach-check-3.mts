@@ -17,7 +17,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { sha12 } from '../../src/core/hash.js';
-import { unifiedDiff } from '../../src/synth/py/edits.js';
+import { unifiedDiff } from '../../src/jev-modes/synth/py/edits.js';
 
 const dirs = (process.argv[2] ?? 'bench/results/jev-only-swebench-3').split(',');
 type Rec = { task: string; runId: string; reason?: string; pass: boolean | null };

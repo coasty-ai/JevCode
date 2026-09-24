@@ -8,7 +8,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { cargoScope, goScope, jestScope, scopeBuilderFor, scopeUsable, vitestScope } from '../../../src/workspace/tests.js';
-import { RUN_FAILURE_ID } from '../../../src/synth/verify/text.js';
+import { RUN_FAILURE_ID } from '../../../src/jev-modes/synth/verify/text.js';
 
 describe('jest / vitest scope builders', () => {
   it('jest: file paths become escaped path regexes, node-id names become -t filters', () => {

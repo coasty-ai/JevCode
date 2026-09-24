@@ -11,7 +11,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { buildOpenRouterBody } from '../../../src/provider/openrouter.js';
-import { rotatedProviderOrder } from '../../../src/synth/llm/source.js';
+import { rotatedProviderOrder } from '../../../src/jev-modes/synth/llm/source.js';
 import { openrouterCfg, request } from './helpers.js';
 
 describe('§3.2 openrouter `provider.order`', () => {

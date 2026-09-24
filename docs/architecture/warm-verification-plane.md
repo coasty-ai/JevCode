@@ -65,7 +65,7 @@ allowed to mean.
 - **`mismatch()`** — one screen/confirm disagreement — disables the plane for the whole run.
 - **`disable()` is one-way.** Nothing re-enables the plane inside a run.
 
-<!-- src/synth/warm/plane.ts:1-25 -->
+<!-- src/jev-modes/synth/warm/plane.ts:1-25 -->
 
 ### Screen hot, confirm cold
 
@@ -90,7 +90,7 @@ describe:
   consume a passer slot, re-queues everything that batch classified, and emits a named line
   saying so.
 
-<!-- src/synth/sieve/runner.ts:1074-1107 -->
+<!-- src/jev-modes/synth/sieve/runner.ts:1074-1107 -->
 
 Nothing is asked of Jev anywhere in this. The tests are the oracle and the disagreement rule is
 arithmetic.
@@ -114,7 +114,7 @@ Liveness has four independent layers, because a leaked interpreter is the worst 
 3. the sandbox call that started it carries its own timeout;
 4. the run-end kill takes it with everything else.
 
-<!-- src/synth/warm/worker.ts:1-24 -->
+<!-- src/jev-modes/synth/warm/worker.ts:1-24 -->
 
 The transport is deliberately hand-rolled, and the module explains why at length: Node's file
 streams over a FIFO block inside the four-thread libuv file pool, and a socket over a FIFO
@@ -142,8 +142,8 @@ Three further budgets bound the damage:
 | worker failures allowed across all lanes before the plane gives up | 4 |
 | worker boot timeout | 20 s |
 
-<!-- WARM_MAX_RESTARTS_PER_LANE, WARM_MAX_FAILURES_PER_RUN: src/synth/warm/plane.ts:33-42;
-     WARM_BOOT_TIMEOUT_MS: src/synth/warm/worker.ts:60 -->
+<!-- WARM_MAX_RESTARTS_PER_LANE, WARM_MAX_FAILURES_PER_RUN: src/jev-modes/synth/warm/plane.ts:33-42;
+     WARM_BOOT_TIMEOUT_MS: src/jev-modes/synth/warm/worker.ts:60 -->
 
 The per-lane budget alone is not a budget: eight lanes could each pay three boots, and a boot
 that ends at its deadline costs the *step's* test wall, not the plane's. The run that made the
@@ -164,7 +164,7 @@ export function warmRequested(env = process.env): boolean {
   return flag === 'on' || flag === '1' || flag === 'true';
 }
 ```
-<!-- src/synth/warm/plane.ts:135 and :148 -->
+<!-- src/jev-modes/synth/warm/plane.ts:135 and :148 -->
 
 Absent, unset or unrecognised means **off**. There is no configuration file key and no
 command-line flag; it is an environment variable read inside the synthesizer, which is the same
@@ -226,7 +226,7 @@ evidence records whether the run behind it was warm-screened.
 So the fast path's first stage refuses to arm at all when the plane is enabled, with the named
 reason `warm_plane`, checked before any wall is spent. A false claim of cold confirmation is
 thereby unreachable rather than merely unlikely.
-<!-- src/loop/stages/fastpath.ts:183; src/synth/search/fastpath.ts:112-123 -->
+<!-- src/jev-modes/stages/fastpath.ts:183; src/jev-modes/synth/search/fastpath.ts:112-123 -->
 
 Which is also why every published speed number in this repository must say which side of
 `JEVCODE_WARM` it was measured on. A speedup quietly measured with the plane on is not a number

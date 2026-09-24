@@ -6,8 +6,8 @@
  * (revert of the commit the issue names): the reproduction is rebuilt from the issue text the way
  * the oracle does (extractBlocks → block 0 → chunksWithContext; Jev's judged failure kind and
  * anchors are read back from experiments/oracle/results.json, no request), the introspection pass
- * runs once in the base worktree with the bench venv (src/synth/introspect), the history is
- * harvested with ≤ 8 read-only git commands (src/synth/history), then the real sources enumerate
+ * runs once in the base worktree with the bench venv (src/jev-modes/synth/introspect), the history is
+ * harvested with ≤ 8 read-only git commands (src/jev-modes/synth/history), then the real sources enumerate
  * at the gold sites built as reach-oracle-9.mts builds them, before (plain EnumerateOptions) and
  * after (introspected / history / extraNames). Every candidate is applied and compared with the
  * gold-patched file (code tokens per line); the found candidate is applied to a private worktree
@@ -24,28 +24,28 @@ import { execFile } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createDonorSource } from '../../src/synth/donor/index.ts';
-import { createHistorySource, harvestHistory } from '../../src/synth/history/index.ts';
-import type { HistoryFacts } from '../../src/synth/history/index.ts';
-import { introspectRepro, vocabularyAdditions } from '../../src/synth/introspect/index.ts';
-import type { IntrospectedNames } from '../../src/synth/introspect/index.ts';
-import { createMutationSource } from '../../src/synth/mutate/index.ts';
-import { chunksWithContext, extractBlocks } from '../../src/synth/oracle/index.ts';
-import type { TracebackFrame } from '../../src/synth/oracle/index.ts';
-import { indentOf } from '../../src/synth/py/edits.ts';
-import { ENUMERATE_CAP, isTestPath, taskIdentifiers, testLiterals } from '../../src/synth/search/subgoal.ts';
-import { missingFromVocab, vocabularyOf } from '../../src/synth/sieve/queue.ts';
-import { createTemplateSource, familyOf } from '../../src/synth/templates/index.ts';
-import type { Candidate, CandidateSource, EnumerateOptions, FailureView, Site, SourceFile } from '../../src/synth/types.ts';
-import { applyCandidate } from '../../src/synth/verify/apply.ts';
-import type { VerifyRunFn } from '../../src/synth/verify/types.ts';
+import { createDonorSource } from '../../src/jev-modes/synth/donor/index.ts';
+import { createHistorySource, harvestHistory } from '../../src/jev-modes/synth/history/index.ts';
+import type { HistoryFacts } from '../../src/jev-modes/synth/history/index.ts';
+import { introspectRepro, vocabularyAdditions } from '../../src/jev-modes/synth/introspect/index.ts';
+import type { IntrospectedNames } from '../../src/jev-modes/synth/introspect/index.ts';
+import { createMutationSource } from '../../src/jev-modes/synth/mutate/index.ts';
+import { chunksWithContext, extractBlocks } from '../../src/jev-modes/synth/oracle/index.ts';
+import type { TracebackFrame } from '../../src/jev-modes/synth/oracle/index.ts';
+import { indentOf } from '../../src/jev-modes/synth/py/edits.ts';
+import { ENUMERATE_CAP, isTestPath, taskIdentifiers, testLiterals } from '../../src/jev-modes/synth/search/subgoal.ts';
+import { missingFromVocab, vocabularyOf } from '../../src/jev-modes/synth/sieve/queue.ts';
+import { createTemplateSource, familyOf } from '../../src/jev-modes/synth/templates/index.ts';
+import type { Candidate, CandidateSource, EnumerateOptions, FailureView, Site, SourceFile } from '../../src/jev-modes/synth/types.ts';
+import { applyCandidate } from '../../src/jev-modes/synth/verify/apply.ts';
+import type { VerifyRunFn } from '../../src/jev-modes/synth/verify/types.ts';
 import { REPOS, applyHunksToLines, insertSiteAt, isCodeLine, loadFile, normLines, parseHunks, privateWorktree, replaceSiteAt, runF2P, sh, splitLines, venvPython } from './lib.mts';
 import type { Hunk } from './lib.mts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, '..', '..');
 const OUT_DIR = join(HERE, 'out');
-/** src/synth/search/index.ts loadPythonFiles: the first 400 non-test .py paths alphabetically */
+/** src/jev-modes/synth/search/index.ts loadPythonFiles: the first 400 non-test .py paths alphabetically */
 const MAX_WORKSPACE_PY_FILES = 400;
 const INSTANCES = ['sympy__sympy-15345', 'sympy__sympy-17139', 'django__django-15315'];
 const QUIXBUGS = join(ROOT, 'bench/data/quixbugs');
