@@ -384,7 +384,7 @@ Lines `:786` and `:799` — which the draft named — are `seedSource` and `enum
 
 **What.** A per-stage `before/after` seam over the existing discrete stages, with async hooks that never touch the step path.
 
-**How it lands.** New `src/loop/hooks.ts` over `src/loop/stages/*.ts`: JSON on stdin, **exit 2 blocks**, `async: true` for formatters and loggers, a `stepBatch` hook at the commit point, and a per-hook deadline so a slow plugin cannot stall a step (a hook that misses its deadline is killed and recorded as a non-blocking error). Markdown command templates wired into `src/tui/commands/registry.ts`.
+**How it lands.** New `src/loop/hooks.ts` over `src/loop/stages/*.ts` and `src/jev-modes/stages/*.ts`: JSON on stdin, **exit 2 blocks**, `async: true` for formatters and loggers, a `stepBatch` hook at the commit point, and a per-hook deadline so a slow plugin cannot stall a step (a hook that misses its deadline is killed and recorded as a non-blocking error). Markdown command templates wired into `src/tui/commands/registry.ts`.
 
 **[graft: Dispatch]** Two additions the draft omitted:
 1. **Precedence, stated once:** a hook's exit-2 block **cannot be overridden by any later allow**, from Jev or from anything else. Blocks compose by intersection.

@@ -26,11 +26,14 @@ flowchart LR
   subgraph sg_loop["step loop — src/loop"]
     ENGINE["engine.ts"]
     GENONLY["generator-only.ts"]
-    STAGES["stages/ — intent, context, propose, synth, risk, execute, judge, complete, replan, decompose, fastpath, choose"]
+    STAGES["stages/ — agent, execute, decompose"]
     ROUTERS["routers.ts — routersOn"]
     BUDGET["budget.ts"]
     STOPM["stop.ts — exitCodeFor"]
     LOOPCOORD["coordination.ts"]
+  end
+  subgraph sg_jevmodes["Jev-driven modes — src/jev-modes"]
+    JSTAGES["stages/ — intent, context, propose, synth, risk, judge, complete, replan, fastpath, choose"]
   end
   subgraph sg_jev["decider — src/jev"]
     JCACHE["cache.ts"]
@@ -42,7 +45,7 @@ flowchart LR
   subgraph sg_write["who writes the code"]
     PROVIDER["provider/ anthropic, openrouter, null"]
     PROMPTS["provider/prompts.ts"]
-    SYNTH["synth/index.ts — createSynthesizer"]
+    SYNTH["jev-modes/synth/index.ts — createSynthesizer"]
   end
   subgraph sg_exec["execute"]
     SANDBOX["sandbox/run.ts"]
@@ -85,6 +88,7 @@ flowchart LR
   COND --> ENGINE
   COND --> GENONLY
   ENGINE --> STAGES
+  ENGINE --> JSTAGES
   ENGINE --> ROUTERS
   ENGINE --> BUDGET
   ENGINE --> STOPM
@@ -105,7 +109,8 @@ flowchart LR
   CLIENT --> QUESTIONS
   CLIENT --> VALIDATE
   CLIENT --> JEVAPI
-  STAGES --> SYNTH
+  JSTAGES --> SYNTH
+  JSTAGES --> WSFILES
   STAGES --> WSFILES
   SYNTH --> SANDBOX
   SANDBOX --> SEATBELT

@@ -68,7 +68,7 @@ it must work (section 16).
 | Safety | Full autonomy by default, the existing sandbox and per-step pre-images. A rule classifier has 13 destructive rules, including `git_discard`; `/dev/null` and `$TMPDIR` are exempt. Under full autonomy it gates nothing: a destructive command runs, and its step carries a one-line note that says truthfully whether `/undo` can restore the effect. `--autonomy review` asks y/n for destructive and unknown commands. |
 | Jev | Three quick hints at the edges of a run. Each has a short deadline (300 ms for RA0, 400 ms for RA1 and RA2) and a code fallback, is skipped when Jev is unavailable, and is never fatal. None gates an action, a stop or completion. The three: a first-turn effort hint (RA0, asked only where it can change the request), the wording of a loop nudge (RA1), and a late progress check that can add one hint (RA2). A normal run makes at most one Jev request; on the default provider it makes none. The Jev key is optional in the default mode. |
 | Providers | All seven adapters. The contract is widened additively (`GenerateRequest.agent`), so legacy requests are unchanged. Reasoning is replayed per provider. On Anthropic: adaptive thinking with `display: 'summarized'`, effort `high`, and an explicit `prefix_mismatch_behavior`. A rejected replay is retried once without reasoning state. GLM tool calls are repaired, and calls leaked as XML are recovered. |
-| Repository | The Jev-driven stage modules, the synthesizer and the chat lookup move under `src/jev-modes/` (slice S7). Afterwards `src/loop` imports `src/jev` only from the engine, the routers and context compaction. Importers of `src/jev` outside `src/jev` and `src/jev-modes`: 45 before this work, 47 once the agent loop landed, about 21 after S7; `docs/STATUS.md` tracks the number. |
+| Repository | The Jev-driven stage modules, the synthesizer and the chat lookup move under `src/jev-modes/` (slice S7). Afterwards `src/loop` imports `src/jev` only from the engine, the routers and context compaction. Importers of `src/jev` outside `src/jev` and `src/jev-modes`: 45 before this work, 47 once the agent loop landed, 22 after S7; `docs/STATUS.md` tracks the number. |
 
 ---
 
@@ -398,7 +398,7 @@ The rules are evaluated in order. Their counters live in `AgentStateV1` and surv
 - A *passing run* is a run of the detected test command that is **unscoped** (its normalised command equals `testCommand.command`, with no `workdir` or with `workdir: '.'`) and exits 0.
 - An exit-0 run whose output the parser cannot read resets `changedSinceVerify`. It never yields `complete`. It replaces today's `tests_pass_unparsed` question (`src/jev-modes/stages/complete.ts:282`).
 - The engine stops with `complete` when the agent variant of `verifiedCompletion` holds. That means a `done` proposal plus a last test run that is the unscoped detected command, parsed, all passed and current (`lastChangeStep` < its step). Todo items left pending do not block it; the finish row lists them as a note.
-- Otherwise the stop is `generator_done`. Today's check also requires an empty plan and accepts scoped runs (`src/loop/engine.ts:5233-5238`, `src/loop/stages/execute.ts:33-51`); the agent variant replaces both conditions.
+- Otherwise the stop is `generator_done`. Today's check also requires an empty plan and accepts scoped runs (`src/loop/engine.ts:5233-5238`, `isTestCommand` in `src/workspace/tests.ts:243-261`); the agent variant replaces both conditions.
 - **A reply** (§A1). A run whose every step is a `finish` with no call — the model answered in prose and never called a
   tool — stops `answered` instead of `generator_done`. `isReplyOnlyRun` (`src/core/agent-run.ts`) is the one predicate; the
   engine, the TUI and the session all read it. `answered` exits 0, is not resumable, and renders as a chat reply (section
@@ -589,7 +589,7 @@ timeout 120 s, maximum 600 s. No editors, pagers, prompts or servers that never 
 (https://github.com/openai/codex).
 - It maps to the new additive `run.cwd` (`src/core/types.ts:54`). The sandbox already accepts a workspace-relative `cwd`
   (`src/core/types.ts:1310-1311`, `src/sandbox/run.ts:258-261`), and `runExecuteStage` passes it on (`src/loop/stages/execute.ts:147`).
-- A `cd x && npm test` prefix would defeat `isTestCommand` (`src/loop/stages/execute.ts:33-51`); `workdir` avoids it.
+- A `cd x && npm test` prefix would defeat `isTestCommand` (`src/workspace/tests.ts:243-261`); `workdir` avoids it.
 
 `grep` — "Search file contents with a regular expression (ripgrep syntax). Returns `path:line: text` lines. Searches
 only files the workspace lists (no secrets, no ignored or binary files)."
@@ -1668,7 +1668,7 @@ redirect other than to `/dev/null` or `&1`/`&2`:
 `awk` is excluded (`system()`, `print >`). Anything in doubt is not `readonly`.
 
 **`safe`** (an `act` step, never asked, never noted):
-- the detected test command and its scoped forms (`isVerificationRun`, `src/jev-modes/stages/risk.ts:231`);
+- the detected test command and its scoped forms (`isVerificationRun`, `src/workspace/tests.ts:271`);
 - build, lint and type-check commands: `npm|pnpm|yarn|bun run build|lint|typecheck|test|check`, `tsc`, `eslint`, `prettier --check`, `cargo build|check|test|clippy|fmt --check`, `go build|test|vet`, `pytest`, `python -m pytest|unittest`, `make test|check|build`.
 
 **`destructive`** (under `full`: runs, and the step carries a note; under `review`: asked):
@@ -1978,6 +1978,11 @@ S7 is a mechanical, behaviour-free slice:
    - Rewrite imports, including the `scripts/jev-contract.mjs` `ALLOW` paths (`scripts/jev-contract.mjs:30-46`) and doc path references.
 3. **Record the importer count** outside `src/jev` and `src/jev-modes` in `docs/STATUS.md`. It drops from 45 to about 21 (inferred from the current importer list: `src/loop/{engine,routers}.ts`, `src/loop/context/compaction.ts`, 3 chat, 6 TUI/CLI, 2 config, 3 bench, perf, split, import, plus `src/agent/jev.ts`). S6's as-built note sets the target, and later work should only lower it.
 
+**As built (2026-09-23).** Landed as listed, with two more helpers in step 1: `ledgerGoalsOf` (and the pure
+`TESTS_PASS_UNPARSED_THRESHOLD`, `knownFailureCount` and `unexpectedFailures`) moved to `src/loop/judge-code.ts` with
+`codeJudge`, and `isTestCommand` moved to `src/workspace/tests.ts` with `isVerificationRun`. The importer count is 22, down
+from 47 (`docs/STATUS.md`). The path map is the 2026-09-23 `src/jev-modes/` entry in `docs/DECISIONS.md`.
+
 `src/loop/engine.ts` (6,489 lines) keeps the Jev-mode branches. Splitting it is deferred (open risk 17). S7 changes no
 behaviour, no wire body and no bundle size, and every gate must pass unchanged. S7 is independent of S1-S6, so dropping it
 does not affect the default flip.
@@ -2037,7 +2042,7 @@ Seven slices:
 | S4 engine seam | `src/loop/engine.ts`; new `src/loop/stages/agent.ts`; `src/loop/stages/execute.ts` (`run.cwd`); `src/checkpoint/resume.ts` (the `seqAfter` fold); `src/config/resolve.ts`; `src/workspace/tests.ts` (one parser); `test/unit/loop/fakes.ts` (additions only); `test/unit/loop/agent-*.test.ts`; `test/unit/config/resolve-agent.test.ts` | S1 |
 | S5 TUI, chat, session | `src/cli/session.ts` (except S1's row); `src/cli/{args.ts (help text and TAGLINE), login.ts, epilogue.ts, mock-trajectory.ts}`; `src/chat/{intake,llm-turn}.ts`; `src/chat/facts.ts` (non-agent rows and `HOW_TO_TASK_TEXT`); `src/tui/{useEngine.tsx,plain.ts,App.tsx,Transcript.tsx,theme.ts}`; `src/tui/pane/model.ts`; `src/tui/status/lines.ts`; `src/tui/review/lines.ts`; `src/tui/context/lines.ts`; `src/tui/commands/registry.ts` (except S1's row); `src/tui/onboarding/lines.ts`; `src/tui/keys/bindings.ts`; `src/tui/anim/Indicator.tsx`; `test/unit/config/args.test.ts` (the tagline pin); tests under `test/unit/{tui,chat,cli}/`; regenerated docs | S1 |
 | S6 flip, docs, live | `src/config/defaults.ts` (the `DEFAULT_MODE` line); `test/pty/**`; `test/unit/loop/agent-e2e.test.ts`; unit tests that pin the default mode or badge; `test/unit/config/no-default-literal.test.ts`; `README.md`; `docs/**`; `package.json` (description, keywords); `scripts/gen-docs.mjs` (the exit-code row, advertised modes); `scripts/check-pack.mjs` (the unpacked-size gate); `scripts/jev-contract.mjs` (rows only if counts moved); generated docs | S1-S5 |
-| S7 jev-modes layout | `src/jev-modes/**` (new, by `git mv`); the moved sources and tests; import lines in every importer; `src/loop/judge-code.ts` (new); `src/workspace/tests.ts` (`isVerificationRun`); `scripts/jev-contract.mjs` (`ALLOW` paths); doc path references | S6 |
+| S7 jev-modes layout | `src/jev-modes/**` (new, by `git mv`); the moved sources and tests; import lines in every importer; `src/loop/judge-code.ts` (new); `src/workspace/tests.ts` (`isTestCommand`, `isVerificationRun`); `scripts/jev-contract.mjs` (`ALLOW` paths); doc path references | S6 |
 
 Interfaces between slices are exactly the S1 types:
 - `AgentRequest`/`AgentMessage`/`ProviderReplayState`/`ToolCall.id`/`GenerateOptions.onToolCall|onReasoning`/`AskOptions.quick`/`MockTurn.toolCalls`: S2 implements them; S3 and S4 consume them.

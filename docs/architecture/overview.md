@@ -43,10 +43,13 @@ flowchart LR
   end
   subgraph sg_loop["engine and step loop — src/loop"]
     ENGINE["engine.ts"]
-    STAGES["stages/ — agent; and for the legacy modes replan, intent, context, propose, risk, execute, judge, complete"]
+    STAGES["stages/ — agent, execute, decompose"]
     ROUTERS["routers.ts — routersOn"]
     BUDGET["budget.ts and src/spend/meter.ts"]
     STOPM["stop.ts — exitCodeFor"]
+  end
+  subgraph sg_jevmodes["the Jev-driven modes' stages — src/jev-modes"]
+    JSTAGES["stages/ — replan, intent, context, propose, risk, judge, complete"]
   end
   subgraph sg_jev["decider — src/jev"]
     QUESTIONS["questions.ts — choice, noul, score, ESCAPE_KEY"]
@@ -87,6 +90,7 @@ flowchart LR
   MAIN --> IMPORTM
   BENCH --> ENGINE
   ENGINE --> STAGES
+  ENGINE --> JSTAGES
   STAGES --> DRIVER
   DRIVER --> ATOOLS
   DRIVER --> ASAFE
@@ -95,7 +99,7 @@ flowchart LR
   ENGINE --> ROUTERS
   ENGINE --> BUDGET
   ENGINE --> STOPM
-  STAGES --> QUESTIONS
+  JSTAGES --> QUESTIONS
   ROUTERS --> ROUTER
   ROUTER --> ENGINE
   QUESTIONS --> ENGINE
@@ -103,10 +107,10 @@ flowchart LR
   JCACHE --> CLIENT
   CLIENT --> VALIDATE
   CLIENT --> JEVAPI
-  STAGES --> PROVIDER
+  JSTAGES --> PROVIDER
   PROVIDER --> MODELS
   PROVIDER --> GENAPI
-  STAGES --> SYNTH
+  JSTAGES --> SYNTH
   SYNTH --> SANDBOX
   STAGES --> SANDBOX
   SANDBOX --> SEATBELT
@@ -120,7 +124,8 @@ flowchart LR
 In the default mode the engine hands each step to the agent driver (`src/loop/stages/agent.ts`
 → `src/agent/driver.ts`), which samples the code model and resolves its tool calls; the
 engine keeps the shared tail — budgets, pre- and post-images, execution, the commit and the
-checkpoint. The Jev stages run only in the legacy modes. Two edges are worth reading twice.
+checkpoint. The Jev stages, in `src/jev-modes/stages/`, run only in the legacy modes. Two edges
+are worth reading twice.
 **Every Jev question goes through the engine**, not around it: a stage (or one of the agent's
 three quick placements) builds a question batch and hands it to the engine's one recorded,
 metered ask, which wraps the client in a within-run answer cache. And `routeSpeculative` does
@@ -129,32 +134,32 @@ not talk to the decider on its own — it is handed the stage's own ask as a fun
 ## The modules
 
 Line counts are whole-file counts of `.ts` and `.tsx` under each directory, taken on
-2026-09-23 from the tree with the agent loop merged: **520 files, 193,445 lines** across 22
-top-level modules. Reproduce with `find src \( -name '*.ts' -o -name '*.tsx' \) | xargs wc -l | tail -1`.
+2026-09-23 from the tree with the Jev-driven modules moved under `src/jev-modes/`: **521 files,
+194,112 lines** across 22 top-level modules. Reproduce with `find src \( -name '*.ts' -o -name '*.tsx' \) | xargs wc -l | tail -1`.
 
 | module | lines | what it owns |
 |---|---:|---|
-| `src/jev-modes/synth` | 45,551 | The Ledger + Sieve synthesizer of the `llm-jev` and `jev-only` modes: localisation, candidate generation, shadow-lane verification, the overfit guard. See [The synthesizer](synthesizer.md). |
-| `src/tui` | 37,255 | The interactive terminal interface: transcript, the streaming reply block, panes, composer, slash commands, review panels, the mini indicator. |
-| `src/loop` | 15,781 | The engine every mode runs on, the agent seam, the legacy modes' stages, budgets, loop detection, the context policy, the commit rule. |
-| `src/cli` | 13,750 | Argument parsing, the command dispatch, the session controller, login, the machine-readable stream. |
+| `src/jev-modes` | 48,563 | Everything only the Jev-driven modes use. `synth/` is the Ledger + Sieve synthesizer of the `llm-jev` and `jev-only` modes: localisation, candidate generation, shadow-lane verification, the overfit guard (see [The synthesizer](synthesizer.md)). `stages/` holds the Jev-mode stages — intent, context, propose, synth, fastpath, risk, judge, complete, replan, choose — and `chat/lookup.ts` the `jev-only` code lookup. |
+| `src/tui` | 37,403 | The interactive terminal interface: transcript, the streaming reply block, panes, composer, slash commands, review panels, the mini indicator. |
+| `src/cli` | 13,903 | Argument parsing, the command dispatch, the session controller, login, the machine-readable stream. |
+| `src/loop` | 13,019 | The engine every mode runs on, the agent seam, the execute and decompose stages, the code judge (`judge-code.ts`), budgets, loop detection, the context policy, the commit rule. |
 | `src/coordination` | 8,846 | The on-disk ledger several sessions on one machine use to see each other's claims and leases. |
 | `src/import` | 8,591 | Reads configuration and instruction files other agents left behind and plans an import. Writes nothing itself. |
-| `src/bench` | 8,289 | The benchmark runner, its conditions and its suite loaders. |
-| `src/provider` | 7,649 | The seven generator adapters, each speaking both the agent's native tool protocol and the legacy one-action schema. |
-| `src/perf` | 7,203 | Performance probes with recorded budgets: first frame, step overhead, render lag, stream latency, decider latency. |
-| `src/core` | 5,779 | The shared contract. `types.ts` declares every interface the modules speak through; `limits.ts` holds the bounds. |
-| `src/agent` | 5,530 | The default mode's loop: the driver, the seven tools, the prompts, the context policy, the command classifier, the loop detector and Jev's three quick placements. See [The agent loop](agent-loop.md). |
+| `src/bench` | 8,296 | The benchmark runner, its conditions and its suite loaders. |
+| `src/provider` | 7,673 | The seven generator adapters, each speaking both the agent's native tool protocol and the legacy one-action schema. |
+| `src/perf` | 7,214 | Performance probes with recorded budgets: first frame, step overhead, render lag, stream latency, decider latency. |
+| `src/core` | 5,794 | The shared contract. `types.ts` declares every interface the modules speak through; `limits.ts` holds the bounds. |
+| `src/agent` | 5,691 | The default mode's loop: the driver, the seven tools, the prompts, the context policy, the command classifier, the loop detector and Jev's three quick placements. See [The agent loop](agent-loop.md). |
 | `src/orchestrate` | 5,203 | Splitting one task into child agents and landing their branches. Off by default. |
-| `src/config` | 3,908 | Setting resolution — flag, then environment, then file, then default — and credential storage. |
-| `src/session` | 3,252 | The long-lived session around one or more runs. |
-| `src/workspace` | 2,996 | File reads and writes, patches, test detection, git. `git.ts` is the only module that runs `git` through the sandbox. |
+| `src/config` | 3,925 | Setting resolution — flag, then environment, then file, then default — and credential storage. |
+| `src/session` | 3,260 | The long-lived session around one or more runs. |
+| `src/workspace` | 3,047 | File reads and writes, patches, test detection and the test-run predicates (`tests.ts`), git. `git.ts` is the only module that runs `git` through the sandbox. |
 | `src/models` | 2,963 | The model catalogue, its cache and its pricing table. |
 | `src/checkpoint` | 2,754 | The run directory: atomic state snapshots, the append-only records, resume. |
 | `src/jev` | 2,292 | The decider: the question builders, the client, validation, confidence, the speculative router, the absent decider. |
 | `src/undo` | 2,240 | Restoring the workspace from the per-step images. |
-| `src/chat` | 1,864 | The chat identity and voice every reply is written in, and the legacy modes' intake. |
-| `src/sandbox` | 1,084 | Running a command under a macOS seatbelt profile, and killing its process tree. |
+| `src/chat` | 1,681 | The chat identity and voice every reply is written in, and the legacy modes' intake. |
+| `src/sandbox` | 1,089 | Running a command under a macOS seatbelt profile, and killing its process tree. |
 | `src/spend` | 169 | The spend meter. Generator and decider dollars are counted separately and the cap never throws. |
 
 Two single files sit at the root: `src/errors.ts` (the typed error hierarchy and the exit-code

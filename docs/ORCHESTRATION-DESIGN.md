@@ -1,7 +1,7 @@
 # JevCode orchestration design — a run that becomes a parent, agents that work in worktrees, a critic that is code, a queue that lands
 
 Written 2026-09-21 against `main` = `a2fee9c`, re-anchored at `c3b0aad` (which landed COORDINATION revision 3 and the
-`llm-jev` guard work; it changed no source file this document cites — only `src/loop/stages/{complete,judge}.ts` and
+`llm-jev` guard work; it changed no source file this document cites — only `src/jev-modes/stages/{complete,judge}.ts` and
 `src/jev-modes/synth/{llm/source,search/*}.ts` — so every `file:line` below still holds, and the `CD:` line numbers are revision
 3's). Working tree: the TUI round-3 changes are uncommitted; every `file:line` was re-read in that tree.
 `CD §n` is `docs/COORDINATION-DESIGN.md`, `D §n` is `docs/DESIGN.md`, `TD §n` / `TD3 §n` are `docs/TUI-DESIGN.md` /
