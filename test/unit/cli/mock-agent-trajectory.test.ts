@@ -15,6 +15,7 @@ import {
   mockAgentTaskTurns,
   mockAgentTurns,
   mockChatReplyFromEnv,
+  mockLookupPath,
   mockTaskText,
 } from '../../../src/cli/mock-trajectory.js';
 import { buildProvider } from '../../../src/cli/session.js';
@@ -69,6 +70,18 @@ describe('mockAgentTurns: one trajectory per run, picked from the message', () =
       expect(first.text).toBe(MOCK_CHAT_REPLY);
       expect(turns(agentReq(task)).text).toBe(MOCK_CHAT_REPLY);
     }
+  });
+
+  it('a look-up (`what does <file> do?`) → one read_file of that file, then the prose answer — no command, no change (§A1)', () => {
+    expect(mockLookupPath('what does src/strings.js do?')).toBe('src/strings.js');
+    expect(mockLookupPath('what does README.md say')).toBe('README.md');
+    expect(mockLookupPath('what does parse_date do?')).toBeNull();
+    const turns = mockAgentTurns(undefined, 0);
+    const first = turns(agentReq('what does README.md say?'));
+    expect(first.toolCalls?.map((c) => [c.name, c.input])).toEqual([['read_file', { path: 'README.md' }]]);
+    const second = turns(agentReq('what does README.md say?'));
+    expect(second.toolCalls).toBeUndefined();
+    expect(second.text).toContain('README.md');
   });
 
   it('a task → the five turns in order, then the closing prose again', () => {

@@ -2085,18 +2085,24 @@ the intake probe's `mock150` series gates the raw reply in agent mode (`24cacc0`
   `--provider openai --model z-ai/glm-5.3-flash` (the review's case): one `[ui] … HTTP 404 …` row per message, one
   step each (0.5 s and 5.3 s), where it took about 11 s and 13 rows before.
 
-### Gates (this tree)
+### Gates
 
-| gate | result |
+Before the merge of `main` (the fixes alone): 660 unit files, 11,404 passed, 8 skipped, 0 failed; pty 100 passed;
+smoke 65 of 65. `main` (release-cicd, the CI retries, v0.6.0) was then merged in (`baccd3a`; conflicts in
+`CHANGELOG.md` and `docs/DECISIONS.md` only), and every gate ran again on the merged tree:
+
+| gate | result on the merged tree |
 | --- | --- |
 | `npm run -s typecheck` | clean (`tsc` + `no-any`) |
 | `npm run -s jev-contract` | ok — 37 sites, 14 with a four-clause block, 23 allow-listed |
-| `npm run -s check:docs` | ok — 661 links in 149 files |
-| `node scripts/gen-docs.mjs --check`, `node scripts/gen-decisions-toc.mjs --check` | clean |
-| `npx vitest run --maxWorkers=2 test/unit` | 660 files; **11,404 passed**, 8 skipped, 0 failed (202 s). `gitstate-probe`'s slow-git timing case failed once in a partial run under load and passed 22 of 22 alone |
+| `npm run -s check:docs` | ok — 671 links in 149 files |
+| `node scripts/gen-docs.mjs --check`, `node scripts/gen-decisions-toc.mjs --check` | clean (100 entries) |
+| `npx vitest run --maxWorkers=2 test/unit` | 666 files; **11,489 passed**, 8 skipped, 0 failed (207 s). Earlier, in a partial run under load, `gitstate-probe`'s slow-git timing case failed once; alone it passed 22 of 22 |
 | `npx vitest run --maxWorkers=2 --project pty` | 8 files, 100 passed |
 | `sh test/pty/run-smoke.sh` | 65 of 65 PASS |
-| `npm run -s build` + `npm run -s pack:check` | ok — bundle 3,591,082 bytes; unpacked 3,750,652 < 3,855,000; tarball 1,261,175 < 1,500,000 |
+| `npm run -s build` + `npm run -s pack:check` | ok — bundle 3,593,558 bytes; unpacked 3,753,126 < 3,855,000; tarball 1,262,122 < 1,500,000 |
+
+Not run here: a Linux CI run of the merged tree (`main`'s CI now runs the unit suite on Linux).
 
 ### Left for the owner
 
@@ -2114,4 +2120,5 @@ the intake probe's `mock150` series gates the raw reply in agent mode (`24cacc0`
 - **A resumed run after `/undo`** gets no note that files were put back (a new run's continuation message does).
 - **The one-shot `run --plain` header and stderr epilogue** still print for a reply.
 - **Agent-mode series for render-lag and composer-latency**, and **step-row width at 80 columns**, are not done.
-- **Landing.** `agent-s6` is based on `e4139e2`; merging `main` conflicts in `CHANGELOG.md` and `docs/DECISIONS.md` only.
+- **Landing.** `main` is merged into `agent-s6` (`baccd3a`), so landing is a fast-forward of these commits; a Linux CI
+  run on the pushed branch is the one check left.
