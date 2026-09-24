@@ -53,6 +53,23 @@ decision is in `docs/DECISIONS.md` (2026-09-23).
   saved configs, resume and the bench, unchanged; `/mode legacy` lists them. `/llm on` is now `/mode agent`. The default
   step cap is 250 in agent mode.
 
+### Fixed — found by the live verification of the agent loop (2026-09-23; `docs/STATUS.md`, "Agent loop — live verification")
+
+- The workspace block tells the model that tool paths start below the root. A missing path that repeats the root's name
+  gets a hint, and a `bash` workdir equal to the root's name runs at the root. A workdir that is not a directory is a
+  clear tool error, not `spawn /usr/bin/sandbox-exec ENOENT`.
+- A question is answered, not acted on. A green harness verify asks for one sentence, not a second summary.
+- `/undo` after a `git reset --hard && git clean -fd` restores both the modified and the untracked file, as its note
+  promises. A command that never started gets no `destructive · ran …` note.
+- `jevcode run --resume <id>` works without `--workspace`.
+- The agent transcript's timestamps are wall-clock. An agent follow-up prints no legacy `seeded from run …` line.
+  `--plain` no longer repeats the final answer as the finish step's proposal and outcome rows.
+- The `[sandbox]` row says `network off` under `--no-network`. The key-shadowing line names the provider's own key
+  variable. A bare Fireworks model name (`glm-5p3-flash`) is priced. The `--autonomy` help describes full and review as
+  they now work.
+- On a busy run, the exit confirm and the other y-gated rows accept `y` once their 150 ms window has passed. The key was
+  sometimes dropped when the arming timer ran late.
+
 ### Documentation
 
 - New `docs/architecture/agent-loop.md` and `docs/AGENT-LOOP-DESIGN.md`. The README's "How it works" is rewritten around the

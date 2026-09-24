@@ -27,7 +27,8 @@ intake reading, no `On it — starting the run.` line, no ``Say `do it` `` offer
 answer is the code model's own, streamed. A greeting or a question is answered in prose with no tool call: that
 run stops `answered` and looks exactly like a chat reply (no `[run]` rows, no step rows, no stop line, no
 `exit 0`), and it never becomes the session's title. A request for a change gets tool calls, and from the first
-one the reply becomes a run. A provider error is a `[ui]` error row, never text in the assistant's voice.
+one the reply becomes a run. A provider error is a `[ui]` error row, never text in the assistant's voice. A follow-up
+prints no `[run] seeded from run …` line: the carry is the conversation, recorded in the run's own transcript.
 
 **Reply rendering.** The prose streams in place above the console's rule under `[jevcode]`, from the first token:
 a line with no newline yet is drawn as text (wrapped, with a `▍` caret), never as a `streaming… N chars` counter.

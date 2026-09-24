@@ -78,6 +78,8 @@ What makes the tools robust on mid-tier models:
   (`// ... rest unchanged`); and an error that shows the closest lines when nothing matches.
 - **Call repair** (`src/agent/repair.ts`): JSON repair of broken arguments, name and argument aliases (`Read`,
   `str_replace`, `file_path`, `cmd`, …), and recovery of calls a model leaked as XML or fenced JSON into its prose.
+  A `bash` workdir that repeats the workspace folder's own name (`workdir: "demo"` in `…/demo`) runs at the root, and a
+  missing file whose path starts with that name gets the relative form as a hint: both were seen live with GLM models.
 - **Errors are results, never failed steps.** An unknown tool, invalid arguments or an unmatched edit comes back to the
   model as a precise tool result, and the loop continues.
 - **Long output is spilled, not lost.** A command's output is clipped to a head and a tail inline (30,000 characters on
