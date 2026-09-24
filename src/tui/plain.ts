@@ -674,6 +674,8 @@ export function itemsFromEvent(e: EngineEvent, seq: number, state: ItemStreamSta
     case 'outcome': {
       // AGENT-LOOP-DESIGN §9.4: an agent finish's `noop` outcome is the streamed prose again
       if (e.outcome.status === 'noop' && inAgentRun(state)) return [];
+      // a failed model turn: the `error` row says what failed, and the step row says the turn failed — no `propose:` row
+      if (e.outcome.status === 'failed' && e.outcome.error.startsWith('propose: ') && inAgentRun(state)) return [];
       const o = outcomeText(e.outcome);
       return make(e.step, 'outcome', o.text, o.level, o.detail !== undefined ? { detail: clipDetail(o.detail) } : {});
     }
@@ -895,11 +897,13 @@ export function testCountsText(t: { passed: number; failed: number; errors: numb
 
 /**
  * AGENT-LOOP-DESIGN §A1: the rows a still-replying agent run holds back — its header and git rows, `instructions:`,
- * informational notices and budget lines, step / stage rows. They are written when the run's first tool call turns the
- * chrome on, and dropped when the run ends as a reply, so a reply shows only its prose in the TUI and in `--plain`.
- * Warnings, errors, a blocking pane, a retry and the reply-restarted notice are never held.
+ * informational notices and budget lines, step / stage rows, and a failed model turn's own error row. They are written when
+ * the run's first command or change turns the chrome on, and dropped when the run ends as a reply (a failed reply's error is
+ * the session's one `[ui]` row), so a reply shows only its prose in the TUI and in `--plain`. Warnings, a fatal error, a
+ * blocking pane, a retry and the reply-restarted notice are never held.
  */
 export function isHoldableAgentRow(item: Pick<TranscriptItem, 'kind' | 'level' | 'text' | 'label'>): boolean {
+  if (item.kind === 'error') return item.level === 'error' && !item.text.endsWith('(fatal)');
   if (item.level === 'warn' || item.level === 'error') return false;
   switch (item.kind) {
     case 'run:start':
@@ -923,28 +927,41 @@ export function isHoldableAgentRow(item: Pick<TranscriptItem, 'kind' | 'level' |
 }
 
 /**
- * AGENT-LOOP-DESIGN §A1 / §A5: does this `run:end` close a REPLY — the model answered in prose (`answered`, or the one
- * predicate `isReplyOnlyRun` over the steps), or a reply was stopped before any tool call (Esc / Ctrl-C: "reply stopped")?
+ * The stops that close a run which never ran a command or changed a file (`tools` false) as a REPLY (§A1: "a run that made
+ * no workspace change and ran no command is a reply"): a look-up answered after read-only tools (`generator_done`), a reply
+ * stopped by Esc / Ctrl-C (`human_abort`, `signal`), and a reply whose model turn failed (`error` — the session says so in
+ * one `[ui]` row; a failed reply is not a run to report).
  */
-export function agentRunEndedAsReply(stopReason: string, steps: readonly Pick<StepRecord, 'agent'>[], tools: boolean): boolean {
-  return stopReason === 'answered' || isReplyOnlyRun(steps) || (!tools && (stopReason === 'human_abort' || stopReason === 'signal'));
-}
+const QUIET_AGENT_STOPS: ReadonlySet<string> = new Set(['generator_done', 'human_abort', 'signal', 'error']);
 
 /**
- * AGENT-LOOP-DESIGN §9.2: an event that turns the agent run's chrome on — the first tool call, or anything that means the
- * model is working rather than replying (a proposal other than the final `done`, a command starting). Until one arrives
- * a run is a reply (§A1, §A5): the TUI keeps the chat chrome and `--plain` holds the run's header rows back.
+ * AGENT-LOOP-DESIGN §A1 / §A5: does this `run:end` close a REPLY — the model answered in prose (`answered`, or the one
+ * predicate `isReplyOnlyRun` over the steps), answered a question with read-only tools only, or a reply was stopped or
+ * failed before any command or change?
+ */
+export function agentRunEndedAsReply(stopReason: string, steps: readonly Pick<StepRecord, 'agent'>[], tools: boolean): boolean {
+  return stopReason === 'answered' || isReplyOnlyRun(steps) || (!tools && QUIET_AGENT_STOPS.has(stopReason));
+}
+
+/** The tools a look-up may call and still be a reply: they read, they plan, they run nothing and change nothing. */
+const LOOKUP_TOOLS: ReadonlySet<string> = new Set(['read_file', 'grep', 'glob', 'todo_write', 'invalid']);
+
+/**
+ * AGENT-LOOP-DESIGN §9.2 / §A1: an event that turns the agent run's chrome on — the first call that runs a command (any
+ * `bash`, a read-only one included) or changes a file, or a proposal / command start of such a step. Until one arrives
+ * the run is a reply (§A1, §A5), look-ups included: the TUI keeps the chat chrome, `--plain` holds the run's header
+ * rows back, and Esc / Ctrl-C stop the reply.
  */
 export function isAgentToolActivity(e: EngineEvent): boolean {
   switch (e.type) {
     case 'tool:call':
-    case 'tool:result':
-      return true;
+      return !e.readOnly || !LOOKUP_TOOLS.has(e.name);
     // the finish step of a reply executes its `done` too (stage execute → `exec:start` with a done action): not a command
     case 'exec:start':
       return e.action.kind !== 'done';
+    // an observe step's proposal is a `read` (its calls already said what they were)
     case 'proposal':
-      return e.proposal.action.kind !== 'done';
+      return e.proposal.action.kind !== 'done' && e.proposal.action.kind !== 'read';
     default:
       return false;
   }
@@ -1034,6 +1051,11 @@ export function stepSummaryText(r: StepRecord, costUsd?: { generator: number; je
   if (r.interruptedAt !== undefined) return `interrupted at ${r.interruptedAt.stage} (${r.interruptedAt.reason})`;
   // AGENT-LOOP-DESIGN §9.4: an agent step (it carries `StepRecord.agent`) reads as the tool row it was — no `risk … ok`, no `judge …`
   if (r.agent !== undefined) return agentStepText(r, costUsd);
+  // an agent step whose model turn failed has no summary: it says so (never the legacy `(no proposal) · failed`)
+  if (r.proposer === 'agent' && r.proposal === null) {
+    const cost = costUsd !== undefined ? costUsd.generator + costUsd.jev : 0;
+    return [`model turn failed`, r.error?.code ?? 'error', stepWallText(r.timing.totalMs), ...(cost > 0 ? [stepCostText(cost)] : [])].join(SEP);
+  }
   const parts: string[] = [stepActionText(r)];
   if (r.risk !== null) parts.push(`risk ${p2(r.risk.risk)} ${r.risk.verdict === 'ok' ? 'ok' : `[${r.risk.verdict}]`}`);
   const outcome = stepOutcomeText(r.outcome, r.proposal?.action ?? null);

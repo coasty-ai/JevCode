@@ -160,7 +160,7 @@ import { createHistoryStore as realCreateHistoryStore, type FileHistoryStore } f
 import { dispatchCommand, type CommandAction, type DispatchContext } from '../tui/commands/dispatch.js';
 import { MODE_LEGACY_TEXT } from '../tui/commands/registry.js';
 import { helpLines as paletteHelpLines } from '../tui/commands/palette.js';
-import { actionLabel, formatTranscriptItem, itemsFromEvent, stepCostText, type LineSource } from '../tui/plain.js';
+import { actionLabel, formatTranscriptItem, isAgentToolActivity, itemsFromEvent, stepCostText, type LineSource } from '../tui/plain.js';
 import { plainSupports } from '../tui/plain-composer.js';
 import { blockingRowsFull, peerOpenNotice } from '../tui/blocking/lines.js';
 // TUI-DESIGN-5 §3.2 / §3.3 (R5-3): the ONE `/context` block builder and `/compact`'s four answers — the same
@@ -1909,6 +1909,9 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
   function onEvent(e: EngineEvent): void {
     const items = itemsFromEvent(e, 0);
     if (items.length > 0) lastItemText = formatTranscriptItem(items[items.length - 1]!);
+    // AGENT-LOOP-DESIGN §A1 / §A5: from the first command or change on, the run is a run (Esc pauses, Esc Esc aborts; the
+    // epilogue applies) — the renderers' one predicate, so a look-up (read-only tools) stays a reply everywhere
+    if (replyPhase && isAgentToolActivity(e)) replyPhase = false;
     switch (e.type) {
       case 'run:start':
         if (current) current.runId = e.runId;
@@ -1983,10 +1986,6 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         break;
       case 'run:end':
         endEvent = e;
-        break;
-      // AGENT-LOOP-DESIGN §A5: from the first tool call on, the run is a run (Esc pauses, Esc Esc aborts; the epilogue applies)
-      case 'tool:call':
-        replyPhase = false;
         break;
       default:
         break;
@@ -3045,7 +3044,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     for (const w of runEndWaiters.splice(0)) w();
     pushSessionSpend();
     // §8.2: run:end after finish()'s final writeState
-    indexLine({ v: 1, t: record.endedAt, kind: 'run:end', sessionId: sid, runId: f.runId, stopReason: result.stopReason, steps: result.steps, costUsd: record.costUsd, wallMs: result.wallMs, changedFiles: record.changedFiles.length, exitCode, resumable: record.resumable, degraded });
+    indexLine({ v: 1, t: record.endedAt, kind: 'run:end', sessionId: sid, runId: f.runId, stopReason: result.stopReason, steps: result.steps, costUsd: record.costUsd, wallMs: result.wallMs, changedFiles: record.changedFiles.length, exitCode, resumable: record.resumable, degraded, ...(record.reply === true ? { reply: true as const } : {}) });
     if (o.mode === 'one-shot') {
       finishSession(exitCode, 'run-end');
       return;
@@ -3066,8 +3065,8 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       return;
     }
     void refold();
-    // §A1 latency: a reply changed nothing and ran nothing, so neither the git state nor the file listing can have moved
-    if (!(f.mode === 'agent' && result.stopReason === 'answered')) {
+    // §A1 latency: a reply (a look-up included) changed nothing and ran nothing, so neither the git state nor the file listing can have moved
+    if (!(f.mode === 'agent' && (result.stopReason === 'answered' || (noToolCall && after !== 'epilogue')))) {
       void reprobeGit(cfg, record);
       if (cfg) candidates = trackCandidates(listCandidatesFn(workspaceRoot, { secretPaths: cfg.secretPaths, redact: cfg.redact }).catch(() => []));
     }
@@ -3080,23 +3079,31 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
   }
 
   /**
-   * AGENT-LOOP-DESIGN §A1 / §A5 (lead amendments): what an agent chat turn's run:end adds in the session.
-   * - Stopped by Esc / Ctrl-C before its first tool call: "reply stopped" — one toast, no `[ui] stopped — human_abort` epilogue,
-   *   no follow-up box; the session stays open and the next message continues the conversation.
-   * - `answered` (a reply: prose, no tool call, `isReplyOnlyRun`): nothing — the streamed prose was the whole answer.
-   * - A transient provider failure before any tool call, on the first attempt: one `[ui]` error row and ONE automatic retry
-   *   (never a fake assistant line); a second failure, or any other stop, gets today's epilogue item.
+   * AGENT-LOOP-DESIGN §A1 / §A5 (lead amendments): what an agent chat turn's run:end adds in the session. `noToolCall`: the run
+   * never ran a command or changed a file (read-only look-ups included — §A1: such a run is a reply).
+   * - Stopped by Esc / Ctrl-C in that phase: "reply stopped" — one toast, no `[ui] stopped — human_abort` epilogue, no
+   *   follow-up box; the session stays open and the next message continues the conversation.
+   * - `answered` (prose, no tool call, `isReplyOnlyRun`), or a look-up that answered after read-only tools: nothing — the
+   *   streamed prose was the whole answer.
+   * - A provider failure in that phase: ONE `[ui]` error row (never a fake assistant line, never the six-row epilogue); a
+   *   transient one on the first attempt retries once automatically. Any other error keeps the epilogue item (it names the
+   *   run, its files and how to report it).
+   * - Any other stop (a task's run) gets today's epilogue item.
    */
   function agentTurnEnded(t: AgentTurnFacts, result: RunResult, noToolCall: boolean, stoppedInReply: boolean): 'quiet' | 'epilogue' | 'retry' {
     if (stoppedInReply) {
       uiToast(REPLY_STOPPED_TOAST);
       return 'quiet';
     }
-    if (result.stopReason === 'answered') return 'quiet';
-    if (result.stopReason === 'error' && noToolCall && t.attempt === 0 && exitAfterRunEnd === null && !exiting && isTransientProviderError(result.error)) {
-      const err = result.error!;
-      uiError(`${err.code}: ${redact(err.message)} — retrying once`);
-      return 'retry';
+    if (result.stopReason === 'answered' || (noToolCall && result.stopReason === 'generator_done')) return 'quiet';
+    if (result.stopReason === 'error' && noToolCall && result.error !== undefined && result.error.code === 'provider_http') {
+      const err = result.error;
+      if (t.attempt === 0 && exitAfterRunEnd === null && !exiting && isTransientProviderError(err)) {
+        uiError(`${err.code}: ${redact(err.message)} — retrying once`);
+        return 'retry';
+      }
+      uiError(`${err.code}: ${redact(err.message)}`);
+      return 'quiet';
     }
     return 'epilogue';
   }

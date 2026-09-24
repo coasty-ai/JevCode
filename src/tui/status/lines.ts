@@ -146,9 +146,10 @@ export interface StatusLineState {
 }
 
 /** TUI-DESIGN-2 §4.8: the three phases between Enter and a reply. */
-export type ThinkingPhase = 'intake' | 'lookup' | 'replying';
+/** `reading`: an agent reply's read-only look-up (AGENT-LOOP-DESIGN §A1 — still a reply, so the chat phase names it) */
+export type ThinkingPhase = 'intake' | 'lookup' | 'replying' | 'reading';
 /** TUI-DESIGN-2 §4.8 / §12 "Status": the left word per chat phase. */
-export const THINKING_WORDS: Readonly<Record<ThinkingPhase, string>> = { intake: 'thinking', lookup: 'looking', replying: 'replying' };
+export const THINKING_WORDS: Readonly<Record<ThinkingPhase, string>> = { intake: 'thinking', lookup: 'looking', replying: 'replying', reading: 'reading' };
 
 /** TUI-DESIGN-3 §1.1 (D-N): the badge word is whatever `MODE_BADGE_WORD` says — a string, never an enumeration of modes here. */
 export type ModeBadge = string;

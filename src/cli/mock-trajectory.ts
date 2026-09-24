@@ -200,6 +200,14 @@ const MOCK_AGENT_GREETING_RE = /^\s*(hi|hello|hey|yo|thanks?|thank you|bye|ok(ay
 /** a question by its opener (`who made you` has no `?`) */
 const MOCK_AGENT_QUESTION_RE = /^\s*(?:who|whom|whose|what|which|why|how|when|where|can|could|is|are|am|was|were|do|does|did|should|would|will)\b/i;
 
+/** a question about one named file (`what does src/a.js do?`): the mock reads it, then answers — a look-up, not a task */
+const MOCK_AGENT_LOOKUP_RE = /^\s*what does ([\w./-]+\.\w+) (?:do|say|contain)\b[\s?!.]*$/i;
+
+/** the file a look-up question names, or null (`isMockConversational` is true for it too: it is answered, not acted on) */
+export function mockLookupPath(text: string): string | null {
+  return MOCK_AGENT_LOOKUP_RE.exec(text)?.[1] ?? null;
+}
+
 /** true when the mock answers `text` with one prose-only turn (a reply); false when it runs the task trajectory */
 export function isMockConversational(text: string): boolean {
   const t = text.trim();
@@ -283,6 +291,15 @@ export function mockAgentReplyTurn(latencyMs: number = mockStepMs(process.env), 
   return { ...prose(MOCK_CHAT_REPLY, latencyMs, stream), usage: MOCK_TURN_USAGE, stopReason: 'end_turn' };
 }
 
+/** A look-up (`what does README.md say?`): one `read_file` of the named file, then the prose answer — no change, no command. */
+export function mockAgentLookupTurns(path: string, latencyMs: number = mockStepMs(process.env)): MockTurn[] {
+  const lat = latencyMs > 0 ? { latencyMs } : {};
+  return [
+    { toolCalls: [call(1, 0, 'read_file', { path })], usage: MOCK_TURN_USAGE, stopReason: 'tool_use', ...lat },
+    { text: `${path} is a short file; it holds what its name says (mock look-up answer).`, usage: MOCK_TURN_USAGE, stopReason: 'end_turn', ...lat },
+  ];
+}
+
 /**
  * The `--mock` provider's turns under `--mode agent` (function form, `MockProviderOptions.turns`). One provider is built per run
  * (`buildProvider`), so the closure's cursor is the run's: the first tool-offering request picks the trajectory from the task
@@ -295,7 +312,11 @@ export function mockAgentTurns(stream?: MockTurn, latencyMs: number = mockStepMs
   let i = 0;
   return (req: GenerateRequest): MockTurn => {
     if (req.tools === undefined || req.tools.length === 0) return { text: MOCK_CHAT_REPLY, usage: MOCK_TURN_USAGE, stopReason: 'end_turn' };
-    plan ??= isMockConversational(mockTaskText(req)) ? [mockAgentReplyTurn(latencyMs, stream)] : mockAgentTaskTurns(latencyMs, stream);
+    if (plan === null) {
+      const task = mockTaskText(req);
+      const lookup = mockLookupPath(task);
+      plan = lookup !== null ? mockAgentLookupTurns(lookup, latencyMs) : isMockConversational(task) ? [mockAgentReplyTurn(latencyMs, stream)] : mockAgentTaskTurns(latencyMs, stream);
+    }
     const turn = plan[i] ?? plan[plan.length - 1]!;
     i += 1;
     return turn;

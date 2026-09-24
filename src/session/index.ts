@@ -34,7 +34,9 @@ export const INDEX_FILE = 'index.jsonl';
  */
 export type IndexLine =
   | { v: 1; t: string; kind: 'run:start'; sessionId: string; runId: string; parentRunId: string | null; workspace: string; task60: string; mode: EngineMode; source: RunSource; branch: string | null; resumeOf: string | null; parentSessionId?: string | null }
-  | { v: 1; t: string; kind: 'run:end'; sessionId: string; runId: string; stopReason: StopReason; steps: number; costUsd: { generator: number; jev: number }; wallMs: number; changedFiles: number; exitCode: number; resumable: boolean; degraded: boolean }
+  // `reply` (additive, absent = false): the session saw an agent turn that never ran a command or changed a file — a look-up that
+  // read files stops `generator_done` with steps, so the fold cannot tell it from a task by the counts (AGENT-LOOP-DESIGN §A1)
+  | { v: 1; t: string; kind: 'run:end'; sessionId: string; runId: string; stopReason: StopReason; steps: number; costUsd: { generator: number; jev: number }; wallMs: number; changedFiles: number; exitCode: number; resumable: boolean; degraded: boolean; reply?: true }
   | { v: 1; t: string; kind: 'rename'; sessionId: string; title60: string }
   | { v: 1; t: string; kind: 'steer'; sessionId: string; runId: string; step: number; text60: string }
   | { v: 1; t: string; kind: 'undo'; sessionId: string; runId: string; step: number; by: 'undo' | 'rewind'; files: number; skipped: number }
@@ -329,6 +331,7 @@ function parseIndexBody(o: Readonly<Record<string, unknown>>, kind: string, t: s
         exitCode: num(o['exitCode'], 0),
         resumable: o['resumable'] === true,
         degraded: o['degraded'] === true,
+        ...(o['reply'] === true ? { reply: true as const } : {}),
       };
     }
     case 'rename':
@@ -436,7 +439,7 @@ interface SessionFold {
    * `task60` / `mode` = the run's own `run:start` text and mode, null until one is seen (a torn index can fold a `run:end` first);
    * `changedFiles` = its `run:end` count, null until one is seen (AGENT-LOOP-DESIGN §A5's reply rule reads all three)
    */
-  runs: Map<string, { row: FoldedRunRow; startedMs: number; task60: string | null; mode: EngineMode | null; changedFiles: number | null }>;
+  runs: Map<string, { row: FoldedRunRow; startedMs: number; task60: string | null; mode: EngineMode | null; changedFiles: number | null; replied?: boolean }>;
   lastUsedMs: number;
   createdAtMs: number;
   renamed: boolean;
@@ -540,6 +543,7 @@ export function foldIndex(lines: readonly string[]): { sessions: Map<string, Ses
         r.row.resumable = line.resumable;
         r.row.live = false;
         r.changedFiles = line.changedFiles;
+        r.replied = line.reply === true;
         break;
       }
       case 'rename':
@@ -580,7 +584,7 @@ export function foldIndex(lines: readonly string[]): { sessions: Map<string, Ses
     const runs = [...f.runs.values()].sort((a, b) => a.startedMs - b.startedMs).map((x) => x.row);
     f.row.runs = runs;
     // AGENT-LOOP-DESIGN §A5: flag the agent runs that were replies (a legacy-mode run never is), so the picker reads it off the row
-    for (const x of f.runs.values()) if (foldedAsReply(x.mode, x.row, x.changedFiles)) x.row.reply = true;
+    for (const x of f.runs.values()) if (foldedAsReply(x.mode, x.row, x.changedFiles, x.replied === true)) x.row.reply = true;
     // the first non-empty task60 in index order among the runs that were not replies (AGENT-LOOP-DESIGN §A5); a rename wins the title
     f.row.task60 = sessionTask60(f.runs.values());
     if (!f.renamed) f.row.title = f.row.task60;

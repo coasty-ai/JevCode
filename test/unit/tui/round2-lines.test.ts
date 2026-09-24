@@ -61,7 +61,8 @@ describe('the mode badge (TUI-DESIGN-2 §1.5, §12 "Console")', () => {
 
 describe('the conversational left words (TUI-DESIGN-2 §4.8, §12 "Status")', () => {
   it('⠹ thinking · ⠹ looking · ⠹ replying while idle; • thinking under reduced motion', () => {
-    expect(THINKING_WORDS).toEqual({ intake: 'thinking', lookup: 'looking', replying: 'replying' });
+    // AGENT-LOOP-DESIGN §A1: an agent reply's read-only look-up names its reads
+    expect(THINKING_WORDS).toEqual({ intake: 'thinking', lookup: 'looking', replying: 'replying', reading: 'reading' });
     expect(leftZoneWord(base({ thinking: 'intake' }), { spinnerFrame: 2 })).toBe(`${SPIN2} thinking`);
     expect(leftZoneWord(base({ thinking: 'lookup' }), { spinnerFrame: 2 })).toBe(`${SPIN2} looking`);
     expect(leftZoneWord(base({ thinking: 'replying' }), { spinnerFrame: 2 })).toBe(`${SPIN2} replying`);

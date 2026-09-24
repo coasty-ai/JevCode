@@ -168,7 +168,7 @@ describe('the agent reply block: prose streams in place and commits with zero ju
     expect(tail.match(/word1 /g)?.length).toBe(1);
   });
 
-  it('§A5: while the run is still a reply the console keeps the chat chrome (`(thinking…)`, `thinking` → `replying`, `step 0/–`); the first tool call brings the run chrome (steer placeholder, activity word, tool row)', async () => {
+  it('§A5: while the run is still a reply the console keeps the chat chrome (`(thinking…)`, `thinking` → `replying` → `reading` for a look-up, `step 0/–`); the first change brings the run chrome (steer placeholder, activity word, tool row)', async () => {
     const m = mount(30, 100);
     await tick(60);
     youBubble(m, 'fix the test');
@@ -184,11 +184,17 @@ describe('the agent reply block: prose streams in place and commits with zero ju
       { type: 'assistant:text', step: 1, turn: 1, attempt: 1, text: "I'll read the parser first.", final: true },
       { type: 'tool:call', step: 1, turn: 1, id: 'c1', name: 'read_file', summary: 'read_file calc/core.py', readOnly: true },
     ]);
+    // §A1: a read-only look-up is still a reply — the chat chrome stays, the row names the reads
     text = rowsOf(m.stdout.lastFrame()).join('\n');
-    expect(text).toContain('Type to steer the next step');
-    expect(text).toMatch(/│ \S{1,3} reading/);
+    expect(text).not.toContain('Type to steer the next step');
+    expect(text).toMatch(/│ \S{1,3} reading\s+step 0\/–/);
     // the live region names the call in flight — never a counter
     expect(text).toContain('Read calc/core.py…');
+    expect(m.state()?.agent?.tools).toBe(false);
+    await feed(m, [{ type: 'tool:call', step: 2, turn: 2, id: 'c2', name: 'edit_file', summary: 'edit_file calc/core.py', readOnly: false }]);
+    text = rowsOf(m.stdout.lastFrame()).join('\n');
+    expect(text).toContain('Type to steer the next step');
+    expect(text).toMatch(/│ \S{1,3} editing/);
     expect(m.state()?.agent?.tools).toBe(true);
   });
 
@@ -229,7 +235,7 @@ describe('the agent reply block: prose streams in place and commits with zero ju
     // a third run: after its first tool call Esc pauses (the run semantics)
     bus.emit({ type: 'run:end', result: agentRunResult('human_abort', 0), exitCode: 130 });
     for (const e of agentOpening('third')) bus.emit(e);
-    bus.emit({ type: 'tool:call', step: 1, turn: 1, id: 'c1', name: 'read_file', summary: 'read_file a.ts', readOnly: true });
+    bus.emit({ type: 'tool:call', step: 1, turn: 1, id: 'c1', name: 'edit_file', summary: 'edit_file a.ts', readOnly: false });
     await tick(100);
     clockMs += 5_000;
     stdin.write('\x1b');

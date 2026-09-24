@@ -87,7 +87,10 @@ const epilogues = (h: Harness): string[] => h.renderer.notes.filter((n) => n.tex
 const toasts = (h: Harness): string[] => h.renderer.dispatched.filter((a) => a.type === 'toast').map((a) => (a as { text: string }).text);
 const submitOpts = (h: Harness): { kind: 'prompt' | 'follow-up'; secretSpans: string[]; pinnedFiles: string[] } => ({ kind: h.host.ranBefore() ? 'follow-up' : 'prompt', secretSpans: [], pinnedFiles: [] });
 /** an agent turn that made one tool call (a task run) */
-const toolCall = (id: string): EngineEvent => ({ type: 'tool:call', step: 1, turn: 1, id, name: 'read_file', summary: 'read_file README.md', readOnly: true });
+/** a call that changes the workspace: from it on the run is a run (§A1) */
+const toolCall = (id: string): EngineEvent => ({ type: 'tool:call', step: 1, turn: 1, id, name: 'edit_file', summary: 'edit_file src/a.py', readOnly: false });
+/** a read-only look-up call: the run is still a reply (§A1: no workspace change, no command) */
+const readCall = (id: string): EngineEvent => ({ type: 'tool:call', step: 1, turn: 1, id, name: 'read_file', summary: 'read_file README.md', readOnly: true });
 /** the script of an agent session: a greeting / question is a reply (`answered`), anything else a task with one tool call */
 const agentScript = (opts: EngineOptions): RunScript => (/^(hi|hello|thanks|who|what)\b/i.test(opts.task) ? { stop: 'answered', steps: 1, cost: { generator: 0.001, jev: 0 } } : { events: [toolCall('c1')], stop: 'complete', steps: 4, cost: { generator: 0.02, jev: 0 } });
 const PROVIDER_503: SerializedError = { name: 'ProviderHttpError', code: 'provider_http', message: 'openrouter HTTP 503: upstream overloaded', exitCode: 5 };
@@ -178,7 +181,8 @@ describe('§A1: every chat message becomes one agent run', () => {
     expect(epilogues(h)).toEqual([]);
   });
 
-  it('a second transient failure, or a non-transient one, is not retried: the epilogue item is the [ui] error row', async () => {
+  it('a second transient failure, or a non-transient one, is not retried: ONE `[ui]` error row each, never the six-row epilogue (§A1)', async () => {
+    const uiErrors = (x: Harness): string[] => x.renderer.notes.filter((n) => n.label === '[ui]' && n.level === 'error').map((n) => n.text);
     const h = await build({ ...AGENT, script: () => ({ stop: 'error', error: PROVIDER_503, steps: 0 }) });
     void h.controller.run();
     await h.ready();
@@ -186,14 +190,55 @@ describe('§A1: every chat message becomes one agent run', () => {
     await waitFor(() => h.factory.calls.length === 2 && h.host.phase() === 'none', 4000, 'the retry');
     await tick(20);
     expect(h.factory.calls).toHaveLength(2);
-    expect(epilogues(h)).toEqual(['stopped — provider_http: openrouter HTTP 503: upstream overloaded (exit 5)']);
-    const h2 = await build({ ...AGENT, script: () => ({ stop: 'error', error: { name: 'ProviderHttpError', code: 'provider_http', message: 'openrouter HTTP 401: invalid key', exitCode: 2 }, steps: 0 }) });
+    expect(uiErrors(h)).toEqual(['error: provider_http: openrouter HTTP 503: upstream overloaded — retrying once', 'error: provider_http: openrouter HTTP 503: upstream overloaded']);
+    expect(epilogues(h)).toEqual([]);
+    // the S6 review: `--provider openai` with the OpenRouter id answered every message with a 404 — one row, no retry, no epilogue
+    const h2 = await build({ ...AGENT, script: () => ({ stop: 'error', error: { name: 'ProviderHttpError', code: 'provider_http', message: "openai HTTP 404: The model 'z-ai/glm-5.3-flash' does not exist", exitCode: 5 }, steps: 1 }) });
     void h2.controller.run();
     await h2.ready();
     await h2.submit('hi');
     await tick(20);
     expect(h2.factory.calls).toHaveLength(1);
-    expect(epilogues(h2)).toEqual(['stopped — provider_http: openrouter HTTP 401: invalid key (exit 2)']);
+    expect(uiErrors(h2)).toEqual(["error: provider_http: openai HTTP 404: The model 'z-ai/glm-5.3-flash' does not exist"]);
+    expect(epilogues(h2)).toEqual([]);
+    expect(bubbles(h2, '[jevcode]')).toEqual([]);
+    // after a change the run is a task: its error keeps the epilogue item
+    const h3 = await build({ ...AGENT, script: () => ({ events: [toolCall('c1')], stop: 'error', error: PROVIDER_503, steps: 2 }) });
+    void h3.controller.run();
+    await h3.ready();
+    await h3.submit('fix the failing test');
+    await tick(20);
+    expect(h3.factory.calls).toHaveLength(1);
+    expect(epilogues(h3)).toEqual(['stopped — provider_http: openrouter HTTP 503: upstream overloaded (exit 5)']);
+  });
+
+  it('a look-up (read-only tools, no command, no change) is a reply: no epilogue, never the title, and Esc still stops it as a reply (§A1)', async () => {
+    const h = await build({ ...AGENT, script: (o) => (o.task.startsWith('what does') ? { events: [readCall('r1')], stop: 'generator_done', steps: 2 } : agentScript(o)) });
+    void h.controller.run();
+    await h.ready();
+    await h.submit('what does src/strings.js do?');
+    await tick(20);
+    expect(epilogues(h)).toEqual([]);
+    expect(h.controller.view.runs[0]?.stopReason).toBe('generator_done');
+    expect((await readIndex(h.indexPath)).sessions[0]?.title).toBe('');
+    // the task after it names the session
+    await h.submit('fix the failing test');
+    await tick(20);
+    expect((await readIndex(h.indexPath)).sessions[0]?.title).toBe('fix the failing test');
+    // Esc during a look-up's reads stops the reply (an abort, never a pause)
+    const h2 = await build({ ...AGENT, script: () => ({ hold: true, events: [readCall('r1')], stop: 'generator_done' }) });
+    void h2.controller.run();
+    await h2.ready();
+    const live = h2.factory.nextLive();
+    await h2.host.submit('what does README.md say?', submitOpts(h2));
+    const eng = await live;
+    h2.host.pause();
+    await h2.host.awaitRunEnd();
+    await tick(0);
+    expect(eng.aborts).toEqual([{ reason: 'human_abort' }]);
+    expect(eng.pausing).toBe(false);
+    expect(toasts(h2)).toEqual([REPLY_STOPPED_TOAST]);
+    expect(epilogues(h2)).toEqual([]);
   });
 
   it('Esc / Ctrl-C mid-reply (before any tool call) is "reply stopped": abort not pause, a toast, no epilogue, the session keeps going', async () => {

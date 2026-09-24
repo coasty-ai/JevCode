@@ -19,8 +19,12 @@ export function isReplyRunRow(r: RunRow): boolean {
   return r.stopReason === 'answered' || ('reply' in r && r.reply === true);
 }
 
-/** the fold's rule for `FoldedRunRow.reply`: an ended agent-mode run that stopped `answered`, or with no step and no changed file */
-export function foldedAsReply(mode: string | null, row: RunRow, changedFiles: number | null): boolean {
+/**
+ * the fold's rule for `FoldedRunRow.reply`: an ended agent-mode run that stopped `answered`, that its session flagged as a reply on
+ * its `run:end` line (`replied`: a look-up — read-only tools, no command, no change — or a failed or stopped reply), or with no
+ * step and no changed file
+ */
+export function foldedAsReply(mode: string | null, row: RunRow, changedFiles: number | null, replied = false): boolean {
   if (mode !== 'agent' || row.endedAt === null) return false;
-  return row.stopReason === 'answered' || (row.steps === 0 && (changedFiles ?? 0) === 0);
+  return row.stopReason === 'answered' || (replied && (changedFiles ?? 0) === 0) || (row.steps === 0 && (changedFiles ?? 0) === 0);
 }

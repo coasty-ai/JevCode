@@ -132,35 +132,77 @@ describe('agent reducer: a reply is a reply (§A1, §A5)', () => {
     expect(shown(s)).toEqual(['[jevcode] Roses are']);
   });
 
-  it('the first tool call turns the run chrome on and lands the held rows before the tool rows; the finish row stays out of the compact view', () => {
+  const readStep: EngineEvent[] = [
+    { type: 'tool:call', step: 1, turn: 1, id: 'c1', name: 'read_file', summary: 'read_file calc/core.py', readOnly: true },
+    { type: 'tool:result', step: 1, turn: 1, id: 'c1', name: 'read_file', ok: true, summary: 'read_file calc/core.py (lines 1-80)', ms: 3, chars: 900, readOnly: true },
+    { type: 'proposal', step: 1, proposal: { goal: 'read_file calc/core.py', action: { kind: 'read', paths: ['calc/core.py'] }, plan: { done: [], remaining: [], openProblems: [] }, rawText: '' } },
+    { type: 'outcome', step: 1, outcome: { status: 'executed', summary: 'read', changedFiles: [] } },
+    { type: 'step:end', record: agentStep(1, { kind: 'observe', calls: [{ id: 'c1', name: 'read_file', summary: 'read_file calc/core.py (lines 1-80)', ok: true, ms: 3 }], action: { kind: 'read', paths: ['calc/core.py'] }, outcome: { status: 'executed', summary: 'read', changedFiles: [] } }), costUsd: { generator: 0.001, jev: 0 } },
+  ];
+
+  it('the first command or change turns the run chrome on and lands the held rows (the look-up before it included) in order; the finish row stays out of the compact view', () => {
     const events: EngineEvent[] = [
       ...agentOpening('fix it'),
       { type: 'notice', step: null, kind: 'instructions', level: 'info', text: 'instructions: AGENTS.md (120 B)' },
       ...shapedTurn(1, 1, ["I'll read the parser.\n"]),
-      { type: 'tool:call', step: 1, turn: 1, id: 'c1', name: 'read_file', summary: 'read_file calc/core.py', readOnly: true },
-      { type: 'tool:result', step: 1, turn: 1, id: 'c1', name: 'read_file', ok: true, summary: 'read_file calc/core.py (lines 1-80)', ms: 3, chars: 900, readOnly: true },
-      { type: 'proposal', step: 1, proposal: { goal: 'read_file calc/core.py', action: { kind: 'read', paths: ['calc/core.py'] }, plan: { done: [], remaining: [], openProblems: [] }, rawText: '' } },
-      { type: 'outcome', step: 1, outcome: { status: 'executed', summary: 'read', changedFiles: [] } },
-      { type: 'step:end', record: agentStep(1, { kind: 'observe', calls: [{ id: 'c1', name: 'read_file', summary: 'read_file calc/core.py (lines 1-80)', ok: true, ms: 3 }], action: { kind: 'read', paths: ['calc/core.py'] }, outcome: { status: 'executed', summary: 'read', changedFiles: [] } }), costUsd: { generator: 0.001, jev: 0 } },
+      ...readStep,
       { type: 'step:start', step: 2, startedAt: '' },
       { type: 'generator:start', step: 2, attempt: 2 },
-      ...shapedTurn(2, 2, ['Fixed the parser.']),
-      ...finish(2),
-      { type: 'run:end', result: agentRunResult('generator_done', 2), exitCode: 0 },
+      { type: 'tool:call', step: 2, turn: 2, id: 'c2', name: 'edit_file', summary: 'edit_file calc/core.py', readOnly: false },
+      { type: 'step:end', record: agentStep(2, { kind: 'act', calls: [{ id: 'c2', name: 'edit_file', summary: 'edit_file calc/core.py', ok: true, ms: 3 }], action: { kind: 'edit', path: 'calc/core.py', old: 'a', new: 'b' }, outcome: { status: 'executed', summary: 'edited', changedFiles: ['calc/core.py'] } }), costUsd: { generator: 0.001, jev: 0 } },
+      { type: 'step:start', step: 3, startedAt: '' },
+      { type: 'generator:start', step: 3, attempt: 3 },
+      ...shapedTurn(3, 3, ['Fixed the parser.']),
+      ...finish(3),
+      { type: 'run:end', result: agentRunResult('generator_done', 3), exitCode: 0 },
     ];
+    // until the edit the run is still a reply: the read row is held
+    const beforeEdit = drive(events.slice(0, events.findIndex((e) => e.type === 'tool:call' && e.name === 'edit_file')));
+    expect(beforeEdit.agent?.tools).toBe(false);
+    expect(agentReplyPhase(beforeEdit)).toBe(true);
     const s = drive(events);
     const rows = shown(s);
     expect(rows[0]).toBe("[jevcode] I'll read the parser.");
     // the held `instructions:` row lands when the chrome turns on (after the first prose, before the tool rows)
     expect(rows[1]).toMatch(/^\[run\] instructions: AGENTS\.md \(120 B\)$/);
     expect(rows[2]).toMatch(/^\[step 1\] Read calc\/core\.py/);
+    expect(rows[3]).toMatch(/^\[step 2\] Edit calc\/core\.py/);
     expect(rows).toContain('[jevcode] Fixed the parser.');
-    expect(rows.some((r) => r.startsWith('[step 2] done'))).toBe(false);
-    expect(rows.at(-1)).toMatch(/^\[run\] finished · generator_done · 2 steps/);
+    expect(rows.some((r) => r.startsWith('[step 3] done'))).toBe(false);
+    expect(rows.at(-1)).toMatch(/^\[run\] finished · generator_done · 3 steps/);
     // the read-only tool row is a full-view row (hidden in compact)
     expect(rows.some((r) => r.includes('tool · read_file'))).toBe(false);
     expect(s.items.some((i) => i.kind === 'tool')).toBe(true);
-    expect(s.agent?.toolCalls).toBe(1);
+    expect(s.agent?.toolCalls).toBe(2);
+  });
+
+  it('a look-up (read-only tools, no command, no change) is a reply: only the prose shows, no [run] finished, and the idle rows read like chat (§A1)', () => {
+    const s = drive([
+      ...agentOpening('what does calc/core.py do?'),
+      ...shapedTurn(1, 1, ["I'll read the parser.\n"]),
+      ...readStep,
+      { type: 'generator:start', step: 2, attempt: 2 },
+      ...shapedTurn(2, 2, ['It parses expressions.']),
+      ...finish(2),
+      { type: 'run:end', result: agentRunResult('generator_done', 2), exitCode: 0 },
+    ]);
+    expect(shown(s)).toEqual(["[jevcode] I'll read the parser.", '[jevcode] It parses expressions.']);
+    expect(agentLastRunWasReply(s)).toBe(true);
+    expect(s.repliesEnded).toBe(1);
+    // a read-only COMMAND is a command: it turns the chrome on
+    const bash = drive([...agentOpening('what is in here?'), { type: 'tool:call', step: 1, turn: 1, id: 'b', name: 'bash', summary: 'bash ls', readOnly: true }]);
+    expect(bash.agent?.tools).toBe(true);
+  });
+
+  it('a reply whose model turn failed ends like a reply: no held rows, no [run] finished (the session\'s one [ui] row says it)', () => {
+    const s = drive([
+      ...agentOpening('hi'),
+      { type: 'error', step: 1, error: { name: 'ProviderHttpError', code: 'provider_http', message: 'openai HTTP 404', exitCode: 5 }, fatal: false },
+      { type: 'outcome', step: 1, outcome: { status: 'failed', error: 'propose: provider_http' } },
+      { type: 'run:end', result: agentRunResult('error', 1), exitCode: 5 },
+    ]);
+    expect(shown(s)).toEqual([]);
+    expect(agentLastRunWasReply(s)).toBe(true);
   });
 });
 
@@ -255,7 +297,7 @@ describe('the agent view is the view of a run in flight (review: stale `state.ag
     const aborting = uiReducer(live, { type: 'run:aborting' });
     expect(agentReplyPhase(aborting)).toBe(true);
     // a run that used a tool is not a reply, live or ended
-    const tool = drive([...agentOpening('fix'), { type: 'tool:call', step: 1, turn: 1, id: 'c', name: 'read_file', summary: 'read_file a.ts', readOnly: true }]);
+    const tool = drive([...agentOpening('fix'), { type: 'tool:call', step: 1, turn: 1, id: 'c', name: 'write_file', summary: 'write_file a.ts', readOnly: false }]);
     expect(agentReplyPhase(uiReducer(tool, { type: 'run:aborting' }))).toBe(false);
     const toolEnded = drive([{ type: 'run:end', result: agentRunResult('human_abort', 1), exitCode: 130 }], tool);
     expect(agentLastRunWasReply(toolEnded)).toBe(false);

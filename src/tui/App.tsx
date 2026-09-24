@@ -3398,8 +3398,9 @@ export function App(p: AppProps): React.JSX.Element {
   // `replying`; no `step 1/N` (the reply is not a run to the eye), exactly the chat phase's row. After it ended as a reply
   // the row is the chat's idle row (`idle · step 0/–`), not a run's `idle exit 0 … step 1/N` (a one-shot run keeps its
   // `done <reason>` final row: it is the process's last word)
+  // (a look-up's read-only calls keep the reply's row and name themselves: `reading`, with the globe)
   const statusSource: UiState = replyPhase
-    ? { ...state, run: 'starting', thinking: state.agent?.prose === true ? 'replying' : 'intake', status: null, ready: null }
+    ? { ...state, run: 'starting', thinking: state.agent?.activity === 'reading' ? 'reading' : state.agent?.prose === true ? 'replying' : 'intake', status: null, ready: null }
     : mode !== 'one-shot' && agentLastRunWasReply(state)
       ? { ...state, done: null, doneExitCode: null, status: null, ready: null }
       : state;

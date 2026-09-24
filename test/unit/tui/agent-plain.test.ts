@@ -72,7 +72,23 @@ describe('--plain in agent mode', () => {
     expect(lines).toEqual(['[you] hi there', '[jevcode] Half a sen', `[jevcode] ${AGENT_REPLY_RESTARTED}`, '[jevcode] Hello again.']);
   });
 
-  it('a tool run: the held run rows land at the first tool call, then the step rows and [run] finished; a failed turn is never held back', async () => {
+  it('a look-up (read-only tools, no command, no change) prints only its prose: the read rows, the header and [run] finished are dropped (§A1)', async () => {
+    const lines = await plainRun([
+      ...agentOpening('what does calc/core.py do?'),
+      ...shapedTurn(1, 1, ["I'll look.\n"]),
+      { type: 'tool:call', step: 1, turn: 1, id: 'c1', name: 'read_file', summary: 'read_file calc/core.py', readOnly: true },
+      { type: 'tool:result', step: 1, turn: 1, id: 'c1', name: 'read_file', ok: true, summary: 'read_file calc/core.py (lines 1-80)', ms: 3, chars: 900, readOnly: true },
+      { type: 'proposal', step: 1, proposal: { goal: 'read_file calc/core.py', action: { kind: 'read', paths: ['calc/core.py'] }, plan: { done: [], remaining: [], openProblems: [] }, rawText: '' } },
+      { type: 'step:end', record: agentStep(1, { kind: 'observe', calls: [{ id: 'c1', name: 'read_file', summary: 'read_file calc/core.py (lines 1-80)', ok: true, ms: 3 }], action: { kind: 'read', paths: ['calc/core.py'] }, outcome: { status: 'executed', summary: 'read', changedFiles: [] } }), costUsd: { generator: 0.001, jev: 0 } },
+      { type: 'generator:start', step: 2, attempt: 2 },
+      ...shapedTurn(2, 2, ['It parses expressions.']),
+      ...finish(2),
+      { type: 'run:end', result: agentRunResult('generator_done', 2), exitCode: 0 },
+    ]);
+    expect(lines).toEqual(['[you] hi there', "[jevcode] I'll look.", '[jevcode] It parses expressions.']);
+  });
+
+  it('a task: the held rows (header, instructions, the look-up before it) land in order at the first change, then the step rows and [run] finished', async () => {
     const lines = await plainRun([
       ...agentOpening('fix it'),
       { type: 'notice', step: null, kind: 'instructions', level: 'info', text: 'instructions: AGENTS.md (120 B)' },
@@ -81,9 +97,12 @@ describe('--plain in agent mode', () => {
       { type: 'tool:result', step: 1, turn: 1, id: 'c1', name: 'read_file', ok: true, summary: 'read_file calc/core.py (lines 1-80)', ms: 3, chars: 900, readOnly: true },
       { type: 'step:end', record: agentStep(1, { kind: 'observe', calls: [{ id: 'c1', name: 'read_file', summary: 'read_file calc/core.py (lines 1-80)', ok: true, ms: 3 }], action: { kind: 'read', paths: ['calc/core.py'] }, outcome: { status: 'executed', summary: 'read', changedFiles: [] } }), costUsd: { generator: 0.001, jev: 0 } },
       { type: 'generator:start', step: 2, attempt: 2 },
-      ...shapedTurn(2, 2, ['Done.']),
-      ...finish(2),
-      { type: 'run:end', result: agentRunResult('generator_done', 2), exitCode: 0 },
+      { type: 'tool:call', step: 2, turn: 2, id: 'c2', name: 'edit_file', summary: 'edit_file calc/core.py', readOnly: false },
+      { type: 'step:end', record: agentStep(2, { kind: 'act', calls: [{ id: 'c2', name: 'edit_file', summary: 'edit_file calc/core.py', ok: true, ms: 3 }], action: { kind: 'edit', path: 'calc/core.py', old: 'a', new: 'b' }, outcome: { status: 'executed', summary: 'edited', changedFiles: ['calc/core.py'] } }), costUsd: { generator: 0.001, jev: 0 } },
+      { type: 'generator:start', step: 3, attempt: 3 },
+      ...shapedTurn(3, 3, ['Done.']),
+      ...finish(3),
+      { type: 'run:end', result: agentRunResult('generator_done', 3), exitCode: 0 },
     ]);
     expect(lines[0]).toBe('[you] hi there');
     expect(lines[1]).toBe("[jevcode] I'll look.");
@@ -91,18 +110,35 @@ describe('--plain in agent mode', () => {
     expect(lines[3]).toBe('[run] instructions: AGENTS.md (120 B)');
     expect(lines[4]).toBe('[step 1] tool · read_file calc/core.py (lines 1-80) · 3 ms');
     expect(lines[5]).toMatch(/^\[step 1\] Read calc\/core\.py · 1\.2s · \$0\.001$/);
+    expect(lines[6]).toMatch(/^\[step 2\] Edit calc\/core\.py/);
     expect(lines).toContain('[jevcode] Done.');
-    expect(lines.at(-1)).toMatch(/^\[run\] finished · generator_done · 2 steps/);
+    expect(lines.at(-1)).toMatch(/^\[run\] finished · generator_done · 3 steps/);
     // §14.3: an agent run that used no Jev names none (`jev $0.000` goes), the generator split stays
     expect(lines.at(-1)).toMatch(/\(generator \$0\.00\d*\)/);
     expect(lines.at(-1)).not.toContain('jev $');
     // the finish step keeps its row in the line sinks (the compact TUI hides it)
-    expect(lines.some((l) => /^\[step 2\] done · /.test(l))).toBe(true);
+    expect(lines.some((l) => /^\[step 3\] done · /.test(l))).toBe(true);
   });
 
-  it('an error before any tool call prints at once (never held)', async () => {
-    const lines = await plainRun([...agentOpening('hi there'), { type: 'error', step: 1, error: { name: 'ProviderHttpError', code: 'provider_http', message: 'HTTP 500', exitCode: 1 }, fatal: false }]);
-    expect(lines).toEqual(['[you] hi there', '[step 1] error provider_http: HTTP 500']);
+  it('a failed model turn of a reply is held and dropped with it: no `propose:` row, no `(no proposal)`, no [run] pair — the session\'s one [ui] row says it (§A1)', async () => {
+    // the step record of a model turn that failed: no agent summary, no proposal
+    const { agent: _summary, ...base } = agentStep(1, { kind: 'finish', action: { kind: 'done', summary: '' }, outcome: { status: 'failed', error: 'propose: provider_http' } });
+    const failedTurn = { ...base, proposal: null, proposer: 'agent' as const, error: { stage: 'propose' as const, code: 'provider_http', message: 'x' } };
+    const failed: EngineEvent[] = [
+      { type: 'error', step: 1, error: { name: 'ProviderHttpError', code: 'provider_http', message: "openai HTTP 404: The model 'x' does not exist", exitCode: 5 }, fatal: false },
+      { type: 'outcome', step: 1, outcome: { status: 'failed', error: 'propose: provider_http' } },
+      { type: 'step:end', record: failedTurn, costUsd: { generator: 0, jev: 0 } },
+    ];
+    const lines = await plainRun([...agentOpening('hi there'), ...failed, { type: 'run:end', result: agentRunResult('error', 1), exitCode: 5 }]);
+    expect(lines).toEqual(['[you] hi there']);
+    // once the run is a task, a failed turn's rows land in order — the step row says the model turn failed, in agent words
+    const task = await plainRun([...agentOpening('fix it'), { type: 'tool:call', step: 1, turn: 1, id: 'c2', name: 'bash', summary: 'bash ls', readOnly: true }, ...failed.map((e) => (e.type === 'step:end' ? { ...e, record: { ...e.record, step: 2 } } : { ...e, step: 2 })), { type: 'run:end', result: agentRunResult('error', 2), exitCode: 5 }]);
+    expect(task).toContain("[step 2] error provider_http: openai HTTP 404: The model 'x' does not exist");
+    expect(task.some((l) => /^\[step 2\] model turn failed · provider_http · /.test(l))).toBe(true);
+    expect(task.join('\n')).not.toMatch(/no proposal|propose: provider_http/);
+    // a fatal error is never held
+    const fatal = await plainRun([...agentOpening('hi there'), { type: 'error', step: 1, error: { name: 'ConfigError', code: 'config', message: 'transcript missing', exitCode: 2 }, fatal: true }]);
+    expect(fatal).toEqual(['[you] hi there', '[step 1] error config: transcript missing (fatal)']);
   });
 });
 
