@@ -4,7 +4,7 @@ All notable changes to `jevcode`. The format follows [Keep a Changelog](https://
 the project uses semantic versioning. `package.json` is the single source of truth for the version and is bumped
 by the release procedure in `docs/RELEASE.md` — the entries below describe the tree at 2026-09-22 (`package.json` reads 0.6.0); nothing has been pushed to the npm registry or the Homebrew tap.
 
-## [0.6.0] — 2026-09-22 (not yet published)
+## [0.6.0] — 2026-09-24
 
 Round 5 of the interactive TUI (`docs/TUI-DESIGN-5.md`, six concurrent slots and one integration pass; the record
 of what landed, with every gate number and every honest gap, is `docs/STATUS.md`, "Round 5"). Five user
