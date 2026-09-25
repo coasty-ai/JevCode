@@ -14,6 +14,7 @@ import { basename } from 'node:path';
 import type { AgentContext, Candidate } from '../../core/types.js';
 import { MAX_LIST_ENTRIES } from '../../workspace/candidates.js';
 import { listSkipped, type SkippedFile, type SkippedListing } from '../../workspace/files.js';
+import { WALK_SKIP_DIRS, isSkippedDirName } from '../../workspace/skip-dirs.js';
 import { shellQuote } from '../../workspace/tests.js';
 import {
   AGENT_FILE_MAX_BYTES,
@@ -26,7 +27,7 @@ import {
 } from '../limits.js';
 import { normaliseWorkdir } from '../repair.js';
 import { oneLine } from './format.js';
-import { errorResult, isBinary, type ToolResult } from './result.js';
+import { errorResult, isBinary, isVariablePath, type ToolResult } from './result.js';
 
 // ---------------------------------------------------------------------------------------
 // Globs
@@ -95,13 +96,18 @@ function under<T extends { path: string }>(items: readonly T[], dir: string | nu
   return items.flatMap((c) => (c.path === dir ? [{ ...c, rel: c.path.slice(c.path.lastIndexOf('/') + 1) }] : c.path.startsWith(`${dir}/`) ? [{ ...c, rel: c.path.slice(dir.length + 1) }] : []));
 }
 
+/** `path: "$TMPDIR"` named no workspace directory and answered a silent `0 matches`: only bash expands variables. */
+export const SEARCH_VARIABLE_PATH_ERROR = `ERROR: grep and glob search workspace paths and do not expand variables such as $TMPDIR; search outside the workspace with bash (e.g. grep -rn 'pattern' "$TMPDIR")`;
+
 /**
  * The workspace-relative directory a `path` argument names. glm-5.3-flash passes the root's own name (`path: "js-fix"` in
  * `…/js-fix`), which matched nothing and answered `0 files` (the S6 review): when no such directory exists, the root's name
- * means the root and `<root>/sub` means `sub` — the rule bash's workdir and read_file already follow.
+ * means the root and `<root>/sub` means `sub` — the rule bash's workdir and read_file already follow. A path a shell would
+ * expand (`$TMPDIR`, `${HOME}/x`) is refused, as the file tools refuse it.
  */
 function searchDir(ctx: AgentContext, path: string | undefined, listed: readonly { path: string }[]): { ok: true; dir: string | null } | { ok: false; error: string } {
   if (path === undefined) return { ok: true, dir: null };
+  if (isVariablePath(path)) return { ok: false, error: SEARCH_VARIABLE_PATH_ERROR };
   const wd = normaliseWorkdir(ctx.workspace.root, path);
   if (!wd.ok) return { ok: false, error: `ERROR: ${path} is outside the workspace` };
   const dir = wd.value;
@@ -256,6 +262,9 @@ function render(a: GrepArgs, lines: readonly GrepLine[], capped: boolean, notes:
   return { text, ok: true, summary: `grep ${JSON.stringify(oneLine(a.pattern, 50))}${a.path !== undefined ? ` in ${a.path}` : ''} (${matches.length} matches)`, hashBasis: text };
 }
 
+/** Said when rg's output filled the cap before a listed file matched: the files it had not reached may hold matches. */
+export const RG_OUTPUT_CAP_LINE = '[rg output reached the output cap before any listed file matched; narrow with path or glob]';
+
 /** Parse `rg --null --line-number` output: `path\0N:text` for a match, `path\0N-text` for context, `--` between groups. */
 function parseRg(stdout: string, allowed: ReadonlySet<string>): GrepLine[] {
   const out: GrepLine[] = [];
@@ -271,18 +280,42 @@ function parseRg(stdout: string, allowed: ReadonlySet<string>): GrepLine[] {
 }
 
 /**
+ * `!<name>/` for every skipped directory (src/workspace/skip-dirs.ts) that no listed file passes through. `--hidden`
+ * would otherwise walk `.venv`, `.tox`, `.next` or `.cache` wherever no .gitignore hides them (any tree outside git):
+ * parseRg drops those lines, but they fill the output cap first — a 200-package `.venv` turned a complete 2-file answer
+ * into a false "results capped" note, and an unlucky walk order into a bare `0 matches`. A skipped name that a tracked
+ * file passes through (a committed `dist/`) stays searchable. The trailing slash limits each glob to directories, so a
+ * script named `build` is still searched.
+ */
+function skippedDirGlobs(allowed: ReadonlySet<string>): string[] {
+  const kept = new Set<string>();
+  for (const p of allowed) {
+    const segs = p.split('/');
+    for (let i = 0; i < segs.length - 1; i += 1) if (isSkippedDirName(segs[i]!)) kept.add(segs[i]!);
+  }
+  const globs: string[] = [];
+  for (const name of WALK_SKIP_DIRS) if (name !== '.git' && !kept.has(name)) globs.push(`!${name}/`);
+  if (![...kept].some((n) => n.endsWith('.egg-info'))) globs.push('!*.egg-info/');
+  return globs;
+}
+
+/** `rg: <path>: <reason> (os error N)`: a file rg could not open (a sandbox read-deny on `.env`, a permission error). */
+const RG_IO_ERROR = /^rg: (.*): [^:]+ \(os error \d+\)\s*$/;
+
+/**
  * ripgrep with the flags that make it answer the same question on every machine: `--no-config` (a user's
- * `RIPGREP_CONFIG_PATH` could add `--smart-case`, colours or a glob), `--hidden` with `.git` excluded (the listing offers
- * `.github/workflows/ci.yml` and `.eslintrc.js`, which rg skips by default) and a 500-column preview of a long line (a
- * minified bundle's one line must not fill the output cap before the real matches arrive).
+ * `RIPGREP_CONFIG_PATH` could add `--smart-case`, colours or a glob), `--hidden` with `.git` and the unlisted skipped
+ * directories excluded (the listing offers `.github/workflows/ci.yml` and `.eslintrc.js`, which rg skips by default) and
+ * a 500-column preview of a long line (a minified bundle's one line must not fill the output cap before the real
+ * matches arrive).
  */
 async function grepWithRg(ctx: AgentContext, a: GrepArgs, dir: string | null, allowed: ReadonlySet<string>, notes: readonly string[]): Promise<ToolResult | null> {
   const argv = ['rg', '--no-config', '--null', '--line-number', '--no-heading', '--color', 'never', '--hidden', '--max-columns', String(LINE_TEXT_MAX), '--max-columns-preview'];
   if (a.case_insensitive === true) argv.push('-i');
   if (a.context !== undefined && a.context > 0) argv.push('-C', String(a.context));
   if (a.glob !== undefined) argv.push('--glob', shellQuote(a.glob));
-  // last, so a broad user glob (`**`) cannot re-include it: in rg the later glob wins
-  argv.push('--glob', shellQuote('!.git'));
+  // last, so a broad user glob (`**`) cannot re-include them: in rg the later glob wins
+  for (const g of ['!.git', ...skippedDirGlobs(allowed)]) argv.push('--glob', shellQuote(g));
   argv.push('-e', shellQuote(a.pattern));
   if (dir !== null) argv.push('--', shellQuote(dir));
   const r = await ctx.sandbox.run(argv.join(' '), { timeoutMs: AGENT_GREP_TIMEOUT_MS, maxOutputBytes: ctx.limits.maxOutputBytes, signal: ctx.signal });
@@ -290,12 +323,26 @@ async function grepWithRg(ctx: AgentContext, a: GrepArgs, dir: string | null, al
     const reason = r.stderr.split('\n').filter((l) => /error/i.test(l)).pop() ?? 'the pattern does not compile';
     return errorResult(`ERROR: invalid regular expression: ${oneLine(ctx.redact(reason), 300)}`, `grep ${JSON.stringify(oneLine(a.pattern, 50))} (invalid regex)`);
   }
-  // any other failure with nothing found (an older rg that does not know a flag, a sandbox refusal) is no answer:
-  // the caller scans with JavaScript instead of reporting `0 matches`
-  if (r.exitCode === 2 && r.stdout.trim() === '') return null;
+  // Exit 2 with nothing found is no answer — an older rg that does not know a flag, a sandbox refusal — and the caller
+  // scans with JavaScript instead of reporting `0 matches`. Unless every stderr line is a file rg could not open: the
+  // macOS profile read-denies `<cwd>/.env`, so with --hidden every zero-match search in a project with a .env exits 2,
+  // and re-scanning the whole tree in JS for an answer rg already gave cost up to 20 s per "is this used anywhere?".
+  const errLines = r.stderr.split('\n').filter((l) => l.trim() !== '');
+  const ioOnly = errLines.length > 0 && errLines.every((l) => RG_IO_ERROR.test(l));
+  if (r.exitCode === 2 && r.stdout.trim() === '' && !ioOnly) return null;
   const lines = parseRg(ctx.redact(r.stdout), allowed);
+  // a LISTED file rg could not open is named: its matches would otherwise be silently absent (unlisted ones, such as a
+  // denied .env, are not candidates and stay unmentioned)
+  const unreadable = errLines.flatMap((l) => {
+    const m = RG_IO_ERROR.exec(l);
+    const path = m?.[1]?.replace(/^\.\//, '');
+    return path !== undefined && allowed.has(path) ? [path] : [];
+  });
+  const unread = unreadable.length > 0 ? [`[rg could not read ${unreadable.length === 1 ? '1 listed file' : `${unreadable.length} listed files`}: ${unreadable.slice(0, LARGE_NAMED).join(', ')}${unreadable.length > LARGE_NAMED ? '…' : ''}]`] : [];
   const stopped = r.killedBy === 'timeout' ? [`[rg stopped after ${GREP_SECONDS} s, so the results are partial; narrow with path or glob]`] : [];
-  return render(a, lines, r.truncated || r.killedBy === 'timeout', [...stopped, ...notes]);
+  // a capped output with no listed match must not read as "absent": the files rg had not reached may hold matches
+  const overflow = r.truncated && r.killedBy !== 'timeout' && !lines.some((l) => l.match) ? [RG_OUTPUT_CAP_LINE] : [];
+  return render(a, lines, r.truncated || r.killedBy === 'timeout', [...stopped, ...overflow, ...unread, ...notes]);
 }
 
 /**

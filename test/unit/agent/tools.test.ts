@@ -7,13 +7,14 @@ import type { AgentContext } from '../../../src/core/types.js';
 import { syntaxCheck } from '../../../src/agent/tools/check.js';
 import { bashStatusLine, renderBash } from '../../../src/agent/tools/format.js';
 import { NOT_UTF8_NOTE, parseAgentOutputRef, runReadFile, type ReadHashes } from '../../../src/agent/tools/read.js';
-import { WALK_CAP_LINE, compileGrepPattern, createRgProbe, globMatches, globToRegExp, runGlob, runGrep } from '../../../src/agent/tools/search.js';
+import { RG_OUTPUT_CAP_LINE, SEARCH_VARIABLE_PATH_ERROR, WALK_CAP_LINE, compileGrepPattern, createRgProbe, globMatches, globToRegExp, runGlob, runGrep } from '../../../src/agent/tools/search.js';
 import { runReadonlyBash } from '../../../src/agent/tools/shell.js';
 import { VARIABLE_PATH_ERROR, rootNameHint } from '../../../src/agent/tools/result.js';
 import { planOf, todoWrite } from '../../../src/agent/tools/todo.js';
 import { AGENT_GREP_PARALLEL_READS } from '../../../src/agent/limits.js';
 import { MAX_CANDIDATE_BYTES } from '../../../src/workspace/candidates.js';
 import { createWorkspace, listSkipped } from '../../../src/workspace/files.js';
+import { WALK_SKIP_DIRS } from '../../../src/workspace/skip-dirs.js';
 import { tempWs, write, type TempWs } from '../workspace/helpers.js';
 import { createAgentContext, execResult } from './helpers.js';
 
@@ -178,9 +179,12 @@ describe('grep', () => {
       sandbox: (cmd) => (cmd.startsWith('rg ') ? { exitCode: 0, stdout: 'src/a.ts\u00001:const parseX = 1;\n.env\u00001:TOKEN=parseX\n./docs/x.md\u00001:parseX in docs\n--\nsrc/a.ts\u00002-context line\n' } : { stdout: '' }),
     });
     const r = await runGrep(ctx, { pattern: "it's", glob: '*.ts', case_insensitive: true, context: 1 }, withRg);
-    // --no-config: a user's RIPGREP_CONFIG_PATH cannot change the answer; --hidden with .git excluded LAST (a later glob
-    // wins in rg): the listing offers .github/ and .eslintrc.js; a 500-column preview keeps a minified line from filling the cap
-    expect(ctx.sb.commands[0]).toBe("rg --no-config --null --line-number --no-heading --color never --hidden --max-columns 500 --max-columns-preview -i -C 1 --glob '*.ts' --glob '!.git' -e 'it'\\''s'");
+    // --no-config: a user's RIPGREP_CONFIG_PATH cannot change the answer; --hidden with .git and the skipped directories
+    // excluded LAST (a later glob wins in rg): the listing offers .github/ and .eslintrc.js; a 500-column preview keeps a
+    // minified line from filling the cap
+    const skipGlobs = [...WALK_SKIP_DIRS].filter((n) => n !== '.git').map((n) => `--glob '!${n}/'`).join(' ');
+    expect(ctx.sb.commands[0]).toBe(`rg --no-config --null --line-number --no-heading --color never --hidden --max-columns 500 --max-columns-preview -i -C 1 --glob '*.ts' --glob '!.git' ${skipGlobs} --glob '!*.egg-info/' -e 'it'\\''s'`);
+    expect(ctx.sb.commands[0]).toContain("--glob '!.git' --glob '!node_modules/' --glob '!.venv/'");
     expect(r.text).toBe('2 matches in 2 files (showing 2)\nsrc/a.ts:1: const parseX = 1;\ndocs/x.md:1: parseX in docs\nsrc/a.ts-2- context line');
     expect(r.text).not.toContain('.env');
   });
@@ -282,6 +286,44 @@ describe('grep', () => {
   it('an rg that fails without a regex error and finds nothing (an older rg that rejects a flag) falls back to the JavaScript scan', async () => {
     const ctx = createAgentContext({ files, sandbox: () => ({ exitCode: 2, stderr: "error: Found argument '--max-columns-preview' which wasn't expected\n" }) });
     expect((await runGrep(ctx, { pattern: 'parseX', path: 'docs' }, withRg)).text).toBe('1 matches in 1 files (showing 1)\ndocs/x.md:1: parseX in docs');
+  });
+
+  it('rg skips the dependency and cache dirs no listed file is under, and keeps a tracked dist/ or egg-info searchable', async () => {
+    const tracked = { 'src/a.ts': 'x\n', 'dist/bundle.js': 'x\n', 'lib/pkg.egg-info/PKG-INFO': 'x\n', 'scripts/build': 'x\n' };
+    const ctx = createAgentContext({ files: tracked, sandbox: () => ({ exitCode: 1 }) });
+    await runGrep(ctx, { pattern: 'x' }, withRg);
+    const cmd = ctx.sb.commands[0]!;
+    for (const g of ['!.venv/', '!node_modules/', '!.tox/', '!.next/', '!.cache/', '!build/']) expect(cmd).toContain(`--glob '${g}'`);
+    // a directory a listed file passes through is searched; `!build/` (trailing slash) never hides the file scripts/build
+    expect(cmd).not.toContain("'!dist/'");
+    expect(cmd).not.toContain("'!*.egg-info/'");
+  });
+
+  it('an rg output cap filled by unlisted files (a .venv outside git) never answers a bare `0 matches`', async () => {
+    const venv = Array.from({ length: 50 }, (_v, i) => `.venv/lib/pkg${i}/main.py\u00001:def main():`).join('\n');
+    const ctx = createAgentContext({ files, sandbox: () => ({ exitCode: 0, stdout: `${venv}\n`, truncated: true }) });
+    const r = await runGrep(ctx, { pattern: 'def main' }, withRg);
+    expect(r.text).toBe(`0 matches\n${RG_OUTPUT_CAP_LINE}`);
+  });
+
+  it('rg exit 2 from files it could not open (the macOS read-deny on .env) is an answer, not a reason to re-scan in JS', async () => {
+    const ctx = createAgentContext({ files, sandbox: () => ({ exitCode: 2, stdout: '', stderr: 'rg: .env: Operation not permitted (os error 1)\n' }) });
+    expect((await runGrep(ctx, { pattern: 'nowhere' }, withRg)).text).toBe('0 matches');
+    expect(ctx.fs.reads).toEqual([]);
+    // a LISTED file it could not open is named, never silently absent
+    const listed = createAgentContext({ files, sandbox: () => ({ exitCode: 2, stderr: 'rg: .env: Operation not permitted (os error 1)\nrg: ./src/b.ts: Permission denied (os error 13)\n' }) });
+    expect((await runGrep(listed, { pattern: 'nowhere' }, withRg)).text).toBe('0 matches\n[rg could not read 1 listed file: src/b.ts]');
+    expect(listed.fs.reads).toEqual([]);
+    // a usage error mixed in still falls back
+    const usage = createAgentContext({ files, sandbox: () => ({ exitCode: 2, stderr: "rg: .env: Operation not permitted (os error 1)\nerror: unexpected argument '--max-columns-preview' found\n" }) });
+    expect((await runGrep(usage, { pattern: 'parseX', path: 'docs' }, withRg)).text).toBe('1 matches in 1 files (showing 1)\ndocs/x.md:1: parseX in docs');
+  });
+
+  it('refuses a path a shell would expand ($TMPDIR) instead of answering a silent `0 matches` or `0 files`', async () => {
+    const ctx = createAgentContext({ files });
+    expect(await runGrep(ctx, { pattern: 'parseX', path: '$TMPDIR' }, noRg)).toMatchObject({ ok: false, text: SEARCH_VARIABLE_PATH_ERROR });
+    expect(await runGlob(ctx, { pattern: '*.ts', path: '${HOME}/src' })).toMatchObject({ ok: false, text: SEARCH_VARIABLE_PATH_ERROR });
+    expect(ctx.sb.commands).toEqual([]);
   });
 
   it('rg stopped by its timeout says the results are partial, also at 0 matches', async () => {
