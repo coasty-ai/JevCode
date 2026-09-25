@@ -200,6 +200,21 @@ describe('the tool-step paths are unchanged: a steer typed while a tool runs is 
 });
 
 describe('finish() in flight is unchanged (§8.6)', () => {
+  it('a steer typed after the driver decided to finish (while the finish step executes and commits) is refused as `finished`, never left pending', async () => {
+    const h = await realAgent(() => ({ text: 'Hello!' }));
+    let late: SteerResult | null = null;
+    // step:end is emitted at the finish step's commit — after the driver's last takeSteers(), before finish() sets `finishing`
+    h.engine.events.onAny((e) => {
+      if (e.type === 'step:end' && late === null) late = h.engine.steer('typed at the commit');
+    });
+    const r = await h.engine.run();
+    expect(r.stopReason).toBe('answered');
+    expect(late).toEqual({ ok: false, reason: 'finished', queued: 0 });
+    expect(h.tools.requests).toHaveLength(1);
+    expect(h.of('steer:queued')).toEqual([]);
+    expect(h.store.last()!.pendingDirectives).toBeUndefined();
+  });
+
   it('a steer typed once finish() started is refused as `finished` (the controller keeps the text) and never absorbed: one turn, no steer:applied', async () => {
     const h = await realAgent(() => ({ text: 'Hello!' }));
     let late: SteerResult | null = null;

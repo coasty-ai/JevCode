@@ -145,8 +145,9 @@ export function buildCommonState(input: CommonStateInput): JsonObject {
     },
     budget: { stepsUsed: input.budget.stepsUsed, stepsMax: input.budget.stepsMax, spentUsd: round4(input.budget.spentUsd), capUsd: input.budget.capUsd },
   };
-  // TUI-DESIGN §8.6: `state.human` only for a step with directives (P1: Jev sees them, masked where a secret was acked)
-  if (input.human) state['human'] = { directives: input.human.directives.slice(0, HUMAN_DIRECTIVES_MAX).map((t) => clip(t, HUMAN_DIRECTIVE_CHARS)), step: input.human.step };
+  // TUI-DESIGN §8.6: `state.human` only for a step with directives (P1: Jev sees them, masked where a secret was acked); the
+  // NEWEST HUMAN_DIRECTIVES_MAX when a step collected more (agent mode applies mid-step steers to the running step)
+  if (input.human) state['human'] = { directives: input.human.directives.slice(-HUMAN_DIRECTIVES_MAX).map((t) => clip(t, HUMAN_DIRECTIVE_CHARS)), step: input.human.step };
   return redactJson(state, input.redact) as JsonObject;
 }
 

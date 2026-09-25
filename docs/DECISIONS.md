@@ -2104,9 +2104,12 @@ the driver absorbed steers only at the top of `next()`. The turn then finished t
 **What stays.** A steer typed during a tool step is applied at the next step start and absorbed at the top of the next
 `next()`, as before. Pause, abort and resume are unchanged: a pause-now during the steer's turn discards the step with
 nothing pending, and the resume re-arms the steer from the plan. Once `finish()` is in flight a steer is refused as
-`finished` (TUI-DESIGN §8.6) and the controller keeps the text. The engine tail between the driver's last ask and
-`finish()` (the finish step's commit, a few milliseconds) still queues a steer that the next run does not consume.
+`finished` (TUI-DESIGN §8.6) and the controller keeps the text. The same refusal now starts the moment the driver decides to
+finish: during the finish step's execute and commit (a few milliseconds, before `finish()` sets `finishing`) the driver will
+not ask again, so `steer()` answers `finished` there too (`agentFinishDecided`, reset at every step start and when a step is
+discarded) and no steer can be confirmed and then left pending. A step collecting more than eight directives keeps the newest
+eight in Jev's state (`state.human.directives`).
 
 **Affects.** `src/agent/driver.ts` (`next()`, `absorbSteers`), `src/loop/engine.ts` (`takeAgentSteers`,
-`applyPendingDirectives`), `docs/AGENT-LOOP-DESIGN.md` §2.3, §2.4, §3.1, §10, S3, S4; `docs/architecture/agent-loop.md`;
+`applyPendingDirectives`, `steer`, `agentFinishDecided`), `src/loop/state.ts` (newest directives kept), `docs/AGENT-LOOP-DESIGN.md` §2.3, §2.4, §3.1, §10, S3, S4; `docs/architecture/agent-loop.md`;
 `docs/TUI.md`; tests `test/unit/agent/driver-steer.test.ts`, `test/unit/loop/agent-steer.test.ts`.

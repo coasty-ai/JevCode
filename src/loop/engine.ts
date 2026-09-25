@@ -1216,6 +1216,14 @@ class EngineImpl implements Engine {
   private readonly unpricedAnnounced = new Set<string>();
   /** finish() is in flight (the final snapshot is built): steer/unsteer/pause/annotate read as finished so nothing is confirmed and then dropped (§8.6) */
   private finishing = false;
+  /**
+   * docs/AGENT-LOOP-DESIGN.md §10 Steer: the agent driver has decided this step finishes the run. From here to finish() setting
+   * `finishing` the engine still runs the finish step's execute, observe and commit (milliseconds); the driver will not ask for
+   * steers again, so a steer accepted now would be confirmed to the human and never answered. steer() refuses it as `finished`
+   * (the controller keeps the text for the next message), exactly as the finish() window does. Reset at every step start and when
+   * a step is discarded (runStep returned no stop).
+   */
+  private agentFinishDecided = false;
   /** the run-start probe (§12.1); null when the probe was unavailable */
   private gitState: GitState | null;
   private readonly gitMeta: RunGitMeta;
@@ -2058,7 +2066,7 @@ class EngineImpl implements Engine {
     const queued = this.pendingDirectives.length;
     // TUI-DESIGN §8.6: finished → empty → full, in that order; finished includes a finish() in flight (the final snapshot is
     // already built, so a directive accepted now would be confirmed to the human and never persisted)
-    if (this.isFinished()) return { ok: false, reason: 'finished', queued };
+    if (this.isFinished() || this.agentFinishDecided) return { ok: false, reason: 'finished', queued };
     const trimmed = clipText(sanitizeStream(text).trim(), DIRECTIVE_MAX_CHARS);
     if (trimmed === '') return { ok: false, reason: 'empty', queued };
     if (queued >= MAX_PENDING_DIRECTIVES) return { ok: false, reason: 'full', queued };
@@ -2752,6 +2760,8 @@ class EngineImpl implements Engine {
       if (this.coord !== null) await this.coord.pumpInbox((msg, d) => this.applyIncoming(msg, d)).catch(() => undefined);
       this.applyPendingDirectives();
       const result = await this.runStep();
+      // a discarded finish step (pause, stage failure) runs again: steers are accepted until the driver decides to finish once more
+      if (!result.stop) this.agentFinishDecided = false;
       trace(`runStep done step=${this.step} stop=${result.stop ?? 'null'}`);
       if (result.stop) return this.finish(result.stop, result.detail ? { detail: result.detail } : {});
     }
@@ -2769,7 +2779,8 @@ class EngineImpl implements Engine {
   private applyPendingDirectives(midStep = false): string[] {
     if (this.pendingDirectives.length === 0) return [];
     const step = this.step + 1;
-    // each ≤ 600, ≤ 8 of them → ≤ 4,800 chars; NEVER re-clipped as a batch (F7: max 8 × 600)
+    // each ≤ 600, ≤ 8 per application → ≤ 4,800 chars; NEVER re-clipped as a batch (F7: max 8 × 600). In agent mode a step can
+    // collect more than 8 when steers arrive mid-step (§10 Steer); every consumer slices to PENDING_DIRECTIVES_MAX, newest kept
     const texts = this.pendingDirectives.map((d) => d.text);
     const kept = midStep && this.activeHuman?.step === step ? this.activeHuman.texts : [];
     // seed / undo problems carry step 0 (§8.3) and are never superseded by a steer
@@ -4915,6 +4926,7 @@ class EngineImpl implements Engine {
     const step = this.step + 1;
     const draft = this.newDraft(step);
     this.draft = draft;
+    this.agentFinishDecided = false;
     this.stageBlock = null;
     stepTimeline.beginStep(step);
     this.emit({ type: 'step:start', step, startedAt: draft.startedAt });
@@ -5118,6 +5130,8 @@ class EngineImpl implements Engine {
           return { stop: 'error' };
         }
         agentNext = next;
+        // §10 Steer: the driver took its last steers before deciding to finish; from here a steer is handed back to the controller
+        if (next.kind === 'finish') this.agentFinishDecided = true;
         draft.proposal = next.proposal;
         draft.proposeCompleted = true;
         draft.agent = next.summary;
