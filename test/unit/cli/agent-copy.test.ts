@@ -123,7 +123,7 @@ describe('the advertised mode surface (§14.1): live with the default flip; a le
 describe('the CLI help (§14.5 "CLI help footnote"): advertised after the flip; a legacy default keeps the old help', () => {
   it('--mode lists agent|jev-only plus one legacy clause, and the footnote names /mode and /mode legacy, once the default is agent', () => {
     expect(modeFlagArg('agent')).toBe('agent|jev-only');
-    expect(modeFlagHelp('agent')).toBe('engine mode (default agent): agent (the code model works through tools, tests verify), jev-only (Jev alone, no generating LLM); legacy, accepted for saved configs, resume and the bench: llm-jev, jev-on, jev-off');
+    expect(modeFlagHelp('agent')).toBe('engine mode (default agent): agent (the code model works through tools and checks its own work), jev-only (Jev alone, no generating LLM); legacy, accepted for saved configs, resume and the bench: llm-jev, jev-on, jev-off');
     expect(bareJevcodeSentence('agent')).toBe('A bare `jevcode` opens the interactive session in agent mode (one OpenRouter key serves the code model and Jev); `/mode` switches to jev-only, and `/mode legacy` lists the older modes; `/` lists commands, `?` shows the keys.');
     for (const t of [modeFlagHelp('agent'), bareJevcodeSentence('agent')]) expect(t).not.toMatch(JEV_DECIDES);
     // the flip is live: the shipped help is the agent form; a legacy default would keep today's text

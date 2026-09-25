@@ -11,7 +11,7 @@ it useful for quick, bounded decisions.
 ## Where JevCode asks Jev today
 
 **In the default mode, `agent`, hardly at all.** The code model drives the run with its own tool
-calls, and the harness verifies with your tests ([The agent loop](../architecture/agent-loop.md)).
+calls and checks its own work in proportion to the change ([The agent loop](../architecture/agent-loop.md)).
 Jev is kept for three quick routing hints at the edges of a run:
 
 | Id | When | Question | Deadline | Without an answer |

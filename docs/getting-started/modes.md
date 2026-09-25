@@ -9,7 +9,7 @@ records.
 
 | Mode | Badge | Who writes the code | Who decides | Keys | Default run cap |
 | --- | --- | --- | --- | --- | --- |
-| `agent` *(default)* | `agent` | the code model, through tools | the code model; your tests verify; Jev makes a few quick routing calls | a code-model key (Jev optional) | $10.00 |
+| `agent` *(default)* | `agent` | the code model, through tools | the code model, which checks its own work in proportion to the change; Jev makes a few quick routing calls | a code-model key (Jev optional) | $10.00 |
 | `jev-only` | `jev-only` | nobody — code enumerates candidates | tests verify, Jev ranks | a Jev key | $1.00 |
 
 **Legacy modes** — accepted by `--mode`, `config set mode`, resume and the bench, listed by

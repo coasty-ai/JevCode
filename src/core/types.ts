@@ -852,7 +852,7 @@ export interface SerializedError {
   requestId?: string | null;
 }
 
-export type EngineMode = 'jev-on' | 'jev-off' | 'jev-only' | 'llm-jev' | 'agent'; // jev-only: no generating LLM; a Synthesizer proposes (§JEV-ONLY.md); llm-jev: the generator writes candidate patches inside the Jev-only synthesizer; Jev decides, tests verify (docs/LLM-JEV-DESIGN.md); agent: the code model drives with native tools, tests verify, Jev makes a few quick routing calls (docs/AGENT-LOOP-DESIGN.md)
+export type EngineMode = 'jev-on' | 'jev-off' | 'jev-only' | 'llm-jev' | 'agent'; // jev-only: no generating LLM; a Synthesizer proposes (§JEV-ONLY.md); llm-jev: the generator writes candidate patches inside the Jev-only synthesizer; Jev decides, tests verify (docs/LLM-JEV-DESIGN.md); agent: the code model drives with native tools and checks its own work, Jev makes a few quick routing calls (docs/AGENT-LOOP-DESIGN.md)
 
 export interface RunResult {
   runId: string;

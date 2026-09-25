@@ -256,7 +256,7 @@ export function modeFlagArg(defaultMode: EngineMode = DEFAULT_MODE): string {
 }
 export function modeFlagHelp(defaultMode: EngineMode = DEFAULT_MODE): string {
   return defaultMode === 'agent'
-    ? `engine mode (default ${defaultMode}): agent (the code model works through tools, tests verify), jev-only (Jev alone, no generating LLM); legacy, accepted for saved configs, resume and the bench: llm-jev, jev-on, jev-off`
+    ? `engine mode (default ${defaultMode}): agent (the code model works through tools and checks its own work), jev-only (Jev alone, no generating LLM); legacy, accepted for saved configs, resume and the bench: llm-jev, jev-on, jev-off`
     : `engine mode (default ${defaultMode}): jev-only (Jev alone, no generating LLM), jev-on (Jev + the code model), jev-off (generator only), llm-jev (candidate patches, tests verify, Jev arbitrates)`;
 }
 export const MODE_FLAG_ARG = modeFlagArg();

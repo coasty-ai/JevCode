@@ -151,7 +151,7 @@ Depth: [The agent loop](docs/architecture/agent-loop.md) ·
 
 | Mode | Badge | What runs | Keys it needs |
 | --- | --- | --- | --- |
-| `agent` *(default)* | `agent` | The code model works through tools, tests verify, Jev makes a few quick routing calls. | code model (+ Jev optional) |
+| `agent` *(default)* | `agent` | The code model works through tools and checks its own work in proportion to the change; Jev makes a few quick routing calls. | code model (+ Jev optional) |
 | `jev-only` | `jev-only` | No generating LLM at all: the synthesizer proposes, Jev decides, tests verify. | Jev only |
 
 `llm-jev`, `jev-on` and `jev-off` are [legacy modes](#legacy-modes), still accepted for saved
