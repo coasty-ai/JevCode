@@ -262,3 +262,12 @@ describe('the agent strip and the decisions tab (§14.3, peer G)', () => {
     expect(AGENT_NO_DECISIONS).toBe('a normal agent run makes no Jev decisions');
   });
 });
+
+describe('--plain agent prose: escape sequences go whole, even split between two deltas', () => {
+  it('a sequence cut by a delta boundary is held for the turn; the final commit flushes an unfinished one away', async () => {
+    const turn = shapedTurn(1, 1, ['Use \u001b[3', '1mred\u001b[0m text\n', 'and \u001b[1mbold\u001b[', '0m. \u001b[3']);
+    const lines = await plainRun([...agentOpening('hi there'), ...turn, { type: 'run:end', result: agentRunResult('answered'), exitCode: 0 }]);
+    expect(lines).toEqual(['[you] hi there', '[jevcode] Use red text', '[jevcode] and bold. ']);
+    expect(lines.join('\n')).not.toMatch(/\u001b|1mred|\[0m|0m\./);
+  });
+});

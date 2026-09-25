@@ -96,7 +96,8 @@ describe('decisionRows(state, rows, columns)', () => {
   it('strips control characters, bidi controls and U+2028/2029 from ids and labels', () => {
     const evil = toDecisionRow(mkDecision({ stage: 'context', id: 'a\u001b[2Jb\nc', question: { type: 'noul', instructions: 'q' }, answer: { type: 'noul', noul: 0.7 }, probability: 0.7 }), 0.85);
     expect(decisionRowText(evil, 80)).not.toMatch(/[\u0000-\u001f]/);
-    expect(decisionRowText(evil, 80)).toContain('a[2Jb c');
+    expect(decisionRowText(evil, 80)).toContain('ab c');
+    expect(decisionRowText(evil, 80)).not.toMatch(/\u001b|\[\d+[A-Za-z]/);
     const bidi = toDecisionRow(mkDecision({ stage: 'context', id: 'src/\u202eyp.a\u202c\u2028x', question: { type: 'noul', instructions: 'q' }, answer: { type: 'noul', noul: 0.7 }, probability: 0.7 }), 0.85);
     for (const line of [decisionRowText(bidi, 80), decisionRowText(bidi, 120), decisionRowNarrow(bidi, 59), decisionRowAriaLabel(bidi)]) {
       expect(line).not.toMatch(/[\u200e\u200f\u202a-\u202e\u2066-\u2069\u2028\u2029]/);

@@ -186,7 +186,8 @@ describe('robustness: goal, target, geometry, unicode', () => {
   it('a goal with line breaks and controls renders on one line', () => {
     const evil = workedRequest();
     evil.proposal = { ...evil.proposal, goal: 'a\nb\u001b[2Jc' };
-    expect(reviewTitle(evil, 80)).toContain('"a ⏎ b[2Jc"');
+    expect(reviewTitle(evil, 80)).toContain('"a ⏎ bc"');
+    expect(reviewTitle(evil, 80)).not.toMatch(/\u001b|\[\d+[A-Za-z]/);
   });
   it('NaN / Infinity risk numbers do not throw', () => {
     const bad = workedRequest({ risk: { ...req.risk, risk: Number.NaN, dims: { ...req.risk.dims, destructive: dim(9, Number.NaN, Number.POSITIVE_INFINITY, -1, 2, 'tail', Number.NaN) } } });

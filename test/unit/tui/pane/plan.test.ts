@@ -97,7 +97,7 @@ describe('plan ledger rows (TUI-DESIGN §7.2 `p`, §24 `[x] [ ] [?] [!]`, frame 
     plan.unverified = [];
     const out = planRows(paneState({ plan: { step: 1, plan } }), 12, 59);
     for (const l of out) expect(cellWidth(l)).toBeLessThanOrEqual(59);
-    expect(out.find((l) => l.startsWith('[ ] x'))).toBe('[ ] x[31m y');
+    expect(out.find((l) => l.startsWith('[ ] x'))).toBe('[ ] x y');
     expect(out.find((l) => l.startsWith('[ ] run'))).toBe('[ ] run tests now');
     expect(out.find((l) => l.startsWith('[ ] a'))).toBe('[ ] a b c');
     expect(out.find((l) => l.startsWith('[ ] p'))).toBe('[ ] pqr');

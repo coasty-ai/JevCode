@@ -100,7 +100,9 @@ describe("uiReducer: today's rules kept", () => {
     expect(liveLines('x'.repeat(1234), 2, 80)).toEqual(['streaming… 1.2k chars']);
     expect(liveLines('', 2, 80, 12_400)).toEqual(['streaming action… 12.4k chars']);
     expect(liveLines('a\nb\nc\n', 2)).toEqual(['b', 'c']);
-    expect(liveLines('10%\r50%\r90%', 2)).toEqual(['50%', '90%']);
+    // a bare CR is a redraw of its row (a progress bar shows its last state), never a new row
+    expect(liveLines('10%\r50%\r90%', 2)).toEqual(['90%']);
+    expect(liveLines('a\r\nb 10%\rb 90%\n', 2)).toEqual(['a', 'b 90%']);
     expect(liveLines(`${'x'.repeat(5000)}\nshort`, 2, 80)).toEqual(['x'.repeat(81), 'short']);
     const committed = uiReducer(s, ev({ type: 'proposal', step: 1, proposal: mkProposal() }));
     expect(committed).toMatchObject({ live: '', toolChars: 0 });

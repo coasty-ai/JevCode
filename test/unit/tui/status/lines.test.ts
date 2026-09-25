@@ -683,7 +683,7 @@ describe('centre zone (§7.4, §14.1)', () => {
     expect(centreText(s)).toBe('');
     expect(centreText({ ...s, title: 'fix parse_date tz' })).toBe('"fix parse_date tz"');
     expect(centreText({ ...s, title: '  ' })).toBe('');
-    expect(centreText({ ...s, title: 'a\nb\u001b[2J' })).toBe('"a ⏎ b[2J"');
+    expect(centreText({ ...s, title: 'a\nb\u001b[2J' })).toBe('"a ⏎ b"');
     expect(centreText({ ...s, title: 'a\nb' }, true)).toBe('"a | b"');
     expect(centreText(mk())).toBe('');
     // idle: the run id is not shown whatever the room; a title is

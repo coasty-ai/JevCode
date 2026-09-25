@@ -14,10 +14,13 @@ import { EventEmitter } from 'node:events';
 import { cleanup, render } from 'ink-testing-library';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { BlockingRequest, LaunchSettings } from '../../../src/core/types.js';
-import { App, COALESCED_ENTER_TOAST, EXITED_CTRL_C, EXITED_CTRL_D, SR_REVIEW_MENU, SR_REVIEW_PROMPT, builderFaultFor, createBridge, createTuiRenderer, draftsDirFor, liveLines, queueRows, splitInputChunk, srReviewAnswer } from '../../../src/tui/App.js';
+import { App, COALESCED_ENTER_TOAST, EXITED_CTRL_C, EXITED_CTRL_D, SR_REVIEW_MENU, SR_REVIEW_PROMPT, agentLiveLines, builderFaultFor, createBridge, createTuiRenderer, draftsDirFor, liveLines, liveTailRow, queueRows, splitInputChunk, srReviewAnswer } from '../../../src/tui/App.js';
+import { initialAgentUi } from '../../../src/tui/useEngine.js';
+import { agentOpening, agentRunResult, shapedTurn } from './agent-fixtures.js';
+import { stringWidth } from '../../../src/tui/composer/width.js';
 import { REVIEW_KEYS_80 } from '../../../src/tui/review/lines.js';
 import { LIVE_FLUSH_MS, createEventBus, createTuiConfirmer } from '../../../src/tui/useEngine.js';
-import { IDENTITY_NO_TTY, formatTranscriptItem, itemsFromEvent, plainFirstLine } from '../../../src/tui/plain.js';
+import { IDENTITY_NO_TTY, formatTranscriptItem, itemsFromEvent, plainFirstLine, sanitizeStream } from '../../../src/tui/plain.js';
 import { isRunHeaderItem } from '../../../src/tui/Transcript.js';
 import { PLACEHOLDERS } from '../../../src/tui/composer/Composer.js';
 // MINIMAL, MARKED (S4): the `?` help-block case pins a whole command head, which only `helpCommandHead` produces
@@ -107,6 +110,55 @@ describe('<App> first frame (§1)', { retry: 1 }, () => {
   });
 });
 
+describe('liveTailRow: a live output row as the terminal would have left it', () => {
+  it('a bare CR is a redraw (the last non-blank state shows), CRLF is one break', () => {
+    expect(liveTailRow('10%\r50%\r90%')).toBe('90%');
+    expect(liveTailRow('100% done\r         \r')).toBe('100% done');
+    // the live path (the execute stage's stream sanitizer, appendTail) removes a backspace before a row is drawn
+    expect(liveTailRow(sanitizeStream('spin |\b/\b-\bok'))).toBe('spin |/-ok');
+    expect(liveTailRow('line\r')).toBe('line');
+    expect(liveLines('a\r\nb\n', 5)).toEqual(['a', 'b']);
+  });
+
+  it('a tab expands to the next 8-cell stop, measured in cells (a wide character is two)', () => {
+    expect(liveTailRow('a\tb')).toBe(`a${' '.repeat(7)}b`);
+    expect(liveTailRow('\tx')).toBe(`${' '.repeat(8)}x`);
+    expect(liveTailRow('12345678\ty')).toBe(`12345678${' '.repeat(8)}y`);
+    const wide = liveTailRow('漢字\tz');
+    expect(wide).toBe(`漢字${' '.repeat(4)}z`);
+    expect(stringWidth(wide)).toBe(9);
+  });
+
+  it('bidi controls never reach a live row (§14.1)', () => {
+    expect(liveTailRow('run \u202etests\u202c now \u2066x\u2069\u200f')).toBe('run tests now x');
+  });
+
+  it('the row is cut before tabs expand: a 64 KB line costs one cut, not a 64 KB expansion', () => {
+    const row = liveTailRow(`${'\t'.repeat(64 * 1024)}`, 81);
+    expect(row).toBe(' '.repeat(81));
+  });
+
+  it('agent prose: an escape sequence split between two deltas is held for the turn, never drawn half-stripped', async () => {
+    const m = mountApp({ mode: 'session' });
+    const turn = shapedTurn(1, 1, ['Use \u001b[3', '1mred\u001b[0m text\n', 'and \u001b[1mbold\u001b[', '0m. \u001b[3']);
+    for (const e of [...agentOpening('hi'), ...turn, { type: 'run:end', result: agentRunResult('answered'), exitCode: 0 } as const]) {
+      m.bus.emit(e);
+      if (e.type === 'generator:delta') await tick(LIVE_FLUSH_MS * 2);
+    }
+    await tick(LIVE_FLUSH_MS * 2);
+    const all = m.frames.map((f) => stripSgr(f)).join('\n');
+    expect(all).toContain('Use red text');
+    expect(all).toContain('and bold.');
+    expect(all).not.toMatch(/1mred|\[0m|0m\.|\[3\b/);
+  });
+
+  it('the agent live region: the running row over the CR-resolved, tab-expanded tail', () => {
+    const a = { ...initialAgentUi(), running: 'Bash pip install x' };
+    const out = 'Collecting x\n  10%|#   \r  60%|###### \r 100%|##########\nok\tdone\n';
+    expect(agentLiveLines(a, out, false, 4, 80).lines).toEqual(['Bash pip install x', 'Collecting x', ' 100%|##########', `ok${' '.repeat(6)}done`]);
+  });
+});
+
 describe('<App> transcript, live region and pane', { retry: 1 }, () => {
   it('exec:output feeds the live region through the coalescer with escape sequences stripped; outcome clears it', async () => {
     const m = mountApp();
@@ -117,8 +169,12 @@ describe('<App> transcript, live region and pane', { retry: 1 }, () => {
     await tick(LIVE_FLUSH_MS * 2);
     const f = m.lastFrame();
     expect(f).toContain('collected 3 items');
-    expect(f).toContain('[2J[31mFAILED[0m tests/test_a.py');
+    // a foreign sequence goes WHOLE (core/ansi.ts): neither its ESC nor its body (`[2J`, `[31m`) reaches the frame,
+    // while the frame keeps the TUI's own theme styling
+    expect(stripSgr(f ?? '')).toContain('FAILED tests/test_a.py');
     expect(f).not.toContain('\u001b[2J');
+    expect(f).not.toContain('[2J');
+    expect(f).not.toContain('[31mFAILED[0m');
     m.bus.emit({ type: 'outcome', step: 2, outcome: { status: 'executed', summary: 'ran pytest', changedFiles: [] } });
     await tick(LIVE_FLUSH_MS * 2);
     expect(dynamicLines(m.lastFrame()).join('\n')).not.toContain('collected 3 items');

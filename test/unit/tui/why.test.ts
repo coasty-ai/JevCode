@@ -99,7 +99,9 @@ describe('whyBlock shape', () => {
       expect(l.startsWith('  ')).toBe(true);
       expect(l).not.toMatch(/[\u0000-\u001f]/);
     }
-    expect(block[1]).toBe('  a[2Jb c');
+    // escape sequences go whole (core/ansi.ts): no ESC and no `[2J` body
+    expect(block[1]).toBe('  ab c');
+    for (const l of block) expect(l).not.toMatch(/\u001b|\[\d+[A-Za-z]/);
   });
   it('is capped at 60 lines with an omitted-lines marker', () => {
     const levels = Array.from({ length: 100 }, (_, i) => `level ${i}`);

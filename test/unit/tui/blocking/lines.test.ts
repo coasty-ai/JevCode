@@ -104,7 +104,7 @@ describe('the lease-conflict card (TUI-DESIGN-5 §2.11, §12 S39)', () => {
     for (const l of ['live', 'stale', 'stale-reused-pid', 'unknown'] as const) expect(leaseConflictOpens(l), l).toBe(true);
     expect(leaseGoneNotice('mbp', '14:02')).toBe('took a lease left by a session that is gone (mbp, 14:02)');
     // hostile text can never move the cursor or split the row
-    expect(leaseGoneNotice('m\u001b[2Jbp\n', '14:02')).toBe('took a lease left by a session that is gone (m[2Jbp, 14:02)');
+    expect(leaseGoneNotice('m\u001b[2Jbp\n', '14:02')).toBe('took a lease left by a session that is gone (mbp, 14:02)');
   });
 
   it('the detail round-trips, and an unparseable detail still names a holder rather than an empty cell', () => {
