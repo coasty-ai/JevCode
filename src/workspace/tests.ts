@@ -16,8 +16,9 @@
  *   c. Cargo.toml                                                  → `cargo test`
  *   d. go.mod                                                      → `go test ./...`
  *   e. deno.json / deno.jsonc                                      → `deno task test` with a tasks.test, else `deno test`
- *   f. Gemfile or Rakefile: spec/ → `bundle exec rspec` (`rspec` without a Gemfile); else test/ → `bundle exec rake
- *      test` (`rake test`)
+ *   f. Gemfile or Rakefile: spec/ → `bundle exec rspec` (`rspec` without a Gemfile); else a Rakefile and test/ →
+ *      `bundle exec rake test` (`rake test`). A Gemfile with test/ and no Rakefile names nothing (rake would find no
+ *      Rakefile; a Python repository with a Jekyll Gemfile keeps its own layout)
  *   g. pom.xml                                                     → `./mvnw test` with the wrapper, else `mvn test`
  *      (never -q: quiet mode hides the `Tests run:` summary)
  *   h. build.gradle(.kts) / settings.gradle(.kts)                  → `./gradlew test` with the wrapper, else `gradle test`
@@ -31,6 +32,8 @@
  *      - a top-level tests/runtests.py (a Django-style suite; `python -m pytest` exits 1 at once in such a checkout
  *        because nothing there is a pytest module)               → `python tests/runtests.py --parallel 1`
  *      - bin/test with a python shebang (a sympy-style runner)   → `python bin/test`
+ *      - a Django application: manage.py at the root that names django → `python manage.py test` (runner unittest: the
+ *        Django runner prints unittest's summary; the scope appends dotted labels)
  *      - a pytest layout without configuration: conftest.py at the root, test_*.py / *_test.py at the root or under
  *        tests/ or test/                                         → `python -m pytest -q`
  *      - a tests/ or test/ package (__init__.py, no pytest files) → `python -m unittest discover -v`
@@ -44,31 +47,42 @@
  *
  * Recognition (`isTestCommand`): a command is a run of the detected test command when, after normalising both — `cd
  * <dir> &&`, `VAR=value`, `env`, `time` and `timeout <n>` prefixes and trailing `2>&1`, `| tail…`, `| head…`,
- * `| grep…`, `| tee…`, `| cat` and `|| true` dropped — it extends the detected command or names the same runner
- * family. The families and the spellings each accepts:
+ * `| grep…`, `| tee…`, `| cat` and `|| true` dropped — it is the detected command, or it is one command (no `&&`, `||`,
+ * `;`, `|`, `&` or newline left outside quotes: `npx vitest run && sed -i …` also edits) in the detected command's
+ * runner family. An extension counts only when it is in the family too (`./mvnw test deploy` extends `./mvnw test`).
+ * A line over 4 KB keeps its wrappers (the stripping is quadratic in their number). The families and the spellings
+ * each accepts:
  *   js        npm test|t|tst|run test|run-script test (also `test:*` scripts), pnpm test|run test, yarn test|run
  *             test (also `yarn workspace <w> test`), bun run test, bun test, and vitest / jest / mocha / ava / tap /
- *             `node --test`, bare or after npx [--no-install], npm exec, pnpm [exec|dlx], yarn [exec], bunx, bun x,
- *             ./node_modules/.bin/ or node_modules/.bin/; any options before or arguments after (`-- file`, `-w x`,
- *             `--workspace x`, `--filter x`, `-C dir`). Every package-manager test script is in this family.
+ *             `node --test`, bare, after pnpm [exec], yarn [exec] or ./node_modules/.bin/ (these run only what is
+ *             installed), or after npx [--no-install], npm exec|x, bunx and bun x — which fetch a runner they cannot
+ *             find, so only by its bare name and with no option that names, fetches or configures a package (`-p`,
+ *             `--package`, `-y`, `--call`, `--registry`, `--userconfig`); `pnpm dlx` and `yarn dlx` never count. Any
+ *             options before or arguments after (`-- file`, `-w x`, `--workspace x`, `--filter x`, `-C dir`). Every
+ *             package-manager test script is in this family.
  *   pytest    pytest, py.test, python[3[.X]] -m pytest, .venv/bin/pytest, venv/bin/python -m pytest, each also after
- *             uv run, poetry run, pdm run, pipenv run, hatch run or rye run
- *   unittest  python -m unittest
+ *             uv run, poetry run, pdm run, pipenv run, hatch run or rye run without an option that adds a package or
+ *             an index (`--with…`, `--index…`, `--extra-index-url`, `--find-links`)
+ *   unittest  python -m unittest, [python] [./]manage.py test
  *   django    [python] [./][tests/]runtests.py
  *   sympy     [python] [./]bin/test
  *   cargo     cargo [+toolchain] test|t, cargo nextest run
  *   go        go test
  *   rspec     rspec, bin/rspec, bundle exec rspec, [bundle exec] rake spec
  *   minitest  [bundle exec] rake test, [bin/]rails test, ruby -Itest <x_test.rb | test_x.rb>
- *   maven     mvn / ./mvnw … test
- *   gradle    gradle / ./gradlew … test, including :module:test
+ *   maven     mvn / ./mvnw … test, every other goal a phase up to test (clean, validate, initialize, compile,
+ *             test-compile, generate-* / process-*); options anywhere (-D…, -P x, -pl x, -am, -q, -o, -B, -T n, -f x)
+ *   gradle    gradle / ./gradlew … test or :module:test, every other task clean, cleanTest or check; the arguments of
+ *             --tests, -x, -p and --project-dir skipped; never with --scan (it uploads the build)
  *   dotnet    dotnet test;  mix: mix test;  swift: swift test
  *   php       composer test|run test, [vendor/bin/]phpunit, [vendor/bin/]pest, php artisan test
  *   deno      deno test, deno task test
- *   make      make [-C dir] … test
+ *   make      make [-C dir] … test, every other target clean, all, build or check, or a VAR=value
+ * A build tool's other goals are allow-listed because `mvn deploy test`, `./gradlew publish test` and `make install
+ * test` also publish or install, and a recognised run is SAFE for the command classifier (`isVerificationRun`).
  * A detected `make test` accepts any recognised family: it names no runner itself (runner `unknown`), and every parser
- * is tried on its output. A detected command outside every family keeps the older rule: the same program (and, for a
- * package manager or toolchain, the same subcommand).
+ * is tried on its output. A detected command outside every family keeps the older rule: an extension of it, or the
+ * same program (and, for a package manager or toolchain, the same subcommand).
  */
 import type { TestCommand, TestCounts, TestRunner } from '../core/types.js';
 
@@ -137,6 +151,12 @@ async function hasDjangoRuntests(r: ManifestReader): Promise<boolean> {
 async function hasSympyBinTest(r: ManifestReader): Promise<boolean> {
   const text = await r.read('bin/test');
   return text !== null && PYTHON_SHEBANG.test(text);
+}
+
+/** A Django application's manage.py at the root (Flask-Script and others also name a manage.py). */
+async function hasDjangoManage(r: ManifestReader): Promise<boolean> {
+  const text = await r.read('manage.py');
+  return text !== null && /\bdjango\b/i.test(text);
 }
 
 async function hasPytestLayout(r: ManifestReader): Promise<boolean> {
@@ -223,6 +243,9 @@ export function sympyCommand(py: PythonInterpreter): string {
 }
 export function unittestCommand(py: PythonInterpreter): string {
   return `${py} -m unittest discover -v`;
+}
+export function djangoManageCommand(py: PythonInterpreter): string {
+  return `${py} manage.py test`;
 }
 
 function withScope(command: string, runner: TestRunner): TestCommand {
@@ -316,10 +339,12 @@ async function detectFromManifests(r: ManifestReader): Promise<TestCommand | nul
   }
 
   const gemfile = await has('Gemfile');
-  if (gemfile || (await has('Rakefile')) || (await has('rakefile'))) {
+  const rakefile = (await has('Rakefile')) || (await has('rakefile'));
+  if (gemfile || rakefile) {
     const bundle = gemfile ? 'bundle exec ' : '';
     if ((await r.list('spec')) !== null) return unknownRunner(`${bundle}rspec`);
-    if ((await r.list('test')) !== null) return unknownRunner(`${bundle}rake test`);
+    // rake without a Rakefile fails at once; a Gemfile beside a Python test/ (Jekyll docs) is no Ruby suite
+    if (rakefile && (await r.list('test')) !== null) return unknownRunner(`${bundle}rake test`);
   }
 
   if (await has('pom.xml')) return unknownRunner((await has('mvnw')) ? './mvnw test' : 'mvn test');
@@ -353,6 +378,7 @@ async function detectFromFiles(r: ManifestReader, py: PythonInterpreter): Promis
   if (manifest !== null) return manifest;
   if (await hasDjangoRuntests(r)) return withScope(djangoCommand(py), 'django');
   if (await hasSympyBinTest(r)) return withScope(sympyCommand(py), 'sympy_bintest');
+  if (await hasDjangoManage(r)) return withScope(djangoManageCommand(py), 'unittest');
   if (await hasPytestLayout(r)) return withScope(pytestCommand(py), 'pytest');
   if (await hasUnittestPackage(r)) return withScope(unittestCommand(py), 'unittest');
   return null;
@@ -394,11 +420,91 @@ const TRAILING: readonly RegExp[] = [
   new RegExp(`\\s*(?<!\\|)\\|&?\\s*(?:tail|head|grep|egrep|tee|cat)(?:\\s+${FILTER_ARG})*$`),
 ];
 
-/** The command a shell line runs, with the wrappers of the module comment dropped; `exitMasked` when a pipe or `|| true` went. */
+/** Longer lines are compared as they are: dropping wrappers one pass at a time is quadratic in their number. */
+const MAX_NORMALISED = 4096;
+/** A real line carries a handful of wrappers; the passes stop here whatever is left. */
+const MAX_PASSES = 16;
+
+/**
+ * One line: a line continuation (`\` newline) is a space and any other newline outside quotes a `;` (it separates two
+ * commands), then whitespace collapsed. One pass over the characters, whatever the input.
+ */
+function flattenLines(command: string): string {
+  if (!command.includes('\n')) return command.replace(/\s+/g, ' ').trim();
+  const text = command.replace(/\r\n/g, '\n');
+  let out = '';
+  let quote: string | null = null;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i]!;
+    if (quote !== null) {
+      if (ch === quote) quote = null;
+      else if (ch === '\\' && quote === '"') {
+        out += text.slice(i, i + 2);
+        i += 1;
+        continue;
+      }
+      out += ch;
+    } else if (ch === '\\') {
+      out += text[i + 1] === '\n' ? ' ' : text.slice(i, i + 2);
+      i += 1;
+    } else if (ch === '\n') out += ' ; ';
+    else {
+      if (ch === "'" || ch === '"') quote = ch;
+      out += ch;
+    }
+  }
+  return out.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * True when a list or pipeline is left outside quotes: `;`, `|`, `&&`, `||` or a background `&` (a redirect's `>&`,
+ * `<&` or `&>` is none). One pass over the characters.
+ */
+function composedOutsideQuotes(s: string): boolean {
+  let quote: string | null = null;
+  for (let i = 0; i < s.length; i += 1) {
+    const ch = s[i]!;
+    if (quote !== null) {
+      if (ch === quote) quote = null;
+      else if (ch === '\\' && quote === '"') i += 1;
+    } else if (ch === '\\') i += 1;
+    else if (ch === "'" || ch === '"') quote = ch;
+    else if (ch === ';' || ch === '|') return true;
+    else if (ch === '&' && s[i - 1] !== '>' && s[i - 1] !== '<' && s[i + 1] !== '>') return true;
+  }
+  return false;
+}
+
+/** The shell words of a line, quotes kept (`-Dtest="A B"` is one word). One pass over the characters. */
+function shellWords(s: string): string[] {
+  const words: string[] = [];
+  let word = '';
+  let quote: string | null = null;
+  for (const ch of s) {
+    if (quote !== null) {
+      if (ch === quote) quote = null;
+      word += ch;
+    } else if (ch === ' ') {
+      if (word !== '') words.push(word);
+      word = '';
+    } else {
+      if (ch === "'" || ch === '"') quote = ch;
+      word += ch;
+    }
+  }
+  if (word !== '') words.push(word);
+  return words;
+}
+
+/**
+ * The command a shell line runs, with the wrappers of the module comment dropped; `exitMasked` when a pipe or `|| true`
+ * went. A line over 4 KB keeps its wrappers (and so is recognised only when it has none).
+ */
 export function testInvocation(command: string): { core: string; exitMasked: boolean } {
-  let s = command.replace(/\s+/g, ' ').trim();
+  let s = flattenLines(command);
+  if (command.length > MAX_NORMALISED) return { core: s, exitMasked: s.includes('|') };
   let exitMasked = false;
-  for (let changed = true; changed; ) {
+  for (let changed = true, pass = 0; changed && pass < MAX_PASSES; pass += 1) {
     changed = false;
     for (const re of LEADING) {
       const next = s.replace(re, '');
@@ -444,11 +550,49 @@ const PM_ARG_FLAGS: Readonly<Record<string, ReadonlySet<string>>> = {
   yarn: new Set(['--cwd']),
   bun: new Set(['--cwd', '--filter', '-F']),
 };
-const NPX_ARG_FLAGS: ReadonlySet<string> = new Set(['-p', '--package']);
+/** npx / bunx / npm exec / bun x options that neither name, fetch nor configure a package (`npx [--no-install]`) */
+const NPX_PLAIN_OPTIONS: ReadonlySet<string> = new Set(['--no-install', '--no', '--offline', '--prefer-offline', '-q', '--quiet', '--silent', '--bun', '--workspaces', '-ws', '--include-workspace-root', '--']);
+const NPX_WORKSPACE_FLAGS: ReadonlySet<string> = new Set(['-w', '--workspace']);
+/** package-manager options that choose what an exec fetches or runs, or where from */
+const FETCH_CONFIG = /^(?:-p|--package|-y|--yes|-c|--call|--registry|--userconfig|--globalconfig)(?:=|$)/;
 const PY_PROJECT_RUNNERS: ReadonlySet<string> = new Set(['uv', 'poetry', 'pdm', 'pipenv', 'hatch', 'rye']);
-const PY_RUN_ARG_FLAGS: ReadonlySet<string> = new Set(['--with', '--with-requirements', '--python', '-p', '--extra', '--group', '--package', '--directory', '--project', '--env-file', '--index', '--index-url']);
-const MAKE_ARG_FLAGS: ReadonlySet<string> = new Set(['-C', '--directory', '-f', '--file', '--makefile', '-I', '--include-dir', '-o', '-W']);
+const PY_RUN_ARG_FLAGS: ReadonlySet<string> = new Set(['--python', '-p', '--extra', '--group', '--package', '--directory', '--project', '--env-file']);
+/** `uv run` options that add a package or an index: the run installs what they name */
+const PY_FETCH_OPTION = /^(?:--with|--with-requirements|--with-editable|--index|--default-index|--index-url|--extra-index-url|--find-links|-f)(?:=|$)/;
+const MAKE_ARG_FLAGS: ReadonlySet<string> = new Set(['-C', '--directory', '-f', '--file', '--makefile', '-I', '--include-dir', '-o', '--old-file', '-W', '--what-if', '--new-file']);
+/** make options whose count is optional (`-j`, `-j 4`, `-j4`) */
+const MAKE_COUNT_FLAGS: ReadonlySet<string> = new Set(['-j', '--jobs', '-l', '--load-average']);
 const RUBY_ARG_FLAGS: ReadonlySet<string> = new Set(['-I', '-r', '-C', '-E']);
+const MVN_ARG_FLAGS: ReadonlySet<string> = new Set(['-pl', '--projects', '-T', '--threads', '-P', '--activate-profiles', '-D', '--define', '-rf', '--resume-from', '-f', '--file']);
+/** the lifecycle phases up to `test`: nothing that packages, installs or deploys, and no plugin goal (`exec:exec`) */
+const MVN_GOAL = /^(?:clean|validate|initialize|compile|test-compile|test|(?:generate|process)-(?:test-)?(?:sources|resources)|process-(?:test-)?classes)$/;
+const MVN_TEST = /^test$/;
+const GRADLE_ARG_FLAGS: ReadonlySet<string> = new Set(['--tests', '-x', '--exclude-task', '-p', '--project-dir', '--console', '--warning-mode', '--max-workers']);
+const GRADLE_TASK = /^:?(?:[\w.-]+:)*(?:clean|cleanTest|test|check)$/;
+const GRADLE_TEST = /^:?(?:[\w.-]+:)*test$/;
+/** a build scan uploads the build to a server */
+const GRADLE_DENIED = /^--scan$/;
+const MAKE_TARGET = /^(?:test|clean|all|build|check)$|^[A-Za-z_][A-Za-z0-9_]*=/;
+const MAKE_TEST = /^test$/;
+
+/**
+ * A build tool's run is a test run only when every goal, task or target is allow-listed and one of them runs the
+ * tests: `mvn deploy test`, `./gradlew publish test` and `make install test` also publish or install. Options may
+ * appear anywhere; the argument of one in `argFlags` is skipped, and so is a count after one in `countFlags`.
+ */
+function onlyTestGoals(toks: readonly string[], from: number, o: { argFlags: ReadonlySet<string>; allowed: RegExp; test: RegExp; denied?: RegExp; countFlags?: ReadonlySet<string> }): boolean {
+  let sawTest = false;
+  for (let k = from; k < toks.length; k += 1) {
+    const t = toks[k]!;
+    if (t.startsWith('-')) {
+      if (o.denied?.test(t) === true) return false;
+      if (o.argFlags.has(t)) k += 1;
+      else if (o.countFlags?.has(t) === true && /^\d+(\.\d+)?$/.test(toks[k + 1] ?? '')) k += 1;
+    } else if (!o.allowed.test(unquote(t))) return false;
+    else if (o.test.test(unquote(t))) sawTest = true;
+  }
+  return sawTest;
+}
 
 const isTestScript = (s: string | undefined): boolean => s !== undefined && /^test(:|$)/.test(s);
 
@@ -474,16 +618,41 @@ function packageManagerFamily(pm: string, toks: readonly string[], i: number): F
     const k = skipOptions(toks, j + 1, flags);
     return isTestScript(toks[k]) || jsRunnerAt(toks, k) ? 'js' : null;
   }
-  if (sub === 'exec' || sub === 'x' || sub === 'dlx') {
-    const k = skipOptions(toks, j + 1, NPX_ARG_FLAGS);
-    return jsRunnerAt(toks, k) ? 'js' : null;
-  }
+  // npm exec|x and bun x fetch a runner they cannot find; pnpm exec and yarn exec run only what is installed; dlx
+  // always fetches, so it never counts
+  if ((pm === 'npm' || pm === 'bun') && (sub === 'exec' || sub === 'x')) return !toks.slice(i + 1, j).some((t) => FETCH_CONFIG.test(t)) && fetchedRunnerAt(toks, j + 1) ? 'js' : null;
+  if (sub === 'exec') return jsRunnerAt(toks, skipOptions(toks, j + 1)) ? 'js' : null;
   // pnpm, yarn and bun run a script or a local binary named directly (`pnpm test:unit`, `yarn vitest`)
   if (pm !== 'npm' && (isTestScript(sub) || jsRunnerAt(toks, j))) return 'js';
   return null;
 }
 
-/** `python [-X opt] -m pytest|unittest`, `python tests/runtests.py`, `python bin/test`, `python .venv/bin/pytest`. */
+/**
+ * `npx [--no-install] vitest …`: a launcher that fetches a package it cannot find counts only for a runner named bare
+ * (not `user/vitest`, `vitest@1` or a URL, which fetch that package) after options that neither name, fetch nor
+ * configure one.
+ */
+function fetchedRunnerAt(toks: readonly string[], i: number): boolean {
+  let k = i;
+  for (; k < toks.length && toks[k]!.startsWith('-'); k += 1) {
+    const t = toks[k]!;
+    if (NPX_WORKSPACE_FLAGS.has(t)) k += 1;
+    else if (!NPX_PLAIN_OPTIONS.has(t) && !t.startsWith('--workspace=')) return false;
+  }
+  return JS_RUNNERS.has(toks[k] ?? '');
+}
+
+/** `uv run [opts] <command>`, or null when an option adds a package or an index (the run would install it). */
+function projectRunTarget(toks: readonly string[], i: number): number | null {
+  let k = i;
+  while (k < toks.length && toks[k]!.startsWith('-')) {
+    if (PY_FETCH_OPTION.test(toks[k]!)) return null;
+    k += PY_RUN_ARG_FLAGS.has(toks[k]!) ? 2 : 1;
+  }
+  return k;
+}
+
+/** `python [-X opt] -m pytest|unittest`, `python tests/runtests.py`, `python bin/test`, `python manage.py test`, `python .venv/bin/pytest`. */
 function pythonFamily(toks: readonly string[], i: number): Family | null {
   let j = i + 1;
   while (j < toks.length && toks[j]!.startsWith('-')) {
@@ -495,32 +664,37 @@ function pythonFamily(toks: readonly string[], i: number): Family | null {
     if (t === '-c') return null;
     j += t === '-X' || t === '-W' ? 2 : 1;
   }
-  return scriptFamily(toks[j]);
+  return scriptFamily(toks, j);
 }
 
-function scriptFamily(tok: string | undefined): Family | null {
+function scriptFamily(toks: readonly string[], i: number): Family | null {
+  const tok = toks[i];
   if (tok === undefined) return null;
   const script = unquote(tok);
   const name = baseName(script);
   if (name === 'pytest' || name === 'py.test') return 'pytest';
   if (name === 'runtests.py') return 'django';
+  if (name === 'manage.py') return toks[skipOptions(toks, i + 1)] === 'test' ? 'unittest' : null;
   if (/(^|\/)bin\/test$/.test(script)) return 'sympy';
   return null;
 }
 
-/** The runner family the command at `toks[i]` belongs to, or null (module comment, "Recognition"). */
-function familyAt(toks: readonly string[], i: number): Family | null {
+/** The runner family the command at `toks[i]` belongs to, or null (module comment, "Recognition"). `depth` counts launchers. */
+function familyAt(toks: readonly string[], i: number, depth = 0): Family | null {
   const head = toks[i];
-  if (head === undefined) return null;
+  if (head === undefined || depth > 3) return null;
   const name = baseName(head);
   const sub = (k: number): string | undefined => toks[skipOptions(toks, k)];
   if (/^python[0-9.]*$/.test(name) || name === 'py') return pythonFamily(toks, i);
-  if (PY_PROJECT_RUNNERS.has(name) && toks[i + 1] === 'run') return familyAt(toks, skipOptions(toks, i + 2, PY_RUN_ARG_FLAGS));
-  if (name === 'bundle' && toks[i + 1] === 'exec') return familyAt(toks, skipOptions(toks, i + 2));
+  if (PY_PROJECT_RUNNERS.has(name) && toks[i + 1] === 'run') {
+    const k = projectRunTarget(toks, i + 2);
+    return k === null ? null : familyAt(toks, k, depth + 1);
+  }
+  if (name === 'bundle' && toks[i + 1] === 'exec') return familyAt(toks, skipOptions(toks, i + 2), depth + 1);
   if (name === 'npm' || name === 'pnpm' || name === 'yarn' || name === 'bun') return packageManagerFamily(name, toks, i);
-  if (name === 'npx' || name === 'bunx') return jsRunnerAt(toks, skipOptions(toks, i + 1, NPX_ARG_FLAGS)) ? 'js' : null;
+  if (name === 'npx' || name === 'bunx') return fetchedRunnerAt(toks, i + 1) ? 'js' : null;
   if (jsRunnerAt(toks, i)) return 'js';
-  const script = scriptFamily(head);
+  const script = scriptFamily(toks, i);
   if (script !== null) return script;
   switch (name) {
     case 'cargo': {
@@ -545,10 +719,10 @@ function familyAt(toks: readonly string[], i: number): Family | null {
     }
     case 'mvn':
     case 'mvnw':
-      return toks.slice(i + 1).includes('test') ? 'maven' : null;
+      return onlyTestGoals(toks, i + 1, { argFlags: MVN_ARG_FLAGS, allowed: MVN_GOAL, test: MVN_TEST }) ? 'maven' : null;
     case 'gradle':
     case 'gradlew':
-      return toks.slice(i + 1).some((t) => t === 'test' || /^:?(?:[\w.-]+:)+test$/.test(t)) ? 'gradle' : null;
+      return onlyTestGoals(toks, i + 1, { argFlags: GRADLE_ARG_FLAGS, allowed: GRADLE_TASK, test: GRADLE_TEST, denied: GRADLE_DENIED }) ? 'gradle' : null;
     case 'dotnet':
       return sub(i + 1) === 'test' ? 'dotnet' : null;
     case 'mix':
@@ -573,15 +747,14 @@ function familyAt(toks: readonly string[], i: number): Family | null {
     }
     case 'make':
     case 'gmake':
-      for (let k = i + 1; k < toks.length; k += MAKE_ARG_FLAGS.has(toks[k]!) ? 2 : 1) if (toks[k] === 'test') return 'make';
-      return null;
+      return onlyTestGoals(toks, i + 1, { argFlags: MAKE_ARG_FLAGS, allowed: MAKE_TARGET, test: MAKE_TEST, countFlags: MAKE_COUNT_FLAGS }) ? 'make' : null;
     default:
       return null;
   }
 }
 
 function familyOf(core: string): Family | null {
-  return familyAt(core.split(' '), 0);
+  return familyAt(shellWords(core), 0);
 }
 
 const SUBCOMMAND_LAUNCHERS: ReadonlySet<string> = new Set(['npm', 'yarn', 'pnpm', 'bun', 'cargo', 'go', 'make']);
@@ -603,15 +776,19 @@ function sameProgram(c: string, t: string): boolean {
  * True when `command` runs the workspace's detected test command: the command itself, a scoped or extended form of it
  * (`pytest -q tests/x.py` for `pytest -q`), or another spelling of the same runner family (`npx vitest run a.test.ts`,
  * `node --test test/a.test.js` or `pnpm test` for a detected `npm test`; `uv run pytest` for `python3 -m pytest -q`),
- * after the wrappers of the module comment are dropped. A detected `make test` accepts any recognised family.
+ * after the wrappers of the module comment are dropped. A detected `make test` accepts any recognised family. An
+ * extension of a detected command in a family must itself be in the family: `./mvnw test deploy` extends `./mvnw test`
+ * and also deploys. A list or pipeline left after the wrappers (`npx vitest run && sed -i x src/a.ts`) runs something
+ * else as well, whose edits must still count as edits, so it is no test run.
  */
 export function isTestCommand(command: string, test: TestCommand | null): boolean {
   if (!test) return false;
   const c = testInvocation(command).core;
   const t = testInvocation(test.command).core;
-  if (c === t || c.startsWith(`${t} `)) return true;
+  if (c === t) return true;
+  if (composedOutsideQuotes(c)) return false;
   const ft = familyOf(t);
-  if (ft === null) return sameProgram(c, t);
+  if (ft === null) return c.startsWith(`${t} `) || sameProgram(c, t);
   const fc = familyOf(c);
   return fc !== null && (fc === ft || ft === 'make');
 }
@@ -752,9 +929,12 @@ export function sympyScope(command: string): ScopeBuilder {
 /** unittest: `python -m unittest -v <module or dotted labels>` (discovery is replaced by the explicit names). */
 export function unittestScope(command: string): ScopeBuilder {
   const py = command.trim().split(/\s+/)[0] ?? 'python3';
+  // Django's `manage.py test` takes the same dotted labels, and needs its settings: the labels go after it
+  const manage = /(^|\s|\/)manage\.py\s+test(\s|$)/.test(command);
   return (targets) => {
     const labels = uniq(targets.map((t) => unittestModuleLabel(t)).filter((l) => l !== ''));
-    return labels.length === 0 ? command : `${py} -m unittest -v ${labels.map(quoteArg).join(' ')}`;
+    if (labels.length === 0) return command;
+    return manage ? `${command.trim()} ${labels.map(quoteArg).join(' ')}` : `${py} -m unittest -v ${labels.map(quoteArg).join(' ')}`;
   };
 }
 

