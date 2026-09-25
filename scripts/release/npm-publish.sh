@@ -150,15 +150,21 @@ else
   fi
 fi
 
-# 7. Wait until the registry serves these exact bytes; a rerun then skips cleanly.
-for i in $(seq 1 12); do
+# 7. Wait until the registry serves these exact bytes; a rerun then skips cleanly. npm answers a trusted publish with
+#    "Your package is being processed and may take a few minutes to become available": v0.7.0 was published at once but
+#    not served within the old 120 s, so the job failed after a successful publish. The window is now 10 minutes
+#    (NPM_SERVE_WAIT_S, NPM_SERVE_POLL_S override it).
+WAIT_S="${NPM_SERVE_WAIT_S:-600}"
+POLL_S="${NPM_SERVE_POLL_S:-15}"
+ATTEMPTS=$(( (WAIT_S + POLL_S - 1) / POLL_S ))
+for i in $(seq 1 "$ATTEMPTS"); do
   STATE="$(registry_state || echo error)"
   if [ "$STATE" = same ]; then
     note "npm: published $PKG@$VERSION under dist-tag $DIST_TAG ($LOCAL_INTEGRITY)"
     exit 0
   fi
-  echo "registry does not serve $PKG@$VERSION yet ($STATE, attempt $i/12)"
-  sleep 10
+  echo "registry does not serve $PKG@$VERSION yet ($STATE, attempt $i/$ATTEMPTS)"
+  sleep "$POLL_S"
 done
-err "the registry did not serve $PKG@$VERSION with integrity $LOCAL_INTEGRITY within 120 s; re-run the failed jobs"
+err "the registry did not serve $PKG@$VERSION with integrity $LOCAL_INTEGRITY within $WAIT_S s; the publish itself may have succeeded — check npm, then re-run the failed jobs"
 exit 1
