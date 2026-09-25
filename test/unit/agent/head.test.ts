@@ -3,7 +3,8 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { EngineSeed } from '../../../src/core/types.js';
-import { buildHead, chatLines, firstUserMessage } from '../../../src/agent/head.js';
+import { buildHead, chatLines, firstUserMessage, testCommandLine } from '../../../src/agent/head.js';
+import { scopeBuilderFor } from '../../../src/workspace/tests.js';
 import { initialState } from '../../../src/agent/state.js';
 import type { TranscriptRecord } from '../../../src/agent/transcript.js';
 import { repoState } from '../loop/fakes.js';
@@ -54,10 +55,19 @@ describe('the first user message (no agent parent)', () => {
         '- root: ws (your working directory: tool paths are relative to it, so `src/a.ts`, never `ws/src/a.ts`); git: main, 1 modified, 1 untracked',
         '- your uncommitted changes: src/math.js, notes.txt',
         '- detected: package.json (node, type module)',
-        '- test command: `npm test`',
+        '- test command: `npm test` (the whole suite)',
         '- top level: src/ test/ README.md package.json',
       ].join('\n'),
     );
+  });
+
+  it('the test command line says it is the whole suite, and names its one-file form when the runner can scope (a targeted check is what the prompt asks for)', () => {
+    expect(testCommandLine(null)).toBe('none detected');
+    expect(testCommandLine({ command: 'npm test', runner: 'npm' })).toBe('`npm test` (the whole suite)');
+    const scope = scopeBuilderFor('pytest', 'pytest -q');
+    expect(scope).not.toBeNull();
+    expect(testCommandLine({ command: 'pytest -q', runner: 'pytest', scope: scope! })).toBe(`\`pytest -q\` (the whole suite); one file: \`${scope!(['<file>'])}\``);
+    expect(scope!(['<file>'])).toContain('<file>');
   });
 
   it('drops the "never <root>/…" example when the workspace has a top-level entry named like its root (a package named like its repo)', async () => {

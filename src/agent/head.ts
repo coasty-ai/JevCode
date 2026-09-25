@@ -14,7 +14,7 @@
  */
 import { readFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
-import type { AgentContext, Candidate, GitState, Json, JsonObject, UndoLogEntry } from '../core/types.js';
+import type { AgentContext, Candidate, GitState, Json, JsonObject, TestCommand, UndoLogEntry } from '../core/types.js';
 import { clip } from '../core/text.js';
 import {
   AGENT_CHAT_CARRY_CHARS,
@@ -121,6 +121,16 @@ export function rootLine(name: string, candidates: readonly Candidate[]): string
   return `${name} (your working directory: tool paths are relative to it, so \`src/a.ts\`, never \`${name}/src/a.ts\`)`;
 }
 
+/**
+ * The detected test command, said to be the whole suite, and its one-file form when the runner can scope: the model is
+ * told to run the tests of what it touched (§5.1 "Verifying"), and in a large repository the whole suite takes minutes.
+ */
+export function testCommandLine(test: TestCommand | null): string {
+  if (test === null) return 'none detected';
+  const scoped = test.scope !== undefined ? `; one file: \`${test.scope(['<file>'])}\`` : '';
+  return `\`${test.command}\` (the whole suite)${scoped}`;
+}
+
 async function workspaceBlock(ctx: AgentContext): Promise<string> {
   const g = ctx.workspace.gitState?.() ?? ctx.workspaceInfo.gitState ?? null;
   const candidates = await ctx.workspace.listCandidates();
@@ -132,7 +142,7 @@ async function workspaceBlock(ctx: AgentContext): Promise<string> {
     lines.push(`- your uncommitted changes: ${shown.join(', ')}${paths.length > shown.length ? `, … (+${paths.length - shown.length} more)` : ''}`);
   }
   lines.push(`- detected: ${await detectedLine(ctx, top.files)}`);
-  lines.push(`- test command: ${ctx.workspaceInfo.testCommand !== null ? `\`${ctx.workspaceInfo.testCommand.command}\`` : 'none detected'}`);
+  lines.push(`- test command: ${testCommandLine(ctx.workspaceInfo.testCommand)}`);
   lines.push(`- top level: ${top.line || '(empty)'}`);
   return `# Workspace\n${lines.join('\n')}`;
 }

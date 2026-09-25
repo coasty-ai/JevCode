@@ -219,7 +219,6 @@ import {
   destructiveNote,
   isAgentRefusal,
   isOutputPart,
-  isUnscopedGreenRun,
   recordedTestCommand,
   ruleRiskAssessment,
   runAgentStage,
@@ -4058,9 +4057,16 @@ class EngineImpl implements Engine {
     return this.agentDriverInstance;
   }
 
-  /** §3.3 / §8: the agent `complete` — a current, green run of the unscoped detected test command (the plan is not consulted). */
+  /**
+   * §3.3 / §8: the agent `complete` — the last recognised test run passed and came after the last change (the plan is not
+   * consulted). Any run the parser recognises counts: the detected command, a scoped form (`pytest -q tests/test_a.py`), a
+   * subdirectory run (recorded as `cd <dir> && …`) or a piped one; `allPassed` is count-based (parsed, no failure or error,
+   * at least one pass), so a `| tail` pipe's exit code decides nothing. The residual risk: a green targeted test that does
+   * not cover the change also completes; the step row names the command that ran.
+   */
   private agentVerifiedCompletion(): boolean {
-    return isUnscopedGreenRun(this.lastTestRun, this.wsInfo.testCommand) && testsCurrent(this.lastTestRun, this.lastChangeStep);
+    const run = this.lastTestRun;
+    return run !== null && run.allPassed && testsCurrent(run, this.lastChangeStep);
   }
 
   /**

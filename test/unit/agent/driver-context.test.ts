@@ -160,8 +160,9 @@ describe('compaction', () => {
     expect(messages[0]!.content.at(-1)).toEqual({ type: 'text', text: 'You have called read_file with the same arguments 3 times in a row and got the same result. Stop and try a different approach.' });
   });
 
-  it("the harness's verify outcome is kept when the next turn build compacts", async () => {
+  it("the harness's verify outcome (agent.verify tests) is kept when the next turn build compacts", async () => {
     const ctx = createAgentContext({
+      verify: 'tests',
       compaction: { mode: 'code', explicit: true },
       sandbox: () => ({ exitCode: 1, stdout: '1 failed, 0 passed in 0.1s\n' }),
       turns: [{ toolCalls: [call('edit_file', { path: 'src/a.py', old_string: 'return 1', new_string: 'return 3' })] }, { text: 'Fixed it.' }, { text: 'It still fails; I will say so.' }],
@@ -175,7 +176,7 @@ describe('compaction', () => {
     const messages = agentRequests(ctx)[2]!.agent!.messages;
     expect(messages).toHaveLength(1);
     const last = messages[0]!.content.at(-1)!;
-    expect(last.type === 'text' && last.text.startsWith('The harness ran `pytest -q` to verify your change: exit 1')).toBe(true);
+    expect(last.type === 'text' && last.text.startsWith('The harness ran `pytest -q` to check your change: exit 1')).toBe(true);
   });
 
   it('/compact forces a compaction at the next turn build', async () => {

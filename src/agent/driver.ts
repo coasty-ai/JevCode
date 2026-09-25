@@ -27,7 +27,7 @@ import { NOT_EXECUTED_STEER, PROGRESS_NUDGE, buildAgentSystemPrompt, loopNudgeTe
 import { lowEffortReasoning, agentReasoning, maskingModeFor, providerLabel, sameReasoning, type MaskingMode } from './providers.js';
 import { deriveCall, type NormalisedCall } from './repair.js';
 import { initialState, parseState, stateJson, type AgentStateV1 } from './state.js';
-import { decideStop, isUnscopedTestRun } from './stop.js';
+import { decideStop, isDocsOnlyChange, isUnscopedTestRun } from './stop.js';
 import { bashStatusLine, clipMiddle, oneLine } from './tools/format.js';
 import type { ReadHashes } from './tools/read.js';
 import { createRgProbe } from './tools/search.js';
@@ -178,7 +178,8 @@ class Driver implements AgentDriver {
         if (sampled.calls.length > 0) continue;
         reply = sampled.record;
       }
-      const d = decideStop(reply, this.state, ctx.workspaceInfo.testCommand);
+      // §3.3 rule 2 is the `agent.verify tests` opt-in: by default the model decides what to run, and nothing is run for it
+      const d = decideStop(reply, this.state, ctx.verify === 'tests' ? ctx.workspaceInfo.testCommand : null);
       if (d.kind === 'continue') {
         this.state.continueNudges += 1;
         await this.note(d.note, 'continue');
@@ -399,8 +400,12 @@ class Driver implements AgentDriver {
     // memory first (the call is resolved even if the disk append then fails), then the counters
     const appending = t.append({ kind: 'result', turn: this.state.turns, toolUseId: call.id, name: call.name === 'invalid' ? wireToolName(call.rawName) : call.name, content: ctx.redact(report.text), isError: !report.ok, summary: ctx.redact(report.summary), ...(report.pointer !== undefined ? { pointer: report.pointer } : {}) });
     if (changesWorkspace(act, o, testRun)) {
-      this.state.changedSinceVerify = true;
-      this.state.failedTest = null;
+      // a change to docs alone (README.md, LICENSE, an image) is nothing a test run can check: it arms no verification
+      const paths = [...(act.path !== null ? [act.path] : []), ...o.changedFiles];
+      if (!isDocsOnlyChange(paths)) {
+        this.state.changedSinceVerify = true;
+        this.state.failedTest = null;
+      }
       if (act.path !== null) this.filesEdited.add(act.path);
       for (const f of o.changedFiles) this.filesEdited.add(f);
       // the agent's own edit is not an outside change: the next edit of this file must not report a stale read
@@ -412,7 +417,7 @@ class Driver implements AgentDriver {
       if (exitOk && (parsed === null || o.tests?.allPassed !== false)) {
         this.state.changedSinceVerify = false;
         this.state.failedTest = null;
-      } else if (this.state.changedSinceVerify) this.state.failedTest = { passed: parsed?.passed ?? 0, failed: parsed?.failed ?? 0, errors: parsed?.errors ?? 0 };
+      } else if (this.state.changedSinceVerify) this.state.failedTest = { passed: parsed?.passed ?? 0, failed: parsed?.failed ?? 0, errors: parsed?.errors ?? 0, parsed: parsed !== null, exitCode: o.outcome.exec?.exitCode ?? null };
     }
     if (testRun && o.tests?.parsed) this.testTrend.push(`${o.tests.parsed.passed}p/${o.tests.parsed.failed}f`);
     if (report.refused) this.state.blocks += 1;
@@ -441,13 +446,10 @@ class Driver implements AgentDriver {
       const clipped = clipMiddle(o.output, 6_000, 1_500, 4_500).text;
       text = verifyResult(p.command, bashStatusLine(exec, null, o.tests?.parsed ?? null), clipped);
       const parsed = o.tests?.parsed ?? null;
-      if (exec.ok && (parsed === null || o.tests?.allPassed !== false)) {
-        this.state.changedSinceVerify = false;
-        this.state.failedTest = null;
-      } else {
-        // a reply with no new change gets the counts once (the failed-test nudge), not the same suite run again
-        this.state.failedTest = { passed: parsed?.passed ?? 0, failed: parsed?.failed ?? 0, errors: parsed?.errors ?? 0 };
-      }
+      // pass or fail, the result is handed to the model once, in the note below: a reply with no new change finishes (a
+      // failure it explains is not nudged again, and the suite is not run again); a new change arms the next verify
+      this.state.changedSinceVerify = false;
+      this.state.failedTest = null;
       if (parsed !== null) this.testTrend.push(`${parsed.passed}p/${parsed.failed}f`);
     } else text = verifyResult(p.command, o.outcome.status === 'failed' ? `could not run (${o.outcome.error})` : o.outcome.status, '');
     this.remember(`verify: ${p.command} → ${exec !== undefined ? (exec.exitCode ?? 'killed') : o.outcome.status}`);

@@ -1,13 +1,14 @@
 /**
  * The driver's stop rules, replies and request settings (docs/AGENT-LOOP-DESIGN.md §3.3, §6.3, §6.5, §A1, §A4): the
- * narrow continuation, bounded verification with the failed-test nudge and the timeout note, a reply that needs no
- * tools, the rejected-replay retry, the empty reply, loop nudges and the RA0 effort hint on the first turn.
+ * narrow continuation, no harness verification by default (the model checks its own work), the opt-in bounded
+ * verification of `agent.verify tests` with the failed-test nudge and the timeout note, a reply that needs no tools, the
+ * rejected-replay retry, the empty reply, loop nudges and the RA0 effort hint on the first turn.
  */
 import { describe, expect, it } from 'vitest';
 import type { Answer } from '../../../src/core/types.js';
 import { GeneratorResponseError, ProviderHttpError } from '../../../src/errors.js';
 import { createAgentDriver } from '../../../src/agent/index.js';
-import { announcesAction } from '../../../src/agent/stop.js';
+import { announcesAction, isDocsOnlyChange } from '../../../src/agent/stop.js';
 import { call, createAgentContext, messagesOf, runUntilFinish, step, userText, type ScriptedTurn } from './helpers.js';
 
 describe('continuation', () => {
@@ -50,38 +51,74 @@ describe('continuation', () => {
   });
 });
 
-describe('verification', () => {
+describe('verification is the model\'s by default (agent.verify off)', () => {
+  const edit = (): ScriptedTurn => ({ toolCalls: [call('edit_file', { path: 'src/a.py', old_string: 'return 1', new_string: 'return 2' })] });
+
+  it('an edit then a reply is act, finish: the harness never runs the test command and sends no verify note', async () => {
+    const ctx = createAgentContext({ turns: [edit(), { text: 'Changed f to return 2.' }], sandbox: () => ({ exitCode: 0, stdout: '1 passed in 0.01s\n' }) });
+    const steps = await runUntilFinish(createAgentDriver(), ctx);
+    expect(kinds(steps)).toEqual(['act', 'finish']);
+    // (the edit's own syntax check runs through the sandbox; the test command never does)
+    expect(ctx.sb.commands.filter((c) => c.startsWith('pytest'))).toEqual([]);
+    expect(ctx.sent).toHaveLength(2);
+    expect(ctx.sent.map((_r, i) => userText(ctx, i)).join('\n')).not.toContain('The harness ran');
+    // the counters are still kept, so a resume under `tests` knows a change is unverified
+    expect((ctx.state as { changedSinceVerify: boolean }).changedSinceVerify).toBe(true);
+  });
+
+  it("the model's own failing run of the test command draws no nudge: its explanation finishes", async () => {
+    const ctx = createAgentContext({
+      turns: [edit(), { toolCalls: [call('bash', { command: 'pytest -q' })] }, { text: 'test_f fails for a reason unrelated to this change.' }],
+      sandbox: () => ({ exitCode: 1, stdout: 'F\n1 failed, 2 passed in 0.02s\n' }),
+    });
+    const steps = await runUntilFinish(createAgentDriver(), ctx);
+    expect(kinds(steps)).toEqual(['act', 'act', 'finish']);
+    expect(ctx.sent).toHaveLength(3);
+    expect(ctx.sb.commands.filter((c) => c.startsWith('pytest'))).toEqual(['pytest -q']);
+    expect(ctx.sent.map((_r, i) => userText(ctx, i)).join('\n')).not.toContain('The last run of');
+    expect((ctx.state as { failedTest: unknown }).failedTest).toEqual({ passed: 2, failed: 1, errors: 0, parsed: true, exitCode: 1 });
+  });
+});
+
+describe('verification under agent.verify tests (the opt-in)', () => {
   const edit = (): ScriptedTurn => ({ toolCalls: [call('edit_file', { path: 'src/a.py', old_string: 'return 1', new_string: 'return 2' })] });
 
   it('after a change with no passing run, the harness verifies with the detected command; a green verify finishes', async () => {
-    const ctx = createAgentContext({ turns: [edit(), { text: 'Changed f.' }, { text: 'Verified.' }], sandbox: () => ({ exitCode: 0, stdout: '1 passed in 0.01s\n' }) });
+    const ctx = createAgentContext({ verify: 'tests', turns: [edit(), { text: 'Changed f.' }, { text: 'Verified.' }], sandbox: () => ({ exitCode: 0, stdout: '1 passed in 0.01s\n' }) });
     const steps = await runUntilFinish(createAgentDriver(), ctx);
     expect(kinds(steps)).toEqual(['act', 'verify', 'finish']);
     const verify = steps[1]!.next;
     expect(verify.proposal.action).toEqual({ kind: 'run', command: 'pytest -q', timeoutMs: 600_000 });
-    expect(userText(ctx, 2)).toContain('The harness ran `pytest -q` to verify your change: exit 0 · ');
+    expect(userText(ctx, 2)).toContain('The harness ran `pytest -q` to check your change: exit 0 · ');
     expect(userText(ctx, 2)).toContain('tests: 1 passed, 0 failed, 0 errors');
+    expect(userText(ctx, 2)).toContain('If it passed, reply with one short sentence that says the tests passed.');
     expect((ctx.state as { changedSinceVerify: boolean }).changedSinceVerify).toBe(false);
   });
 
   it('verifies at most twice per run', async () => {
     const edit2 = (): ScriptedTurn => ({ toolCalls: [call('edit_file', { path: 'src/a.py', old_string: 'return 2', new_string: 'return 3' })] });
-    const ctx = createAgentContext({ turns: [edit(), { text: 'Done?' }, edit2(), { text: 'Still done?' }, { text: 'Giving up.' }], sandbox: () => ({ exitCode: 1, stdout: '1 failed in 0.01s\n' }) });
+    const ctx = createAgentContext({ verify: 'tests', turns: [edit(), { text: 'Done?' }, edit2(), { text: 'Still done?' }, { text: 'Giving up.' }], sandbox: () => ({ exitCode: 1, stdout: '1 failed in 0.01s\n' }) });
     const steps = await runUntilFinish(createAgentDriver(), ctx);
     expect(kinds(steps)).toEqual(['act', 'verify', 'act', 'verify', 'finish']);
     expect((ctx.state as { verifyRuns: number }).verifyRuns).toBe(2);
   });
 
-  it('after a failed harness verify, a reply with no new change gets the counts once instead of the same run again', async () => {
-    const ctx = createAgentContext({ turns: [edit(), { text: 'Done.' }, { text: 'Those failures are unrelated.' }, { text: 'Final.' }], sandbox: () => ({ exitCode: 1, stdout: '1 failed, 4 passed in 0.01s\n' }) });
+  it('after a failed harness verify the explaining reply finishes and the suite ran exactly once', async () => {
+    const ctx = createAgentContext({ verify: 'tests', turns: [edit(), { text: 'Done.' }, { text: 'Those failures were there before this change.' }, { text: 'Final.' }], sandbox: () => ({ exitCode: 1, stdout: '1 failed, 4 passed in 0.01s\n' }) });
     const steps = await runUntilFinish(createAgentDriver(), ctx);
     expect(kinds(steps)).toEqual(['act', 'verify', 'finish']);
     expect(ctx.sb.commands.filter((c) => c === 'pytest -q')).toHaveLength(1);
-    expect(userText(ctx, 3)).toContain('The last run of `pytest -q` after your change failed (4 passed, 1 failed, 0 errors).');
+    expect(ctx.sent).toHaveLength(3);
+    expect(userText(ctx, 2)).toContain('The harness ran `pytest -q` to check your change: exit 1');
+    expect(userText(ctx, 2)).toContain('If it failed for another reason (the environment, a missing tool, failures that were there before), say so in one sentence and do not try to repair the environment.');
+    const done = steps[2]!.next.proposal.action;
+    expect(done.kind === 'done' && done.summary).toBe('Those failures were there before this change.');
+    expect(ctx.sent.map((_r, i) => userText(ctx, i)).join('\n')).not.toContain('The last run of');
   });
 
   it("the model's own failing unscoped run gets the failed-test nudge once, then the harness verifies", async () => {
     const ctx = createAgentContext({
+      verify: 'tests',
       turns: [edit(), { toolCalls: [call('bash', { command: 'pytest -q' })] }, { text: 'Done.' }, { text: 'Still done.' }, { text: 'Bye.' }],
       sandbox: () => ({ exitCode: 1, stdout: 'F\n1 failed, 2 passed in 0.02s\n' }),
     });
@@ -90,43 +127,85 @@ describe('verification', () => {
     expect(userText(ctx, 3)).toContain('The last run of `pytest -q` after your change failed (2 passed, 1 failed, 0 errors). Fix it, or explain why the failures are unrelated, before you finish.');
   });
 
+  it('a failing run whose output no parser reads is reported by its exit code, not as zero counts', async () => {
+    const ctx = createAgentContext({
+      verify: 'tests',
+      testCommand: { command: 'npm test', runner: 'npm' },
+      turns: [edit(), { toolCalls: [call('bash', { command: 'npm test' })] }, { text: 'Done.' }, { text: 'Still done.' }, { text: 'Bye.' }],
+      sandbox: () => ({ exitCode: 1, stdout: "Error: EPERM: operation not permitted, mkdir 'node_modules/.vite-temp'\n" }),
+    });
+    const steps = await runUntilFinish(createAgentDriver(), ctx);
+    expect(kinds(steps)).toEqual(['act', 'act', 'verify', 'finish']);
+    expect(userText(ctx, 3)).toContain('The last run of `npm test` after your change failed (exit 1).');
+    expect(userText(ctx, 3)).not.toContain('0 passed, 0 failed, 0 errors');
+  });
+
   it("a scoped run doesn't count as verification, a green unscoped run does", async () => {
-    const scoped = createAgentContext({ turns: [edit(), { toolCalls: [call('bash', { command: 'pytest -q tests/test_a.py' })] }, { text: 'Done.' }, { text: 'ok' }], sandbox: () => ({ exitCode: 0, stdout: '1 passed in 0.01s\n' }) });
+    const scoped = createAgentContext({ verify: 'tests', turns: [edit(), { toolCalls: [call('bash', { command: 'pytest -q tests/test_a.py' })] }, { text: 'Done.' }, { text: 'ok' }], sandbox: () => ({ exitCode: 0, stdout: '1 passed in 0.01s\n' }) });
     expect(kinds(await runUntilFinish(createAgentDriver(), scoped))).toEqual(['act', 'act', 'verify', 'finish']);
-    const unscoped = createAgentContext({ turns: [edit(), { toolCalls: [call('bash', { command: 'pytest -q' })] }, { text: 'Done.' }], sandbox: () => ({ exitCode: 0, stdout: '1 passed in 0.01s\n' }) });
+    const unscoped = createAgentContext({ verify: 'tests', turns: [edit(), { toolCalls: [call('bash', { command: 'pytest -q' })] }, { text: 'Done.' }], sandbox: () => ({ exitCode: 0, stdout: '1 passed in 0.01s\n' }) });
     expect(kinds(await runUntilFinish(createAgentDriver(), unscoped))).toEqual(['act', 'act', 'finish']);
-    const inWorkdir = createAgentContext({ turns: [edit(), { toolCalls: [call('bash', { command: 'pytest -q', workdir: 'tests' })] }, { text: 'Done.' }, { text: 'ok' }], sandbox: () => ({ exitCode: 0, stdout: '1 passed in 0.01s\n' }) });
+    const inWorkdir = createAgentContext({ verify: 'tests', turns: [edit(), { toolCalls: [call('bash', { command: 'pytest -q', workdir: 'tests' })] }, { text: 'Done.' }, { text: 'ok' }], sandbox: () => ({ exitCode: 0, stdout: '1 passed in 0.01s\n' }) });
     expect(kinds(await runUntilFinish(createAgentDriver(), inWorkdir))).toEqual(['act', 'act', 'verify', 'finish']);
   });
 
   it('a command that changed files needs verification; the test command itself does not count as a change', async () => {
-    const ctx = createAgentContext({ turns: [{ toolCalls: [call('bash', { command: 'sed -i s/1/2/ src/a.py' })] }, { text: 'Done.' }, { text: 'ok' }], sandbox: () => ({ exitCode: 0, stdout: '1 passed\n' }) });
+    const ctx = createAgentContext({ verify: 'tests', turns: [{ toolCalls: [call('bash', { command: 'sed -i s/1/2/ src/a.py' })] }, { text: 'Done.' }, { text: 'ok' }], sandbox: () => ({ exitCode: 0, stdout: '1 passed\n' }) });
     const steps = await runUntilFinish(createAgentDriver(), ctx, { changedFiles: (c) => (c.startsWith('sed') ? ['src/a.py'] : []) });
     expect(kinds(steps)).toEqual(['act', 'verify', 'finish']);
-    const noChange = createAgentContext({ turns: [{ toolCalls: [call('bash', { command: 'npm install' })] }, { text: 'Done.' }] });
+    const noChange = createAgentContext({ verify: 'tests', turns: [{ toolCalls: [call('bash', { command: 'npm install' })] }, { text: 'Done.' }] });
     expect(kinds(await runUntilFinish(createAgentDriver(), noChange))).toEqual(['act', 'finish']);
   });
 
+  it('a change to docs alone (README.md, a LICENSE, an image) arms no verification; a docs change beside code does', async () => {
+    const docs = createAgentContext({
+      verify: 'tests',
+      turns: [{ toolCalls: [call('write_file', { path: 'README.md', content: '# a\n' })] }, { toolCalls: [call('bash', { command: 'cp README.md LICENSE' })] }, { text: 'Updated the docs.' }],
+    });
+    const steps = await runUntilFinish(createAgentDriver(), docs, { changedFiles: (c) => (c.startsWith('cp') ? ['LICENSE'] : []) });
+    expect(kinds(steps)).toEqual(['act', 'act', 'finish']);
+    expect(docs.sb.commands).toEqual(['cp README.md LICENSE']);
+    const mixed = createAgentContext({ verify: 'tests', turns: [{ toolCalls: [call('bash', { command: 'touch README.md src/b.py' })] }, { text: 'Done.' }, { text: 'ok' }], sandbox: () => ({ exitCode: 0, stdout: '1 passed\n' }) });
+    expect(kinds(await runUntilFinish(createAgentDriver(), mixed, { changedFiles: () => ['README.md', 'src/b.py'] }))).toEqual(['act', 'verify', 'finish']);
+  });
+
   it('a verify that times out goes back as "not verified", never as a failure to fix', async () => {
-    const ctx = createAgentContext({ turns: [edit(), { text: 'Done.' }, { text: 'Not verified, sorry.' }], sandbox: (cmd) => (cmd === 'pytest -q' ? { exitCode: null, killedBy: 'timeout', durationMs: 600_000 } : { stdout: '' }) });
+    const ctx = createAgentContext({ verify: 'tests', turns: [edit(), { text: 'Done.' }, { text: 'Not verified, sorry.' }], sandbox: (cmd) => (cmd === 'pytest -q' ? { exitCode: null, killedBy: 'timeout', durationMs: 600_000 } : { stdout: '' }) });
     const steps = await runUntilFinish(createAgentDriver(), ctx);
     expect(kinds(steps)).toEqual(['act', 'verify', 'finish']);
     expect(userText(ctx, 2)).toContain('The harness ran `pytest -q` to verify your change, but it did not finish within 600s, so the change is not verified.');
   });
 
   it('with no test command there is nothing to verify', async () => {
-    const ctx = createAgentContext({ turns: [edit(), { text: 'Done.' }], testCommand: null });
+    const ctx = createAgentContext({ verify: 'tests', turns: [edit(), { text: 'Done.' }], testCommand: null });
     expect(kinds(await runUntilFinish(createAgentDriver(), ctx))).toEqual(['act', 'finish']);
   });
 
   it('a discarded verify or finish is re-derived by the stop rules', async () => {
-    const ctx = createAgentContext({ turns: [edit(), { text: 'Done.' }] });
+    const ctx = createAgentContext({ verify: 'tests', turns: [edit(), { text: 'Done.' }] });
     const d = createAgentDriver();
     await step(d, ctx);
     const v1 = await d.next(ctx);
     const v2 = await d.next(ctx);
     expect([v1.kind, v2.kind]).toEqual(['verify', 'verify']);
     expect(ctx.sent).toHaveLength(2);
+  });
+});
+
+describe('isDocsOnlyChange', () => {
+  it.each([
+    [['README.md'], true],
+    [['docs/guide.rst', 'docs/img/flow.SVG', 'notes.txt', 'a.adoc', 'b.org', 'c.mdx', 'd.markdown', 'e.asciidoc'], true],
+    [['LICENSE', 'COPYING', 'NOTICE', 'AUTHORS', 'CHANGELOG', 'README', 'LICENSE-MIT', 'pkg/readme'], true],
+    [['assets/logo.png', 'a.jpg', 'b.jpeg', 'c.gif', 'd.webp', 'favicon.ico'], true],
+    [[], false],
+    [['src/a.py'], false],
+    [['README.md', 'src/a.py'], false],
+    [['README.py', 'LICENSE.sh'], false],
+    [['Makefile'], false],
+    [['package.json'], false],
+  ] as const)('%j → %s', (paths, want) => {
+    expect(isDocsOnlyChange(paths)).toBe(want);
   });
 });
 

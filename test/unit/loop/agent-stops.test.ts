@@ -1,8 +1,8 @@
 /**
  * docs/AGENT-LOOP-DESIGN.md §3.3 / §3.6 / §8 / §15 S4 — the agent stop rules in the engine: `complete` only after a current, green run
- * of the UNSCOPED detected test command (a scoped or subdirectory run gives `generator_done`; pending todos never block); the 6th loop
- * trip stops `stuck` (exit 4, resumable); a throwing `observe()` is a stage failure whose step still commits, and three in a row stop
- * the run with `error`.
+ * of a recognised test command — the detected one, a scoped form or a subdirectory run all count; a failing or stale run gives
+ * `generator_done`; pending todos never block; the 6th loop trip stops `stuck` (exit 4, resumable); a throwing `observe()` is a stage
+ * failure whose step still commits, and three in a row stop the run with `error`.
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { ConfigError } from '../../../src/errors.js';
@@ -33,7 +33,7 @@ const greenParent: EngineSeed = {
   lastTestRun: { step: 7, command: 'pytest -q', passed: 2, failed: 0, errors: 0, allPassed: true },
 };
 
-describe('complete needs a current, green, unscoped run of the detected test command (§3.3)', () => {
+describe('complete needs a current, green run of a recognised test command (§3.3)', () => {
   it('the unscoped run after the last change completes, with todo items still pending (they are a note, never a gate)', async () => {
     const h = await agent([edit, bash('pytest -q'), { text: 'Fixed; docs are still to do.' }], { sandbox: tests(() => passingTests), driver: { plan: { remaining: ['update the docs'] } } });
     const r = await h.engine.run();
@@ -41,14 +41,14 @@ describe('complete needs a current, green, unscoped run of the detected test com
     expect(h.store.last()!.plan.remaining).toEqual(['update the docs']);
   });
 
-  it('a scoped green run (`pytest -q tests/test_a.py`) is a test run but never `complete`: generator_done', async () => {
+  it('a scoped green run (`pytest -q tests/test_a.py`, the targeted check the prompt asks for) after the last change completes', async () => {
     const h = await agent([edit, bash('pytest -q tests/test_a.py'), { text: 'Fixed.' }], { sandbox: tests(() => passingTests) });
     const r = await h.engine.run();
-    expect(r.stopReason).toBe('generator_done');
+    expect(r.stopReason).toBe('complete');
     expect(h.store.last()!.lastTestRun).toMatchObject({ command: 'pytest -q tests/test_a.py', allPassed: true });
   });
 
-  it('the test command in a subdirectory (`workdir`) reaches the sandbox as cwd and is recorded as `cd <dir> && …`: generator_done', async () => {
+  it('the test command in a subdirectory (`workdir`) reaches the sandbox as cwd, is recorded as `cd <dir> && …` and completes', async () => {
     const cwds: (string | undefined)[] = [];
     const sandbox = tests(() => passingTests);
     const run = sandbox.run.bind(sandbox);
@@ -61,7 +61,7 @@ describe('complete needs a current, green, unscoped run of the detected test com
     expect(cwds).toEqual(['pkg']);
     expect(h.store.steps[1]!.proposal?.action).toEqual({ kind: 'run', command: 'pytest -q', cwd: 'pkg' });
     expect(h.store.last()!.lastTestRun).toMatchObject({ command: 'cd pkg && pytest -q', allPassed: true });
-    expect(r.stopReason).toBe('generator_done');
+    expect(r.stopReason).toBe('complete');
   });
 
   it('a failing run, and a green run followed by an edit, are not complete', async () => {
