@@ -75,16 +75,18 @@ export function inheritsEnvName(name: string): boolean {
 
 /**
  * Version-manager homes that live under the real HOME and are read, not written, on an ordinary command: with HOME
- * remapped, a rustup / pyenv / rbenv / asdf / volta / nvm / sdkman shim would look for its home in the run directory and
- * find no toolchain. Each is set only when the user has not set it and the directory exists. Caches a build WRITES
- * (CARGO_HOME, GOPATH / GOMODCACHE, GRADLE_USER_HOME, ~/.m2, ~/.npm) are never pointed at the real home: the macOS
- * profile denies writes there, and a fresh cache in the run's HOME works everywhere.
+ * remapped (and XDG_* dropped), a rustup / pyenv / rbenv / asdf / mise / volta / nvm / sdkman shim would look for its
+ * home in the run directory and find no toolchain. Each is set only when the user has not set it and the directory
+ * exists. Caches a build WRITES (CARGO_HOME, GOPATH / GOMODCACHE, GRADLE_USER_HOME, ~/.m2, ~/.npm) are never pointed at
+ * the real home: the macOS profile denies writes there, and a fresh cache in the run's HOME works everywhere.
  */
 const TOOLCHAIN_HOMES: readonly (readonly [string, string])[] = [
   ['RUSTUP_HOME', '.rustup'],
   ['PYENV_ROOT', '.pyenv'],
   ['RBENV_ROOT', '.rbenv'],
   ['ASDF_DATA_DIR', '.asdf'],
+  ['MISE_DATA_DIR', '.local/share/mise'],
+  ['MISE_CONFIG_DIR', '.config/mise'],
   ['VOLTA_HOME', '.volta'],
   ['NVM_DIR', '.nvm'],
   ['SDKMAN_DIR', '.sdkman'],
@@ -118,20 +120,33 @@ export function resolveGitIdentity(opts: { probe?: () => GitIdentity | null } = 
   return id !== null && (id.name !== null || id.email !== null) ? id : null;
 }
 
+/**
+ * `git config --get-regexp` output (`user.name Ada Lovelace` / `user.email ada@example.com`, one per line) as an
+ * identity. A key set twice (an include repeating it) takes its last value, as git itself does.
+ */
+export function parseGitIdentity(stdout: string): GitIdentity {
+  const id: GitIdentity = { name: null, email: null };
+  for (const line of stdout.split('\n')) {
+    const m = /^user\.(name|email)[ \t]+(.*)$/i.exec(line.replace(/\r$/, ''));
+    const v = m?.[2]?.trim() ?? '';
+    if (m === null || v === '') continue;
+    if (m[1]!.toLowerCase() === 'name') id.name = v;
+    else id.email = v;
+  }
+  return id;
+}
+
 let probedGitIdentity: GitIdentity | null | undefined;
 function defaultGitIdentityProbe(): GitIdentity | null {
   if (probedGitIdentity !== undefined) return probedGitIdentity;
-  const get = (key: string): string | null => {
-    try {
-      // --includes: with --global git skips include/includeIf by default, and an identity kept in an included file is common
-      const r = spawnSync('git', ['config', '--global', '--includes', '--get', key], { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] });
-      const v = r.status === 0 && typeof r.stdout === 'string' ? r.stdout.trim() : '';
-      return v === '' ? null : v;
-    } catch {
-      return null;
-    }
-  };
-  probedGitIdentity = { name: get('user.name'), email: get('user.email') };
+  try {
+    // ONE git call (it runs on the event loop before the first command, so a slow git costs at most one 3 s timeout);
+    // --includes: with --global git skips include/includeIf by default, and an identity kept in an included file is common
+    const r = spawnSync('git', ['config', '--global', '--includes', '--get-regexp', '^user\\.(name|email)$'], { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] });
+    probedGitIdentity = r.status === 0 && typeof r.stdout === 'string' ? parseGitIdentity(r.stdout) : null;
+  } catch {
+    probedGitIdentity = null;
+  }
   return probedGitIdentity;
 }
 

@@ -31,9 +31,13 @@ belong to, over HTTPS. There is no JevCode server, no telemetry, and no crash re
   which is written with mode `0600` inside a directory created `0700`.
 - Keys are never accepted as command-line arguments in the interactive flow, so they do not land in
   your shell history or in the process table.
-- Keys are never placed in the environment of a command the agent runs. A sandboxed command inherits
-  only `PATH`, `LANG`, `LC_ALL` and `TERM`, plus a `HOME` and `TMPDIR` remapped into the run
-  directory.
+- Keys are never placed in the environment of a command the agent runs. A sandboxed command
+  inherits your environment minus every JevCode key, every variable whose name marks a secret
+  (`KEY`, `TOKEN`, `SECRET`, `PASSW`, `PASSPHRASE`, `CREDENTIAL`, `COOKIE`, or an `AUTH` segment),
+  any value the redactor recognises, and `JEVCODE_*` / `JEV_*`, `npm_*`, `INIT_CWD` and `GIT_*`.
+  `HOME` and `TMPDIR` are remapped into the run directory. A password inside an ordinarily named
+  value such as `DATABASE_URL` is passed. The full list is in
+  [the environment a command sees](docs/operations/sandbox-and-security.md#the-environment-a-command-sees).
 - Logs, checkpoints, results, the `--json` stream and the session transcript pass through a redactor
   seeded with every configured secret and with the recognised key formats. `jevcode config` shows a
   key only as its source and the first few characters of a hash of it.
@@ -47,7 +51,7 @@ disk stays redacted. And a secret in a format nothing recognises, typed inline, 
 ## What the sandbox does
 
 Every command the agent runs goes through `/bin/sh -c` in a detached process group with the working
-directory fixed to your workspace, the environment scrubbed as above, a timeout, a cap on captured
+directory fixed to your workspace, the environment filtered as above, a timeout, a cap on captured
 output, and a three-pass tree kill on timeout or cancel.
 
 On macOS, and only on macOS, the command additionally runs under `sandbox-exec` with a generated
@@ -62,7 +66,7 @@ Read this part. The sandbox raises the cost of an accident. It is not a security
 not a defence against a deliberately hostile model or a hostile repository.
 
 - **There is no sandbox at all off macOS.** On Linux and everywhere else the protection level
-  degrades to cwd confinement, environment scrubbing, timeout, output cap and tree kill. No
+  degrades to cwd confinement, environment filtering, timeout, output cap and tree kill. No
   filesystem confinement, no network confinement. `jevcode config` reports the level it actually
   got; read it rather than assuming.
 - **Reads are mostly allowed.** Outside the specific denied paths listed above, a command can read

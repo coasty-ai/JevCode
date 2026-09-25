@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { AbortError, BudgetError, SandboxError } from '../../../src/errors.js';
 import { parseTestOutput } from '../../../src/workspace/tests.js';
-import { createSandbox, existingToolchainHomes, inheritsEnvName, resolveGitIdentity } from '../../../src/sandbox/run.js';
+import { createSandbox, existingToolchainHomes, inheritsEnvName, parseGitIdentity, resolveGitIdentity } from '../../../src/sandbox/run.js';
 import { FAST_KILL, makeSandbox, makeTemp, never, pidAlive } from './helpers.js';
 import type { TempSandbox } from './helpers.js';
 
@@ -112,9 +112,14 @@ describe('sandbox.run basics', () => {
     expect(r.stdout.trim().split('\n').map((l) => l.trim())).toEqual(['Ada "The" Lovelace; #1', 'ada@example.com', '2']);
     await sandbox.run('true', opts);
     expect(probes).toBe(1);
-    // a file the run already has (its own `git config --global`) is kept
+    // a file the run already has (its own `git config --global`) is kept: a second sandbox of the run dir writes the
+    // identity before ITS first command, and the `wx` write leaves the existing file alone
     writeFileSync(join(t.runDir, 'home', '.gitconfig'), '[user]\n\tname = Changed\n');
-    createSandbox({ workspaceRoot: t.ws, runDir: t.runDir, profile: 'none', noNetwork: false, secretReadDenies: [], redact: (s) => s }, { ...FAST_KILL, gitIdentity: () => ({ name: 'Other', email: null }) });
+    let otherProbes = 0;
+    const again = createSandbox({ workspaceRoot: t.ws, runDir: t.runDir, profile: 'none', noNetwork: false, secretReadDenies: [], redact: (s) => s }, { ...FAST_KILL, gitIdentity: () => { otherProbes++; return { name: 'Other', email: null }; } });
+    const kept = await again.run('git config --global --get user.name', opts);
+    expect(otherProbes).toBe(1);
+    expect(kept.stdout.trim()).toBe('Changed');
     expect(readFileSync(join(t.runDir, 'home', '.gitconfig'), 'utf8')).toBe('[user]\n\tname = Changed\n');
     // no identity: no file
     const bare = makeTemp('jev-noid-');
@@ -127,6 +132,13 @@ describe('sandbox.run basics', () => {
     }
     expect(resolveGitIdentity({ probe: () => ({ name: null, email: null }) })).toBeNull();
     expect(resolveGitIdentity({ probe: () => ({ name: 'A', email: null }) })).toEqual({ name: 'A', email: null });
+  });
+
+  it('reads the git identity from ONE `git config --get-regexp` answer; a key set twice takes its last value', () => {
+    expect(parseGitIdentity('user.name Ada Lovelace\nuser.email ada@example.com\n')).toEqual({ name: 'Ada Lovelace', email: 'ada@example.com' });
+    expect(parseGitIdentity('user.email old@example.com\r\nuser.email new@example.com\r\n')).toEqual({ name: null, email: 'new@example.com' });
+    expect(parseGitIdentity('user.name\n')).toEqual({ name: null, email: null });
+    expect(parseGitIdentity('')).toEqual({ name: null, email: null });
   });
 
   it('points the toolchain homes the user has not set at the real ones under their home, never a cache a build writes', async () => {
@@ -145,6 +157,9 @@ describe('sandbox.run basics', () => {
         delete process.env['RUSTUP_HOME'];
       }
       expect(existingToolchainHomes(home.dir)).toEqual([['RUSTUP_HOME', join(home.dir, '.rustup')], ['PYENV_ROOT', join(home.dir, '.pyenv')]]);
+      // mise keeps its installs and config under XDG paths, which HOME's remap and the dropped XDG_* would hide
+      mkdirSync(join(home.dir, '.local', 'share', 'mise'), { recursive: true });
+      expect(existingToolchainHomes(home.dir).map(([n]) => n)).toEqual(['RUSTUP_HOME', 'PYENV_ROOT', 'MISE_DATA_DIR']);
     } finally {
       home.cleanup();
     }

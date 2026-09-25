@@ -57,11 +57,12 @@ Then the sandbox sets its own values:
   passed as `PYTHONUSERBASE`, so a `pip install --user` tool stays importable;
 - **toolchain homes**: the version managers that keep their toolchains under your real home —
   `RUSTUP_HOME` (`~/.rustup`), `PYENV_ROOT` (`~/.pyenv`), `RBENV_ROOT` (`~/.rbenv`),
-  `ASDF_DATA_DIR` (`~/.asdf`), `VOLTA_HOME` (`~/.volta`), `NVM_DIR` (`~/.nvm`) and `SDKMAN_DIR`
-  (`~/.sdkman`) — are pointed there when you have not set them and the directory exists, so their
-  shims find your toolchains although `HOME` moved. Caches a build writes (`CARGO_HOME`, the Go
-  module cache, Gradle's and Maven's caches, npm's cache) are not: they start fresh in the run's
-  home, where writes are allowed;
+  `ASDF_DATA_DIR` (`~/.asdf`), mise's `MISE_DATA_DIR` (`~/.local/share/mise`) and
+  `MISE_CONFIG_DIR` (`~/.config/mise`), `VOLTA_HOME` (`~/.volta`), `NVM_DIR` (`~/.nvm`) and
+  `SDKMAN_DIR` (`~/.sdkman`) — are pointed there when you have not set them and the directory
+  exists, so their shims find your toolchains although `HOME` moved. Caches a build writes
+  (`CARGO_HOME`, the Go module cache, Gradle's and Maven's caches, npm's cache) are not: they start
+  fresh in the run's home, where writes are allowed;
 - **your git identity**: when your global git configuration has `user.name` or `user.email`, the
   run's home gets a `.gitconfig` with only that `[user]` block — no aliases, hooks, credential
   helpers or signing setup — so a commit a command makes carries your name instead of failing
