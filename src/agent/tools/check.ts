@@ -10,6 +10,7 @@
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, extname, join } from 'node:path';
 import type { AgentContext } from '../../core/types.js';
+import { cleanCommandStreams } from '../../core/ansi.js';
 import { shellQuote } from '../../workspace/tests.js';
 import { AGENT_CHECK_MAX_LINES, AGENT_CHECK_TIMEOUT_MS } from '../limits.js';
 
@@ -23,7 +24,9 @@ async function commandCheck(ctx: AgentContext, command: string): Promise<string[
     const r = await ctx.sandbox.run(command, { timeoutMs: AGENT_CHECK_TIMEOUT_MS, maxOutputBytes: 64 * 1024, signal: ctx.signal });
     if (r.killedBy !== null || r.exitCode === 127 || r.exitCode === null) return null;
     if (r.exitCode === 0) return [];
-    const lines = `${r.stderr}\n${r.stdout}`.split('\n').map((l) => l.trimEnd()).filter((l) => l.trim() !== '');
+    // core/ansi.ts, as every command path: escape sequences whole, CR redraws, binary as a note — THEN redact
+    const clean = cleanCommandStreams(r);
+    const lines = `${clean.stderr}\n${clean.stdout}`.split('\n').map((l) => l.trimEnd()).filter((l) => l.trim() !== '');
     return lines.length === 0 ? null : lines.map(ctx.redact);
   } catch {
     return null;
