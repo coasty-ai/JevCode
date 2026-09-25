@@ -14,6 +14,7 @@ import type { GitState } from '../../../src/core/types.js';
 import { GIT_BASE_FLAGS, GIT_ENV } from '../../../src/workspace/git.js';
 import { DEFAULT_PROBE_TIMEOUT_MS, GIT_PROBE_ARGS, PROBE_MAX_BUFFER, bannerInput, gitBannerLine, probeArgv, probeEnv, probeGitState, toRunGitMeta } from '../../../src/workspace/gitstate.js';
 import { git, write } from './helpers.js';
+import { budgetMs } from '../helpers/perf-budget.js';
 
 type Cb = (err: ExecFileException | null, stdout: string, stderr: string) => void;
 interface Call {
@@ -494,7 +495,7 @@ describe('probeGitState: a real slow git (§19.0 "timeout" shape, execFile timeo
     expect(g.topLevel).toBe(ws);
     expect(g.head).toBeNull();
     expect(g.dirty.entries).toEqual([]);
-    expect(elapsed).toBeLessThan(4_000);
+    expect(elapsed).toBeLessThan(budgetMs(4_000));
     expect(g.probeMs).toBeGreaterThanOrEqual(250);
   });
 
