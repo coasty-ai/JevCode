@@ -80,6 +80,21 @@ describe('complete needs a current, green run of a recognised test command (§3.
     expect((await fixture.engine.run()).stopReason).toBe('generator_done');
   });
 
+  it('a piped or exit-masked run completes on its parsed counts alone: a green `| tail` completes; a failing suite cut by `| head`, `|| true` with no summary, and `|| true` over parsed failures do not', async () => {
+    const tail = await agent([edit, bash('pytest -q 2>&1 | tail -5'), { text: 'Fixed.' }], { sandbox: tests(() => passingTests) });
+    expect((await tail.engine.run()).stopReason).toBe('complete');
+    expect(tail.store.last()!.lastTestRun).toMatchObject({ command: 'pytest -q 2>&1 | tail -5', allPassed: true });
+    // `| head` exits 0 after cutting the failing suite before its summary: no counts, so no complete
+    const head = await agent([edit, bash('pytest -q | head -1'), { text: 'Fixed.' }], { sandbox: tests(() => execResult({ exitCode: 0, stdout: 'F.\n' })) });
+    expect((await head.engine.run()).stopReason).toBe('generator_done');
+    expect(head.store.last()!.lastTestRun).toBeNull();
+    const masked = await agent([edit, bash('pytest -q || true'), { text: 'Fixed.' }], { sandbox: tests(() => execResult({ exitCode: 0, stdout: 'ERROR: file or directory not found: tests\n' })) });
+    expect((await masked.engine.run()).stopReason).toBe('generator_done');
+    const failed = await agent([edit, bash('pytest -q || true'), { text: 'Fixed.' }], { sandbox: tests(() => execResult({ exitCode: 0, stdout: failingTests.stdout })) });
+    expect((await failed.engine.run()).stopReason).toBe('generator_done');
+    expect(failed.store.last()!.lastTestRun).toMatchObject({ failed: 1, allPassed: false });
+  });
+
   it('a legacy-mode `done` is untouched by the agent rule: jev-off still stops generator_done on its own done', async () => {
     const { makeEngine, turn } = await import('./fakes.js');
     const h = await makeEngine({ mode: 'jev-off', turns: [turn({ kind: 'done', summary: 'x' })] });

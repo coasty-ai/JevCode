@@ -9,7 +9,7 @@
  * (`npm run build`); skipped without it.
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -62,6 +62,13 @@ describe.skipIf(!haveBundle)('hermetic child environments (legacy credentials fi
       expect(env['JEVCODE_HOME']).toBe(home);
       for (const k of ['JEVCODE_CONFIG', 'TYPESAFE_API_KEY', 'OPENROUTER_API_KEY', 'JEV_API_KEY', 'ANTHROPIC_API_KEY', 'CI']) expect(env[k]).toBeUndefined();
       expect(CHILD_ENV_UNSET).toContain('JEVCODE_CONFIG');
+      // a developer's exported run settings must not change what the mock sessions do (JEVCODE_VERIFY=tests would add a
+      // harness test run to every agent session), and run-smoke.sh unsets the same ones
+      const smoke = readFileSync(join(ROOT, 'test', 'pty', 'run-smoke.sh'), 'utf8');
+      for (const k of ['JEVCODE_MODE', 'JEVCODE_AUTONOMY', 'JEVCODE_VERIFY']) {
+        expect(CHILD_ENV_UNSET).toContain(k);
+        expect(smoke).toContain(`-u ${k} `);
+      }
       const out = configOutput(env, ws);
       expect(out).not.toMatch(/\(file\)|file:/);
       expect(out).not.toContain('legacy');
