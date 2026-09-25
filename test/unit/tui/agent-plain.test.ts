@@ -263,6 +263,28 @@ describe('the agent strip and the decisions tab (§14.3, peer G)', () => {
   });
 });
 
+describe('run:end level: a finished run reads as a finish, not a warning', () => {
+  const endItem = (stop: Parameters<typeof agentRunResult>[0]) => itemsFromEvent({ type: 'run:end', result: agentRunResult(stop, 2), exitCode: 0 }, 0)[0]!;
+
+  it('complete, generator_done and answered are `info` (harness verification is off by default: most successful runs end generator_done)', () => {
+    expect(endItem('complete').level).toBe('info');
+    expect(endItem('generator_done').level).toBe('info');
+    expect(endItem('answered').level).toBe('info');
+  });
+
+  it('an error stays `error`; a budget or an interrupt stop stays `warn`', () => {
+    expect(endItem('error').level).toBe('error');
+    for (const stop of ['max_steps', 'spend_cap', 'wall_time', 'token_cap', 'human_abort', 'signal'] as const) expect(endItem(stop).level, stop).toBe('warn');
+  });
+
+  it('the finish row of a generator_done run reads like a complete one', () => {
+    const done = formatTranscriptItem(endItem('generator_done'));
+    const complete = formatTranscriptItem(endItem('complete'));
+    expect(done).toMatch(/^\[run\] finished · generator_done · 2 steps · /);
+    expect(done.replace('generator_done', 'complete')).toBe(complete);
+  });
+});
+
 describe('--plain agent prose: escape sequences go whole, even split between two deltas', () => {
   it('a sequence cut by a delta boundary is held for the turn; the final commit flushes an unfinished one away', async () => {
     const turn = shapedTurn(1, 1, ['Use \u001b[3', '1mred\u001b[0m text\n', 'and \u001b[1mbold\u001b[', '0m. \u001b[3']);

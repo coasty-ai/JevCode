@@ -30,6 +30,7 @@ import type {
 import { DEFAULT_COMPLETE_THRESHOLD, MODE_BADGE_WORD } from '../config/defaults.js';
 import { isReplyOnlyRun } from '../core/agent-run.js';
 import { AbortError } from '../errors.js';
+import { isFinishedStop } from '../loop/stop.js';
 import { createTerminalStreamSanitizer, stripTerminalControls, type TerminalStreamSanitizer } from '../core/ansi.js';
 import { clip, firstLine } from '../core/text.js';
 import { METER_RED_PCT } from '../core/limits.js';
@@ -789,7 +790,9 @@ export function itemsFromEvent(e: EngineEvent, seq: number, state: ItemStreamSta
         null,
         'run:end',
         `${RUN_FINISHED_WORD}${SEP}${r.stopReason}${SEP}${r.steps} steps${SEP}${formatDuration(r.wallMs)}${SEP}${cost}${exit}${err}`,
-        r.stopReason === 'complete' ? 'info' : r.stopReason === 'error' ? 'error' : 'warn',
+        // a finished run (complete / generator_done / answered) reads as a finish, not a warning: with harness
+        // verification off by default most successful agent runs end generator_done
+        isFinishedStop(r.stopReason) ? 'info' : r.stopReason === 'error' ? 'error' : 'warn',
       );
     }
     // --- AGENT-LOOP-DESIGN §9.2 / §9.4: the agent-mode members ---------------------------------------------------------
