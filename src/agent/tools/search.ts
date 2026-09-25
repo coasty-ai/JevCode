@@ -1,20 +1,26 @@
 /**
- * `grep` and `glob` (docs/AGENT-LOOP-DESIGN.md §4.6). Both answer only with files `Workspace.listCandidates()` lists, so
- * secret, ignored and binary files never appear (src/workspace/candidates.ts).
+ * `grep` and `glob` (docs/AGENT-LOOP-DESIGN.md §4.6). Both answer from the files `Workspace.listCandidates()` lists, so
+ * secret and ignored files never appear (src/workspace/candidates.ts). What the listing found but does not offer as a
+ * candidate — binaries and files over 1 MiB (`listSkipped`, src/workspace/files.ts) — is not silently absent: `glob`
+ * lists it with a tag, `grep` names the large text files it did not search, and both say when the listing itself
+ * stopped at its cap.
  *
- * `grep` runs ripgrep through the sandbox when `rg --version` answers (probed once per run), and otherwise scans the
- * candidates with a JS `RegExp`. `glob` converts the pattern to a RegExp over the candidate paths; a pattern without a
- * slash matches file names at any depth, as `--glob` does in ripgrep.
+ * `grep` runs ripgrep through the sandbox when `rg --version` answers (probed once per run), and otherwise scans every
+ * candidate with a JS `RegExp`, 16 files at a time, until its 20 s budget runs out — and says so when it stopped early.
+ * `glob` converts the pattern to a RegExp over the listed paths; a pattern without a slash matches file names at any
+ * depth, as `--glob` does in ripgrep, and a bare directory name lists the files under it.
  */
 import { basename } from 'node:path';
 import type { AgentContext, Candidate } from '../../core/types.js';
+import { MAX_LIST_ENTRIES } from '../../workspace/candidates.js';
+import { listSkipped, type SkippedFile, type SkippedListing } from '../../workspace/files.js';
 import { shellQuote } from '../../workspace/tests.js';
 import {
   AGENT_FILE_MAX_BYTES,
   AGENT_GLOB_MAX_PATHS,
   AGENT_GREP_DEFAULT_RESULTS,
   AGENT_GREP_MAX_CHARS,
-  AGENT_GREP_MAX_FILES,
+  AGENT_GREP_PARALLEL_READS,
   AGENT_GREP_TIMEOUT_MS,
   AGENT_RG_PROBE_TIMEOUT_MS,
 } from '../limits.js';
@@ -83,10 +89,10 @@ export function globMatches(re: RegExp, glob: string, path: string): boolean {
   return re.test(path.slice(path.lastIndexOf('/') + 1));
 }
 
-/** The candidates under a workspace-relative directory (or equal to a file path), with paths relative to it. */
-function under(candidates: readonly Candidate[], dir: string | null): { path: string; rel: string }[] {
-  if (dir === null) return candidates.map((c) => ({ path: c.path, rel: c.path }));
-  return candidates.flatMap((c) => (c.path === dir ? [{ path: c.path, rel: c.path.slice(c.path.lastIndexOf('/') + 1) }] : c.path.startsWith(`${dir}/`) ? [{ path: c.path, rel: c.path.slice(dir.length + 1) }] : []));
+/** The listed files under a workspace-relative directory (or equal to a file path), with paths relative to it. */
+function under<T extends { path: string }>(items: readonly T[], dir: string | null): (T & { rel: string })[] {
+  if (dir === null) return items.map((c) => ({ ...c, rel: c.path }));
+  return items.flatMap((c) => (c.path === dir ? [{ ...c, rel: c.path.slice(c.path.lastIndexOf('/') + 1) }] : c.path.startsWith(`${dir}/`) ? [{ ...c, rel: c.path.slice(dir.length + 1) }] : []));
 }
 
 /**
@@ -94,17 +100,46 @@ function under(candidates: readonly Candidate[], dir: string | null): { path: st
  * `…/js-fix`), which matched nothing and answered `0 files` (the S6 review): when no such directory exists, the root's name
  * means the root and `<root>/sub` means `sub` — the rule bash's workdir and read_file already follow.
  */
-function searchDir(ctx: AgentContext, path: string | undefined, candidates: readonly Candidate[]): { ok: true; dir: string | null } | { ok: false; error: string } {
+function searchDir(ctx: AgentContext, path: string | undefined, listed: readonly { path: string }[]): { ok: true; dir: string | null } | { ok: false; error: string } {
   if (path === undefined) return { ok: true, dir: null };
   const wd = normaliseWorkdir(ctx.workspace.root, path);
   if (!wd.ok) return { ok: false, error: `ERROR: ${path} is outside the workspace` };
   const dir = wd.value;
   if (dir === null) return { ok: true, dir };
-  const exists = (d: string): boolean => candidates.some((c) => c.path === d || c.path.startsWith(`${d}/`));
+  const exists = (d: string): boolean => listed.some((c) => c.path === d || c.path.startsWith(`${d}/`));
   const name = basename(ctx.workspace.root);
   if (dir === name && !exists(dir)) return { ok: true, dir: null };
   if (dir.startsWith(`${name}/`) && !exists(dir)) return { ok: true, dir: dir.slice(name.length + 1) };
   return { ok: true, dir };
+}
+
+/** `2.7 MB` (MiB arithmetic, the unit of the 1 MiB cap) */
+function sizeLabel(bytes: number): string {
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** The tag `glob` puts after a listed file that is not a candidate: ` (binary)` or ` (2.7 MB)`. */
+function skipTag(f: SkippedFile): string {
+  return f.reason === 'binary' ? ' (binary)' : ` (${sizeLabel(f.bytes)})`;
+}
+
+/** Said by glob and grep when the workspace listing stopped at its cap: files beyond it are neither listed nor searched. */
+export const WALK_CAP_LINE = `[the workspace listing stopped at its cap (${MAX_LIST_ENTRIES} entries), so files beyond it are neither listed nor searched; use bash (find, grep -r) for those]`;
+
+const GLOB_CHARS = /[*?[\]{}]/;
+
+/**
+ * A pattern with no glob characters that names a directory (`assets`, `src/lib/`) matched nothing as a file: it lists the
+ * directory's files instead, and the first line of the result says so. A slash-less name that is no directory at the top
+ * lists every directory of that name (`**\/<name>/**`).
+ */
+function directoryPattern(pattern: string, listed: readonly { rel: string }[]): { pattern: string; line: string } | null {
+  if (GLOB_CHARS.test(pattern)) return null;
+  const d = pattern.replace(/^(\.\/)+/, '').replace(/^\/+/, '').replace(/\/+$/, '');
+  if (d === '' || d === '.') return null;
+  if (listed.some((c) => c.rel.startsWith(`${d}/`))) return { pattern: `${d}/**`, line: `${d} is a directory; listing ${d}/**` };
+  if (!d.includes('/') && listed.some((c) => c.rel.includes(`/${d}/`))) return { pattern: `**/${d}/**`, line: `${d} names directories below the top; listing **/${d}/**` };
+  return null;
 }
 
 export interface GlobArgs {
@@ -112,18 +147,37 @@ export interface GlobArgs {
   path?: string;
 }
 
+interface Listed {
+  path: string;
+  /** '' for a candidate; ` (binary)` or ` (2.7 MB)` for a file the candidate rules skip */
+  tag: string;
+}
+
 export async function runGlob(ctx: AgentContext, a: GlobArgs): Promise<ToolResult> {
   const candidates = await ctx.workspace.listCandidates();
-  const where = searchDir(ctx, a.path, candidates);
+  const skipped = await listSkipped(ctx.workspace);
+  const listed: Listed[] = [...candidates.map((c) => ({ path: c.path, tag: '' })), ...skipped.files.map((f) => ({ path: f.path, tag: skipTag(f) }))];
+  const where = searchDir(ctx, a.path, listed);
   if (!where.ok) return errorResult(where.error, `glob ${a.pattern} (error)`);
-  const re = globToRegExp(a.pattern);
-  const matched = under(candidates, where.dir)
-    .filter((c) => globMatches(re, a.pattern, c.rel))
-    .map((c) => c.path)
-    .sort();
+  const pool = under(listed, where.dir);
+  const matching = (pattern: string): (Listed & { rel: string })[] => {
+    const re = globToRegExp(pattern);
+    return pool.filter((c) => globMatches(re, pattern, c.rel));
+  };
+  let matched = matching(a.pattern);
+  let head: string | null = null;
+  if (matched.length === 0) {
+    const asDir = directoryPattern(a.pattern, pool);
+    if (asDir !== null) {
+      head = asDir.line;
+      matched = matching(asDir.pattern);
+    }
+  }
+  matched.sort((x, y) => (x.path < y.path ? -1 : x.path > y.path ? 1 : 0));
   const shown = matched.slice(0, AGENT_GLOB_MAX_PATHS);
-  const lines = [`${matched.length} files`, ...shown];
+  const lines = [...(head !== null ? [head] : []), `${matched.length} files`, ...shown.map((c) => `${c.path}${c.tag}`)];
   if (matched.length > shown.length) lines.push(`[capped at ${AGENT_GLOB_MAX_PATHS} of ${matched.length} files; narrow the pattern]`);
+  if (skipped.walkCapped) lines.push(WALK_CAP_LINE);
   const text = lines.join('\n');
   return { text, ok: true, summary: `glob ${oneLine(a.pattern, 60)} (${matched.length} files)`, hashBasis: text };
 }
@@ -166,8 +220,12 @@ interface GrepLine {
 }
 
 const LINE_TEXT_MAX = 500;
+const GREP_SECONDS = Math.round(AGENT_GREP_TIMEOUT_MS / 1000);
+/** skipped large files a grep names before `…` */
+const LARGE_NAMED = 5;
 
-function render(a: GrepArgs, lines: readonly GrepLine[], capped: boolean): ToolResult {
+/** `notes` follow the results: the early stop, the large files not searched, the listing cap. */
+function render(a: GrepArgs, lines: readonly GrepLine[], capped: boolean, notes: readonly string[]): ToolResult {
   const max = a.max_results ?? AGENT_GREP_DEFAULT_RESULTS;
   const matches = lines.filter((l) => l.match);
   const files = new Set(matches.map((l) => l.path));
@@ -193,6 +251,7 @@ function render(a: GrepArgs, lines: readonly GrepLine[], capped: boolean): ToolR
   const head = matches.length === 0 ? '0 matches' : `${matches.length} matches in ${files.size} files (showing ${shownMatches})`;
   const parts = [head, ...out];
   if (clipped && matches.length > 0) parts.push(`[results capped at ${shownMatches}; narrow with path or glob]`);
+  parts.push(...notes);
   const text = parts.join('\n');
   return { text, ok: true, summary: `grep ${JSON.stringify(oneLine(a.pattern, 50))}${a.path !== undefined ? ` in ${a.path}` : ''} (${matches.length} matches)`, hashBasis: text };
 }
@@ -206,16 +265,24 @@ function parseRg(stdout: string, allowed: ReadonlySet<string>): GrepLine[] {
     const path = raw.slice(0, nul).replace(/^\.\//, '');
     const m = /^(\d+)([:-])(.*)$/.exec(raw.slice(nul + 1));
     if (m === null || !allowed.has(path)) continue;
-    out.push({ path, line: Number(m[1]), text: m[3] ?? '', match: m[2] === ':' });
+    out.push({ path, line: Number(m[1]), text: (m[3] ?? '').replace(/\r$/, ''), match: m[2] === ':' });
   }
   return out;
 }
 
-async function grepWithRg(ctx: AgentContext, a: GrepArgs, dir: string | null, allowed: ReadonlySet<string>): Promise<ToolResult> {
-  const argv = ['rg', '--null', '--line-number', '--no-heading', '--color', 'never'];
+/**
+ * ripgrep with the flags that make it answer the same question on every machine: `--no-config` (a user's
+ * `RIPGREP_CONFIG_PATH` could add `--smart-case`, colours or a glob), `--hidden` with `.git` excluded (the listing offers
+ * `.github/workflows/ci.yml` and `.eslintrc.js`, which rg skips by default) and a 500-column preview of a long line (a
+ * minified bundle's one line must not fill the output cap before the real matches arrive).
+ */
+async function grepWithRg(ctx: AgentContext, a: GrepArgs, dir: string | null, allowed: ReadonlySet<string>, notes: readonly string[]): Promise<ToolResult | null> {
+  const argv = ['rg', '--no-config', '--null', '--line-number', '--no-heading', '--color', 'never', '--hidden', '--max-columns', String(LINE_TEXT_MAX), '--max-columns-preview'];
   if (a.case_insensitive === true) argv.push('-i');
   if (a.context !== undefined && a.context > 0) argv.push('-C', String(a.context));
   if (a.glob !== undefined) argv.push('--glob', shellQuote(a.glob));
+  // last, so a broad user glob (`**`) cannot re-include it: in rg the later glob wins
+  argv.push('--glob', shellQuote('!.git'));
   argv.push('-e', shellQuote(a.pattern));
   if (dir !== null) argv.push('--', shellQuote(dir));
   const r = await ctx.sandbox.run(argv.join(' '), { timeoutMs: AGENT_GREP_TIMEOUT_MS, maxOutputBytes: ctx.limits.maxOutputBytes, signal: ctx.signal });
@@ -223,56 +290,135 @@ async function grepWithRg(ctx: AgentContext, a: GrepArgs, dir: string | null, al
     const reason = r.stderr.split('\n').filter((l) => /error/i.test(l)).pop() ?? 'the pattern does not compile';
     return errorResult(`ERROR: invalid regular expression: ${oneLine(ctx.redact(reason), 300)}`, `grep ${JSON.stringify(oneLine(a.pattern, 50))} (invalid regex)`);
   }
+  // any other failure with nothing found (an older rg that does not know a flag, a sandbox refusal) is no answer:
+  // the caller scans with JavaScript instead of reporting `0 matches`
+  if (r.exitCode === 2 && r.stdout.trim() === '') return null;
   const lines = parseRg(ctx.redact(r.stdout), allowed);
-  return render(a, lines, r.truncated || r.killedBy === 'timeout');
+  const stopped = r.killedBy === 'timeout' ? [`[rg stopped after ${GREP_SECONDS} s, so the results are partial; narrow with path or glob]`] : [];
+  return render(a, lines, r.truncated || r.killedBy === 'timeout', [...stopped, ...notes]);
 }
 
-async function grepWithJs(ctx: AgentContext, a: GrepArgs, files: readonly { path: string; rel: string }[]): Promise<ToolResult> {
-  let re: RegExp;
-  try {
-    re = new RegExp(a.pattern, a.case_insensitive === true ? 'iu' : 'u');
-  } catch (e) {
-    return errorResult(`ERROR: invalid regular expression: ${e instanceof Error ? e.message : String(e)}`, `grep ${JSON.stringify(oneLine(a.pattern, 50))} (invalid regex)`);
+/**
+ * The pattern as a JS RegExp. A leading inline-flag group (`(?i)`, also `(?s)` / `(?m)` and combinations), which ripgrep
+ * accepts and JS does not, becomes the flag; a pattern the `u` flag rejects (`return \"x\"`: an identity escape) is tried
+ * again without it. The error text of the last attempt otherwise.
+ */
+export function compileGrepPattern(pattern: string, caseInsensitive: boolean): RegExp | { error: string } {
+  let source = pattern;
+  let flags = caseInsensitive ? 'i' : '';
+  const inline = /^\(\?([ims]+)\)/.exec(source);
+  if (inline !== null) {
+    source = source.slice(inline[0].length);
+    for (const f of inline[1]!) if (!flags.includes(f)) flags += f;
   }
+  try {
+    return new RegExp(source, `${flags}u`);
+  } catch {
+    try {
+      return new RegExp(source, flags);
+    } catch (e) {
+      return { error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+}
+
+async function scanFile(ctx: AgentContext, path: string, re: RegExp, ctxLines: number): Promise<GrepLine[]> {
+  let content: string;
+  try {
+    content = (await ctx.workspace.read(path, AGENT_FILE_MAX_BYTES)).content;
+  } catch {
+    return [];
+  }
+  if (isBinary(content)) return [];
+  const lines = content.split(/\r?\n/);
+  const keep = new Map<number, boolean>();
+  lines.forEach((l, i) => {
+    if (!re.test(l)) return;
+    keep.set(i, true);
+    for (let k = Math.max(0, i - ctxLines); k <= Math.min(lines.length - 1, i + ctxLines); k += 1) if (!keep.has(k)) keep.set(k, false);
+  });
+  return [...keep.keys()].sort((x, y) => x - y).map((i) => ({ path, line: i + 1, text: lines[i]!, match: keep.get(i) === true }));
+}
+
+/**
+ * The fallback without ripgrep: every listed file, `AGENT_GREP_PARALLEL_READS` at a time, until the matches pass
+ * `max_results`, the 20 s budget (`ctx.now()`) runs out, or the run stops. Files are taken in path order and every file
+ * taken is finished, so the searched set is always a prefix of the list and the answer does not depend on which read
+ * finished first. A scan that stopped early says how far it got — also at 0 matches, which must never read as "absent".
+ */
+async function grepWithJs(ctx: AgentContext, a: GrepArgs, files: readonly { path: string }[], notes: readonly string[]): Promise<ToolResult> {
+  const re = compileGrepPattern(a.pattern, a.case_insensitive === true);
+  if (!(re instanceof RegExp)) return errorResult(`ERROR: invalid regular expression: ${re.error}`, `grep ${JSON.stringify(oneLine(a.pattern, 50))} (invalid regex)`);
   const max = a.max_results ?? AGENT_GREP_DEFAULT_RESULTS;
   const ctxLines = a.context ?? 0;
+  const deadline = ctx.now() + AGENT_GREP_TIMEOUT_MS;
+  const results: (GrepLine[] | undefined)[] = new Array<GrepLine[] | undefined>(files.length);
+  let next = 0;
+  let found = 0;
+  let stopped = false;
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      if (found > max) return;
+      if (ctx.signal.aborted || ctx.now() >= deadline) {
+        stopped = true;
+        return;
+      }
+      const i = next;
+      if (i >= files.length) return;
+      next += 1;
+      const lines = await scanFile(ctx, files[i]!.path, re, ctxLines);
+      results[i] = lines;
+      for (const l of lines) if (l.match) found += 1;
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(AGENT_GREP_PARALLEL_READS, files.length) }, worker));
   const out: GrepLine[] = [];
   let matches = 0;
   let capped = false;
-  for (const f of files.slice(0, AGENT_GREP_MAX_FILES)) {
-    let content: string;
-    try {
-      content = (await ctx.workspace.read(f.path, AGENT_FILE_MAX_BYTES)).content;
-    } catch {
-      continue;
-    }
-    if (isBinary(content)) continue;
-    const lines = content.split('\n');
-    const keep = new Map<number, boolean>();
-    lines.forEach((l, i) => {
-      if (!re.test(l)) return;
-      keep.set(i, true);
-      for (let k = Math.max(0, i - ctxLines); k <= Math.min(lines.length - 1, i + ctxLines); k += 1) if (!keep.has(k)) keep.set(k, false);
-    });
-    for (const i of [...keep.keys()].sort((x, y) => x - y)) out.push({ path: f.path, line: i + 1, text: lines[i]!, match: keep.get(i) === true });
-    matches += [...keep.values()].filter(Boolean).length;
+  let searched = 0;
+  for (const lines of results) {
+    if (lines === undefined) break;
+    searched += 1;
+    out.push(...lines);
+    for (const l of lines) if (l.match) matches += 1;
     if (matches > max) {
       capped = true;
       break;
     }
   }
-  if (files.length > AGENT_GREP_MAX_FILES) capped = true;
-  return render(a, out, capped);
+  const early = stopped && !capped && searched < files.length ? [`[searched ${searched} of ${files.length} files in ${GREP_SECONDS} s; narrow with path or glob]`] : [];
+  return render(a, out, capped, [...early, ...notes]);
+}
+
+/** `[3 files over 1 MiB were not searched: a, b, c]`, naming at most five. */
+function largeLine(large: readonly { path: string }[]): string {
+  const names = large.slice(0, LARGE_NAMED).map((f) => f.path).join(', ');
+  const more = large.length > LARGE_NAMED ? '…' : '';
+  const one = large.length === 1;
+  const verb = one ? '1 file over 1 MiB was not searched' : `${large.length} files over 1 MiB were not searched`;
+  return `[${verb}: ${names}${more}; search ${one ? 'it' : 'them'} with bash, e.g. grep -n]`;
+}
+
+function skippedNotes(skipped: SkippedListing, inScope: (items: readonly SkippedFile[]) => readonly SkippedFile[]): string[] {
+  const notes: string[] = [];
+  const large = inScope(skipped.files.filter((f) => f.reason === 'large'));
+  if (large.length > 0) notes.push(largeLine(large));
+  if (skipped.walkCapped) notes.push(WALK_CAP_LINE);
+  return notes;
 }
 
 export async function runGrep(ctx: AgentContext, a: GrepArgs, rgAvailable: (ctx: AgentContext) => Promise<boolean>): Promise<ToolResult> {
-  const candidates = await ctx.workspace.listCandidates();
-  const where = searchDir(ctx, a.path, candidates);
+  const candidates: Candidate[] = await ctx.workspace.listCandidates();
+  const skipped = await listSkipped(ctx.workspace);
+  const where = searchDir(ctx, a.path, [...candidates, ...skipped.files]);
   if (!where.ok) return errorResult(where.error, `grep ${JSON.stringify(oneLine(a.pattern, 50))} (error)`);
-  const allowed = new Set(candidates.map((c) => c.path));
-  if (await rgAvailable(ctx)) return grepWithRg(ctx, a, where.dir, allowed);
   const glob = a.glob;
   const re = glob !== undefined ? globToRegExp(glob) : null;
-  const files = under(candidates, where.dir).filter((c) => re === null || glob === undefined || globMatches(re, glob, c.rel));
-  return grepWithJs(ctx, a, files);
+  const inScope = <T extends { path: string }>(items: readonly T[]): T[] => under(items, where.dir).filter((c) => re === null || glob === undefined || globMatches(re, glob, c.rel));
+  const notes = skippedNotes(skipped, inScope);
+  if (await rgAvailable(ctx)) {
+    const viaRg = await grepWithRg(ctx, a, where.dir, new Set(candidates.map((c) => c.path)), notes);
+    if (viaRg !== null) return viaRg;
+  }
+  return grepWithJs(ctx, a, inScope(candidates), notes);
 }

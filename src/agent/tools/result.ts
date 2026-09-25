@@ -52,6 +52,25 @@ export function isBinary(content: string): boolean {
   return content.includes('\u0000');
 }
 
+/**
+ * Decoded content that may not have been UTF-8 on disk: the decoder turned an invalid byte into U+FFFD, or a NUL
+ * (binary, or UTF-16) is in it. Only then is it worth reading the raw bytes (src/workspace/encoding.ts) again.
+ */
+export function mayNotBeUtf8(content: string): boolean {
+  return content.includes('�') || content.includes('\u0000');
+}
+
+/**
+ * A live TUI run wrote `$TMPDIR/probe.test.tsx` with write_file and left a literal `$TMPDIR/` directory in the
+ * repository: only bash expands variables. A file-tool path that starts with `$` or holds `${` is refused with this.
+ */
+export const VARIABLE_PATH_ERROR = `ERROR: file tools take workspace paths and do not expand variables such as $TMPDIR; create scratch files with bash (e.g. cat > "$TMPDIR/x" <<'EOF')`;
+
+/** True for a path a shell would expand (`$TMPDIR/x`, `$HOME/a`, `src/${name}.ts`); `routes/$slug.tsx` is an ordinary name. */
+export function isVariablePath(path: string): boolean {
+  return path.startsWith('$') || path.includes('${');
+}
+
 /** Text that went through the redactor holds `[REDACTED:<kind>]` (src/core/redact.ts) — or a bare `[REDACTED]`. */
 export function hasRedactionMarker(text: string): boolean {
   return /\[REDACTED[:\]]/.test(text);

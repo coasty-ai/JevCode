@@ -16,9 +16,9 @@ export const AGENT_PARALLEL_READS = 8;
 export const AGENT_OBSERVE_OUTPUT_CHARS = 65_536;
 /** continuation nudges per run (§3.3 rule 1) */
 export const AGENT_CONTINUE_MAX = 2;
-/** verification interventions per run (§3.3 rule 2) */
+/** verification interventions per run, only under agent.verify tests (§3.3 rule 2) */
 export const AGENT_VERIFY_MAX = 2;
-/** the verify step's timeout; clamped to the wall time left */
+/** the verify step's timeout, only under agent.verify tests (§3.3 rule 2); clamped to the wall time left */
 export const AGENT_VERIFY_TIMEOUT_MS = MAX_COMMAND_TIMEOUT_MS;
 /** review declines before `human_pause` (the engine stops; the driver only counts) */
 export const AGENT_MAX_BLOCKS = 5;
@@ -52,7 +52,8 @@ export const AGENT_GREP_TIMEOUT_MS = 20_000;
 export const AGENT_GREP_DEFAULT_RESULTS = 100;
 export const AGENT_GREP_MAX_RESULTS = 500;
 export const AGENT_GREP_MAX_CHARS = 20_000;
-export const AGENT_GREP_MAX_FILES = 2_000;
+/** files the JavaScript fallback (no ripgrep) reads at once; it scans every listed file until AGENT_GREP_TIMEOUT_MS */
+export const AGENT_GREP_PARALLEL_READS = 16;
 /** `rg --version`, probed once per run */
 export const AGENT_RG_PROBE_TIMEOUT_MS = 5_000;
 

@@ -15,7 +15,7 @@
  */
 import { homedir } from 'node:os';
 import { stat } from 'node:fs/promises';
-import { basename, join } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import type { Action, AgentContext, AgentGate, AgentObservation, AgentToolName } from '../core/types.js';
 import { sha12 } from '../core/hash.js';
 import { PRE_IMAGE_MAX_FILES, PRE_IMAGE_MAX_TOTAL_BYTES } from '../checkpoint/images.js';
@@ -27,11 +27,12 @@ import { syntaxCheck, syntaxCheckBlock } from './tools/check.js';
 import { editResultLine, matchEdit, placeholderLine } from './tools/edit-match.js';
 import { oneLine, renderBash } from './tools/format.js';
 import { runReadFile, type ReadArgs, type ReadHashes } from './tools/read.js';
-import { accessError, errorResult, hasRedactionMarker, isBinary, rootNameHint, type ToolResult } from './tools/result.js';
+import { VARIABLE_PATH_ERROR, accessError, errorResult, hasRedactionMarker, isBinary, isVariablePath, mayNotBeUtf8, rootNameHint, type ToolResult } from './tools/result.js';
 import { runGlob, runGrep, type GlobArgs, type GrepArgs } from './tools/search.js';
 import { bashHashBasis, runReadonlyBash } from './tools/shell.js';
 import { todoWrite, type Todo } from './tools/todo.js';
 import { FileNotFoundError, isAbortError, isBudgetError } from '../errors.js';
+import { fileTextEncoding, notUtf8Refusal, utf16Refusal } from '../workspace/encoding.js';
 
 export interface CallEnv {
   ctx: AgentContext;
@@ -222,14 +223,32 @@ async function readTarget(ctx: AgentContext, path: string): Promise<{ content: s
   }
 }
 
+/**
+ * The refusal of an edit or an overwrite of a file that is not UTF-8 on disk (null: go ahead). The workspace view is
+ * decoded as UTF-8, so a Latin-1 file reads with U+FFFD in place of its accented bytes and a whole-file write or an edit
+ * built from it would put those replacement characters on disk (the engine's applyEditFile refuses too; this answers
+ * the model before a step is spent). Only a view with U+FFFD or NUL in it needs the raw bytes read.
+ */
+async function encodingRefusal(ctx: AgentContext, path: string, content: string): Promise<string | null> {
+  if (!mayNotBeUtf8(content)) return null;
+  const encoding = await fileTextEncoding(resolve(ctx.workspace.root, path), AGENT_FILE_MAX_BYTES);
+  if (encoding === 'not-utf8') return `ERROR: ${notUtf8Refusal(path)}`;
+  if (encoding === 'utf16') return `ERROR: ${utf16Refusal(path)}`;
+  return null;
+}
+
 async function writeDisposition(env: CallEnv, c: NormalisedCall): Promise<Disposition> {
   const path = String(c.args['path']);
   const content = String(c.args['content']);
+  if (isVariablePath(path)) return rejected(c, VARIABLE_PATH_ERROR);
   if (inGit(path)) return rejected(c, GIT_INTERNALS(path));
   const placeholder = placeholderLine(content);
   if (placeholder !== null) return rejected(c, `ERROR: content contains a placeholder ("${placeholder}"); write the complete file`);
   const target = await readTarget(env.ctx, path);
   if ('error' in target) return rejected(c, target.error);
+  // an overwrite only: a new file has no encoding to lose
+  const refusal = target.content === null ? null : await encodingRefusal(env.ctx, path, target.content);
+  if (refusal !== null) return rejected(c, refusal);
   return {
     kind: 'act',
     act: { call: c, tool: 'write_file', action: { kind: 'write', path, content }, gate: { verdict: 'ok', reason: '', rule: null }, goal: `write_file ${path}`, path, before: target.content, after: content, editLine: null, stale: false, command: null, workdir: null, rule: null },
@@ -238,10 +257,13 @@ async function writeDisposition(env: CallEnv, c: NormalisedCall): Promise<Dispos
 
 async function editDisposition(env: CallEnv, c: NormalisedCall): Promise<Disposition> {
   const path = String(c.args['path']);
+  if (isVariablePath(path)) return rejected(c, VARIABLE_PATH_ERROR);
   if (inGit(path)) return rejected(c, GIT_INTERNALS(path));
   const target = await readTarget(env.ctx, path);
   if ('error' in target) return rejected(c, target.error);
   if (target.content === null) return rejected(c, `ERROR: ${path}: no such file${rootNameHint(env.ctx.workspace.root, path) || ' (use write_file to create it)'}`);
+  const refusal = await encodingRefusal(env.ctx, path, target.content);
+  if (refusal !== null) return rejected(c, refusal);
   if (isBinary(target.content)) return rejected(c, `ERROR: ${path} is binary; edit_file edits text files`);
   if (target.truncated) return rejected(c, `ERROR: ${path} is larger than 1 MiB; edit_file cannot edit it safely (use a narrower tool through bash)`);
   const m = matchEdit(target.content, { path, oldString: String(c.args['old_string']), newString: String(c.args['new_string']), replaceAll: c.args['replace_all'] === true });

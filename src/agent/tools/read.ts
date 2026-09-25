@@ -2,15 +2,23 @@
  * `read_file` (docs/AGENT-LOOP-DESIGN.md §4.6): numbered lines through `Workspace.read` (the workspace boundary, secret
  * paths and redaction are the workspace's), paging with offset / limit under a 40,000-char cap, and the
  * `jevcode:outputs/step-N[-k].txt` files the harness spilled long outputs into, served from the run directory.
+ *
+ * A file that is not UTF-8 is said to be so: a Latin-1 page carries a header note (its invalid bytes show as U+FFFD, and
+ * edit_file / write_file refuse the file), and a UTF-16 file — which reads as binary through a UTF-8 decoder — is
+ * named as UTF-16 with the command that converts it.
  */
 import { readFile, stat } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import type { AgentContext } from '../../core/types.js';
 import { sha12 } from '../../core/hash.js';
 import { OUTPUT_READ_PREFIX } from '../../core/limits.js';
+import { fileTextEncoding } from '../../workspace/encoding.js';
 import { AGENT_FILE_MAX_BYTES, AGENT_READ_DEFAULT_LINES, AGENT_READ_LINE_CHARS, AGENT_READ_MAX_CHARS } from '../limits.js';
 import { numberLines } from './format.js';
-import { accessError, errorResult, isBinary, type ToolResult } from './result.js';
+import { VARIABLE_PATH_ERROR, accessError, errorResult, isBinary, isVariablePath, mayNotBeUtf8, type ToolResult } from './result.js';
+
+/** The page-header note of a file whose bytes are not valid UTF-8. */
+export const NOT_UTF8_NOTE = '(not UTF-8: bytes that are not valid UTF-8 show as �; edit_file and write_file refuse this file)';
 
 /** `outputs/step-12.txt` or `outputs/step-12-3.txt` (several commands of one observe step) — nothing else is ever joined. */
 const OUTPUT_REF = /^outputs\/step-([1-9]\d{0,8})(?:-([1-9]\d{0,2}))?\.txt$/;
@@ -43,8 +51,8 @@ export interface ReadArgs {
 /** The last-read content hash of every workspace file `read_file` returned, for edit_file's stale-read note (§4.5 step 8). */
 export type ReadHashes = Map<string, string>;
 
-/** Render `content` as the page `[offset, offset + limit)` within the char cap. */
-export function renderPage(path: string, content: string, offset: number, limit: number, truncated: boolean): { text: string; ok: boolean; first: number; last: number; total: number } {
+/** Render `content` as the page `[offset, offset + limit)` within the char cap; `note` follows the header's line range. */
+export function renderPage(path: string, content: string, offset: number, limit: number, truncated: boolean, note: string | null = null): { text: string; ok: boolean; first: number; last: number; total: number } {
   const lines = content.split('\n');
   if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
   const total = lines.length;
@@ -59,7 +67,7 @@ export function renderPage(path: string, content: string, offset: number, limit:
     chars += rendered.length + 1;
   }
   const last = offset + shown.length - 1;
-  const parts = [`${path} (lines ${offset}-${last} of ${total}${truncated ? '+; the file is larger than 1 MiB and only its head is readable' : ''})`, ...shown];
+  const parts = [`${path} (lines ${offset}-${last} of ${total}${truncated ? '+; the file is larger than 1 MiB and only its head is readable' : ''})${note !== null ? ` ${note}` : ''}`, ...shown];
   if (last < total) parts.push(`[showing lines ${offset}-${last} of ${total}; call read_file with offset=${last + 1} to continue]`);
   return { text: parts.join('\n'), ok: true, first: offset, last, total };
 }
@@ -70,16 +78,22 @@ async function readOne(ctx: AgentContext, a: ReadArgs, hashes: ReadHashes): Prom
   let content: string;
   let truncated = false;
   let workspaceFile = false;
+  let note: string | null = null;
   if (a.path.startsWith(OUTPUT_READ_PREFIX)) {
     const r = await readRunOutput(ctx, a.path);
     if (typeof r === 'string') return errorResult(r, `read_file ${a.path} (error)`);
     ({ content, truncated } = r);
   } else {
+    if (isVariablePath(a.path)) return errorResult(VARIABLE_PATH_ERROR, `read_file ${a.path} (rejected)`);
     try {
       const view = await ctx.workspace.read(a.path, AGENT_FILE_MAX_BYTES);
       content = view.content;
       truncated = view.truncatedBytes > 0;
       workspaceFile = true;
+      // the decoded view hides the encoding; only a view with U+FFFD or NUL in it is worth a look at the raw bytes
+      const encoding = mayNotBeUtf8(content) ? await fileTextEncoding(resolve(ctx.workspace.root, view.path), AGENT_FILE_MAX_BYTES) : 'utf8';
+      if (encoding === 'utf16') return errorResult(`ERROR: ${a.path} is UTF-16 text; not shown — convert it with bash (iconv -f UTF-16 -t UTF-8)`, `read_file ${a.path} (UTF-16)`);
+      if (encoding === 'not-utf8') note = NOT_UTF8_NOTE;
     } catch (e) {
       const text = accessError(a.path, e, ctx.workspace.root);
       if (text === null) throw e;
@@ -88,7 +102,7 @@ async function readOne(ctx: AgentContext, a: ReadArgs, hashes: ReadHashes): Prom
   }
   if (isBinary(content)) return errorResult(`ERROR: ${a.path} is binary`, `read_file ${a.path} (binary)`);
   if (workspaceFile) hashes.set(a.path, sha12(content));
-  const page = renderPage(a.path, content, offset, limit, truncated);
+  const page = renderPage(a.path, content, offset, limit, truncated, note);
   const summary = page.ok ? (page.total === 0 ? `read_file ${a.path} (empty)` : `read_file ${a.path} (lines ${page.first}-${page.last})`) : `read_file ${a.path} (error)`;
   return { text: page.text, ok: page.ok, summary, hashBasis: page.text, ...(workspaceFile && page.ok ? { readPaths: [a.path] } : {}) };
 }
