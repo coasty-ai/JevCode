@@ -8,7 +8,7 @@ import type { DeciderConfig, EngineMode, GeneratorConfig, JevProvider, JevProvid
 import { JEV_PROVIDERS, isPinnedJevModel, jevModelMatches as providerJevModelMatches, normaliseModelId, providerForHost } from '../jev/providers.js';
 import { PROVIDER_IDS, isProviderId } from '../provider/ids.js';
 import type { SettingName } from './types.js';
-import { AUTONOMY_SETTING_VALUES, BASE_URLS, CACHE_READ_FACTOR, CACHE_WRITE_FACTOR, DEFAULT_AUTONOMY, DEFAULT_COMMAND_TIMEOUT_MS, DEFAULT_MAX_OUTPUT_BYTES, DEFAULT_SPEND_CAP_USD, JEV_PROVIDER_SETTING_VALUES, MAX_COMMAND_TIMEOUT_MS, MODE_SETTING_VALUES, UNPRICED_TOKENS_PER_USD, lookupPricing, type Autonomy } from './defaults.js';
+import { AGENT_VERIFY_SETTING_VALUES, AUTONOMY_SETTING_VALUES, BASE_URLS, CACHE_READ_FACTOR, CACHE_WRITE_FACTOR, DEFAULT_AGENT_VERIFY, DEFAULT_AUTONOMY, DEFAULT_COMMAND_TIMEOUT_MS, DEFAULT_MAX_OUTPUT_BYTES, DEFAULT_SPEND_CAP_USD, JEV_PROVIDER_SETTING_VALUES, MAX_COMMAND_TIMEOUT_MS, MODE_SETTING_VALUES, UNPRICED_TOKENS_PER_USD, lookupPricing, type AgentVerify, type Autonomy } from './defaults.js';
 
 /** How a validator reads settings: value + source, and the human list of places that were checked. */
 export interface SettingReader {
@@ -115,6 +115,18 @@ export function parseAutonomySetting(reader: SettingReader): Autonomy {
   const v = r.value.trim().toLowerCase();
   if (v === 'full' || v === 'review') return v;
   throw invalid(reader, 'autonomy', r, `one of ${AUTONOMY_SETTING_VALUES.join('|')}`);
+}
+
+/**
+ * The `agent.verify` setting's value, or a ConfigError naming the source. Absent = `off`: the model runs the checks its
+ * change calls for; `tests` makes the harness also run the detected test command after changes (docs/concepts/verification.md).
+ */
+export function parseAgentVerifySetting(reader: SettingReader): AgentVerify {
+  const r = reader.get('agent.verify');
+  if (!r || r.value.trim() === '') return DEFAULT_AGENT_VERIFY;
+  const v = r.value.trim().toLowerCase();
+  if (v === 'off' || v === 'tests') return v;
+  throw invalid(reader, 'agent.verify', r, `one of ${AGENT_VERIFY_SETTING_VALUES.join('|')}`);
 }
 
 /** TUI-DESIGN-2 §2.3 rule 1: the `decider.provider` row's value, or a ConfigError naming the source. */

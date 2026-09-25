@@ -3,7 +3,8 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { EngineSeed } from '../../../src/core/types.js';
-import { buildHead, chatLines, firstUserMessage } from '../../../src/agent/head.js';
+import { buildHead, chatLines, firstUserMessage, scriptTakesFile, testCommandLine } from '../../../src/agent/head.js';
+import { scopeBuilderFor } from '../../../src/workspace/tests.js';
 import { initialState } from '../../../src/agent/state.js';
 import type { TranscriptRecord } from '../../../src/agent/transcript.js';
 import { repoState } from '../loop/fakes.js';
@@ -54,10 +55,81 @@ describe('the first user message (no agent parent)', () => {
         '- root: ws (your working directory: tool paths are relative to it, so `src/a.ts`, never `ws/src/a.ts`); git: main, 1 modified, 1 untracked',
         '- your uncommitted changes: src/math.js, notes.txt',
         '- detected: package.json (node, type module)',
-        '- test command: `npm test`',
+        '- test command: `npm test` (the whole suite)',
         '- top level: src/ test/ README.md package.json',
       ].join('\n'),
     );
+  });
+
+  it('the test command line says it is the whole suite, and names its one-file form when the runner can scope (a targeted check is what the prompt asks for)', () => {
+    expect(testCommandLine(null)).toBe('none detected');
+    expect(testCommandLine({ command: 'npm test', runner: 'npm' })).toBe('`npm test` (the whole suite)');
+    const scope = scopeBuilderFor('pytest', 'pytest -q');
+    expect(scope).not.toBeNull();
+    expect(testCommandLine({ command: 'pytest -q', runner: 'pytest', scope: scope! })).toBe(`\`pytest -q\` (the whole suite); one file: \`${scope!(['<file>'])}\``);
+    expect(scope!(['<file>'])).toContain('<file>');
+    // a package-manager `test` script names what it runs, and a single runner command takes a file at its end
+    expect(testCommandLine({ command: 'npm test', runner: 'npm' }, 'node --test')).toBe('`npm test` (the whole suite; it runs `node --test`); one file: `npm test -- <file>`');
+    expect(testCommandLine({ command: 'pnpm run test', runner: 'npm' }, '  vitest   run ')).toBe('`pnpm run test` (the whole suite; it runs `vitest run`); one file: `pnpm run test -- <file>`');
+    expect(testCommandLine({ command: 'yarn test', runner: 'npm' }, 'jest')).toBe('`yarn test` (the whole suite; it runs `jest`); one file: `yarn test <file>`');
+    // a chain would hand the file to its last part only: no one-file form
+    expect(testCommandLine({ command: 'npm test', runner: 'npm' }, 'tsc && node --test')).toBe('`npm test` (the whole suite; it runs `tsc && node --test`)');
+    expect(testCommandLine({ command: 'make test', runner: 'unknown' }, 'node --test')).toBe('`make test` (the whole suite)');
+    expect(testCommandLine({ command: 'npm test', runner: 'npm' }, '')).toBe('`npm test` (the whole suite)');
+    // a script whose program does not take a file path names what it runs, and no one-file form
+    expect(testCommandLine({ command: 'npm test', runner: 'npm' }, 'ng test')).toBe('`npm test` (the whole suite; it runs `ng test`)');
+    expect(testCommandLine({ command: 'npm test', runner: 'npm' }, 'karma start')).toBe('`npm test` (the whole suite; it runs `karma start`)');
+    expect(testCommandLine({ command: 'npm test', runner: 'npm' }, 'cross-env NODE_ENV=test jest --runInBand')).toBe('`npm test` (the whole suite; it runs `cross-env NODE_ENV=test jest --runInBand`); one file: `npm test -- <file>`');
+    // `bun test` is bun's own runner, not the package script
+    expect(testCommandLine({ command: 'bun test', runner: 'unknown' }, 'vitest run')).toBe('`bun test` (the whole suite)');
+    expect(testCommandLine({ command: 'bun run test', runner: 'npm' }, 'vitest run')).toBe('`bun run test` (the whole suite; it runs `vitest run`); one file: `bun run test <file>`');
+  });
+
+  it.each([
+    ['vitest', true],
+    ['vitest run', true],
+    ['vitest run --coverage', true],
+    ['jest', true],
+    ['mocha --recursive', true],
+    ['ava', true],
+    ['tap', true],
+    ['jasmine', true],
+    ['node --test', true],
+    ['node --experimental-strip-types --test', true],
+    ['tsx --test', true],
+    ['bun test', true],
+    ['playwright test', true],
+    ['npx playwright test', true],
+    ['npx --yes vitest run', true],
+    ['cross-env NODE_ENV=test CI=1 jest', true],
+    ['NODE_OPTIONS=--experimental-vm-modules jest', true],
+    ['c8 --reporter=lcov node --test', true],
+    ['nyc mocha', true],
+    ['pnpm exec vitest run', true],
+    ['yarn jest', true],
+    ['./node_modules/.bin/jest', true],
+    ['ng test', false],
+    ['karma start', false],
+    ['nx test', false],
+    ['turbo run test', false],
+    ['lerna run test', false],
+    ['gulp test', false],
+    ['grunt test', false],
+    ['cypress run', false],
+    ['node test/run.js', false],
+    ['./scripts/test.sh', false],
+    ['node --test test/', false],
+    ["mocha 'test/**/*.spec.js'", false],
+    ['jest --config jest.config.js', false],
+    ['tsc', false],
+    ['', false],
+  ] as const)('scriptTakesFile(%j) → %s', (script, want) => {
+    expect(scriptTakesFile(script)).toBe(want);
+  });
+
+  it('the workspace block reads the test script from package.json', async () => {
+    const ctx = createAgentContext({ files: { 'package.json': '{"name":"x","scripts":{"test":"vitest run"}}', 'src/a.ts': '' }, testCommand: { command: 'npm test', runner: 'npm' }, gitState: null });
+    expect(await firstUserMessage(ctx)).toContain('- test command: `npm test` (the whole suite; it runs `vitest run`); one file: `npm test -- <file>`');
   });
 
   it('drops the "never <root>/…" example when the workspace has a top-level entry named like its root (a package named like its repo)', async () => {

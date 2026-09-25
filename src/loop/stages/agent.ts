@@ -1,7 +1,7 @@
 /**
  * The agent-mode propose stage (docs/AGENT-LOOP-DESIGN.md §2.1, §2.2): the engine-side twin of `src/jev-modes/stages/synth.ts`, plus every
  * helper of the engine seam that needs no private engine state — the per-step change set (§3.4), the rule `RiskAssessment` of a
- * gate (§12), the truthful note of a destructive command that ran (§A2, §A5), the completion predicate's unscoped-run test
+ * gate (§12), the truthful note of a destructive command that ran (§A2, §A5), the command a test run is recorded under
  * (§3.3), and the stream tap that turns the provider's tool-call and reasoning callbacks into events (§9.3).
  *
  * The driver itself lives in `src/agent/` and is reached only through the `AgentDriver` contract (`src/core/types.ts`); nothing
@@ -22,12 +22,10 @@ import type {
   AgentGate,
   AgentNext,
   EngineEvent,
-  LastTestRun,
   Proposal,
   RiskAssessment,
   RiskDimension,
   RiskDimensionResult,
-  TestCommand,
   ToolCallDelta,
 } from '../../core/types.js';
 import { preImagePath, type PostImage, type PreImageEntry, type PreImageResult } from '../../checkpoint/images.js';
@@ -156,26 +154,12 @@ export function isRootCwd(cwd: string | undefined): boolean {
   return cwd === undefined || cwd === '' || cwd === '.' || cwd === './';
 }
 
-function normaliseCommand(s: string): string {
-  return s.replace(/\s+/g, ' ').trim();
-}
-
 /**
  * The command a test run is recorded under (`LastTestRun.command`): the command itself at the root, `cd <cwd> && <command>`
- * anywhere else — the truth of where it ran, and exactly what keeps a subdirectory run from reading as the unscoped command.
+ * anywhere else — the truth of where it ran, which the step row and `state.json` show.
  */
 export function recordedTestCommand(command: string, cwd: string | undefined): string {
   return isRootCwd(cwd) ? command : `cd ${cwd} && ${command}`;
-}
-
-/**
- * §3.3: the last test run is the UNSCOPED detected command — its normalised text equals `testCommand.command` (a scoped form,
- * `pytest -q tests/test_a.py`, and a subdirectory run, `cd pkg && npm test`, do not) — parsed (only parsed runs become
- * `LastTestRun`) and all green. Currency against `lastChangeStep` is the caller's.
- */
-export function isUnscopedGreenRun(run: LastTestRun | null, testCommand: TestCommand | null): boolean {
-  if (run === null || testCommand === null || !run.allPassed) return false;
-  return normaliseCommand(run.command) === normaliseCommand(testCommand.command);
 }
 
 // ---------------------------------------------------------------------------------------

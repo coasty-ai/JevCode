@@ -59,15 +59,21 @@ function safetyLines(autonomy: 'full' | 'review'): string[] {
   ];
 }
 
-/** §5.2: one short paragraph chosen by the model id. */
-export function familyAddendum(model: string): string | null {
+/** The native-tool-call sentence: GLM, and every open-weight family without its own addendum (§5.2). */
+const NATIVE_TOOL_CALLS = 'Call tools only through the native function-calling interface. Never write tool calls as XML or JSON in your reply text.';
+
+/**
+ * §5.2: one short paragraph chosen by the model id. Claude, GPT / o-series and Gemini have their own; every other family
+ * (GLM, Qwen, DeepSeek, Kimi, Llama, Mistral, Grok, …) gets the native-tool-call sentence: the open-weight families are
+ * known to write tool calls as text in their reply when the chat template is not the one they were trained on.
+ */
+export function familyAddendum(model: string): string {
   const id = model.toLowerCase();
   const base = id.slice(id.lastIndexOf('/') + 1);
-  if (base.startsWith('glm')) return 'Call tools only through the native function-calling interface. Never write tool calls as XML or JSON in your reply text.';
   if (base.startsWith('gpt') || /^o\d/.test(base)) return 'Prefer edit_file over rewriting files. Keep preambles to one sentence.';
   if (base.startsWith('claude') || id.startsWith('anthropic/')) return 'Use parallel tool calls for independent reads.';
   if (base.startsWith('gemini')) return 'Send tool arguments as plain JSON values; do not wrap numbers or booleans in quotes.';
-  return null;
+  return NATIVE_TOOL_CALLS;
 }
 
 /** The memory index with the legacy prompt's header and clips (`## Memory (index)`, 200 lines, 8 KiB). */
@@ -90,15 +96,23 @@ function memoryIndexBlock(raw: string | null): string | null {
 
 /** §5.1: the system prompt, in the design's section order, led by the verified identity header. */
 export function buildAgentSystemPrompt(f: SystemPromptFacts): string {
-  const verify =
+  // The model checks its work in proportion to the change, as in every leading coding agent: a targeted test or a typecheck
+  // after a behaviour change, nothing for a question, a docs edit or a file operation (docs/DECISIONS.md 2026-09-25). The
+  // text is the same under `agent.verify off` and `tests`, so the prompt stays byte-stable whatever the setting.
+  const verify = [
+    '- Check your work in proportion to the change. After a change to code that alters behaviour, run the fastest check that covers it: the tests of the code you touched (one test file or test name, not the whole suite), or a typecheck, lint or build of what you touched.',
     f.testCommand !== null
-      ? `- After changing code, run the tests (\`${f.testCommand}\` was detected) or a scoped subset, and fix failures before you finish.`
-      : '- After changing code, run the tests (no test command was detected: run what the project uses, if anything) or a scoped subset, and fix failures before you finish.';
+      ? `- \`${f.testCommand}\` runs the project's whole test suite; to run part of it, pass it a test file or test name, or call the test runner directly. Run the whole suite only when the user asks for it or the change is broad.`
+      : '- No test command was detected: use what the project uses, if anything.',
+    '- Run nothing to check an answer to a question, a docs or comment edit, or a simple file operation (creating, renaming, moving or deleting a file).',
+    '- Run checks non-interactively: no watch mode.',
+    '- When a check fails because of your change, fix it. When it fails for another reason (it failed before your change, or needs a service, network access, credentials or a tool that is not available), do not change unrelated code, tests, dependencies or manifests to make it pass, and do not try to repair the environment: say what failed and why in your reply.',
+  ].join('\n');
   const sections = [
     chatIdentityHeader(f.model, f.providerLabel),
     [
       '# How you work',
-      '- You work autonomously in the user\'s workspace until the task is done. Explore with the tools, make the change, verify it, then reply with a short summary and no tool call.',
+      '- You work autonomously in the user\'s workspace until the task is done. Explore with the tools, make the change, check it when the change calls for it, then reply with a short summary and no tool call.',
       '- Before a batch of tool calls, write one short sentence on what you are about to do.',
       '- Call several independent tools in one reply when you can (for example read three files at once). Reads, searches and read-only commands run in parallel; edits and other commands run one at a time, in the order you give them.',
       '- Use todo_write to plan work with several steps; keep one item in_progress.',
@@ -123,13 +137,13 @@ export function buildAgentSystemPrompt(f: SystemPromptFacts): string {
     ['# Verifying', verify].join('\n'),
     [
       '# Finishing',
-      '- When the task is done, reply without tool calls: what you changed and how you verified it. If you could not finish, say what is left and why.',
+      '- When the task is done, reply without tool calls: what you changed, and what you ran to check it, if anything. If you could not finish, say what is left and why.',
     ].join('\n'),
     [
       '# Git and scratch files',
       '- Do not commit, push or create branches unless the user asks.',
       '- Never discard or revert changes you did not make (git checkout or restore of files, git reset --hard, git clean, git stash drop). To undo your own edit, edit the file back.',
-      '- Put scratch files under $TMPDIR, not in the workspace or /tmp.',
+      '- Put scratch files under $TMPDIR, created with bash (write_file and edit_file take workspace paths), not in the workspace or /tmp.',
     ].join('\n'),
     ['# Safety', ...safetyLines(f.autonomy)].join('\n'),
   ];
@@ -137,8 +151,7 @@ export function buildAgentSystemPrompt(f: SystemPromptFacts): string {
   if (instructions.length > 0) sections.push(`## Project instructions\n${clip(instructions, INSTRUCTIONS_MAX_CHARS)}`);
   const memory = memoryIndexBlock(f.memoryIndex);
   if (memory !== null) sections.push(memory);
-  const addendum = familyAddendum(f.model);
-  if (addendum !== null) sections.push(addendum);
+  sections.push(familyAddendum(f.model));
   return sections.join('\n\n');
 }
 
@@ -155,12 +168,18 @@ export const PROGRESS_NUDGE =
   'Step back: your recent steps do not seem to move the task forward. Re-read the task, say what is still missing, and change your approach if needed.';
 export const CONTINUE_WITH_TASK = 'Continue with the task.';
 
-export function verifyFailedNudge(cmd: string, p: number, f: number, e: number): string {
-  return `The last run of \`${cmd}\` after your change failed (${p} passed, ${f} failed, ${e} errors). Fix it, or explain why the failures are unrelated, before you finish.`;
+/**
+ * `agent.verify tests` only: the model's own unscoped run after its last change failed. The counts when its output was
+ * parsed, else the exit code (a runner whose output no parser reads, or a crash before any test ran).
+ */
+export function verifyFailedNudge(cmd: string, f: { passed: number; failed: number; errors: number; parsed: boolean; exitCode: number | null }): string {
+  const how = f.parsed ? `${f.passed} passed, ${f.failed} failed, ${f.errors} errors` : `exit ${f.exitCode ?? 'killed'}`;
+  return `The last run of \`${cmd}\` after your change failed (${how}). Fix it, or explain why the failures are unrelated, before you finish.`;
 }
 
+/** `agent.verify tests` only: the harness's own run of the detected test command, handed to the model once. */
 export function verifyResult(cmd: string, statusLine: string, output: string): string {
-  return `The harness ran \`${cmd}\` to verify your change: ${statusLine}\n${output}\nIf it failed, fix it and verify again. If it passed, your summary stands: reply with one short sentence that says the tests passed.`;
+  return `The harness ran \`${cmd}\` to check your change: ${statusLine}\n${output}\nIf it failed because of your change, fix it. If it failed for another reason (the environment, a missing tool, failures that were there before), say so in one sentence and do not try to repair the environment. If it passed, reply with one short sentence that says the tests passed.`;
 }
 
 export function verifyTimeout(cmd: string, seconds: number): string {

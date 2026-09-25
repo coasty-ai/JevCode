@@ -8,7 +8,8 @@
  * (two parallel `read_file` calls → one observe step), edits the bug (an act step), runs the detected test command (`npm test`, an act
  * step whose green unscoped run is current) and answers — the run stops `complete` (exit 0), every tool result is threaded back by
  * its call id on the next request's `agent.messages`, and not one `jev:request` is made. A greeting is one prose-only turn that stops
- * `answered` in one step with no sandbox command.
+ * `answered` in one step with no sandbox command. By default (`agent.verify off`) the harness runs no test command of its own: a
+ * file created and answered is two steps; under `agent.verify tests` the harness verifies after the change and the run completes.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -59,7 +60,7 @@ const FIX_TURNS: MockTurn[] = [
   { text: 'Fixed `mean` in src/math.js: it divides by the length now, and `npm test` passes.', usage: USAGE, stopReason: 'end_turn' },
 ];
 
-async function run(ws: string, root: string, task: string, turns: MockTurn[] | ((req: GenerateRequest, i: number) => MockTurn), parentRunId?: string, extra: { gitState?: GitState; probes?: { n: number; done: boolean } } = {}): Promise<{ result: Awaited<ReturnType<Awaited<ReturnType<typeof createEngine>>['run']>>; events: EngineEvent[]; provider: MockProvider }> {
+async function run(ws: string, root: string, task: string, turns: MockTurn[] | ((req: GenerateRequest, i: number) => MockTurn), parentRunId?: string, extra: { gitState?: GitState; probes?: { n: number; done: boolean }; agentVerify?: 'off' | 'tests' } = {}): Promise<{ result: Awaited<ReturnType<Awaited<ReturnType<typeof createEngine>>['run']>>; events: EngineEvent[]; provider: MockProvider }> {
   const provider = createMockProvider({ turns }, { recordRequests: true });
   const probes = extra.probes;
   const engine = await createEngine({
@@ -82,6 +83,7 @@ async function run(ws: string, root: string, task: string, turns: MockTurn[] | (
     // a chat follow-up: the session carries its newest run (src/cli/session.ts)
     ...(parentRunId !== undefined ? { conversation: { chat: [], parent: { runId: parentRunId, runDir: join(root, 'runs', parentRunId), mode: 'agent' as const } } } : {}),
     ...(extra.gitState !== undefined ? { gitState: extra.gitState } : {}),
+    ...(extra.agentVerify !== undefined ? { agentVerify: extra.agentVerify } : {}),
   }, probes !== undefined ? { probeGitState: async (r: string) => {
     probes.n += 1;
     // a slow probe (a big repository): the first request must not wait for it
@@ -167,9 +169,45 @@ describe('the agent loop end to end: real engine, real driver, mock provider, a 
     }
   }, 60_000);
 
+  it('by default (agent.verify off) the harness runs no test command: "create temp.py" is two steps, act and finish, and stops generator_done', async () => {
+    const { root, ws } = failingNodeWorkspace();
+    const turns: MockTurn[] = [
+      { text: 'Creating temp.py.\n', toolCalls: [call('call_write', 'write_file', { path: 'temp.py', content: '' })], usage: USAGE, stopReason: 'tool_use' },
+      { text: 'Created an empty temp.py.', usage: USAGE, stopReason: 'end_turn' },
+    ];
+    const { result, events, provider } = await run(ws, root, 'create temp.py', turns);
+    expect(result.stopReason).toBe('generator_done');
+    expect(result.steps).toBe(2);
+    expect(of(events, 'run:end')[0]!.exitCode).toBe(0);
+    const steps = of(events, 'step:end').map((e) => e.record);
+    expect(steps.map((s) => s.agent?.kind)).toEqual(['act', 'finish']);
+    // the workspace's (failing) `npm test` never ran: no run action, no parsed test counts, no verify note to the model
+    expect(steps.some((s) => s.proposal?.action.kind === 'run')).toBe(false);
+    expect(steps.some((s) => s.judge?.tests !== undefined && s.judge?.tests !== null)).toBe(false);
+    expect(provider.requests).toHaveLength(2);
+    expect(JSON.stringify(provider.requests[1]!.agent!.messages)).not.toContain('The harness ran');
+    expect(readFileSync(join(ws, 'temp.py'), 'utf8')).toBe('');
+  }, 60_000);
+
+  it('under agent.verify tests the harness runs the detected test command after the change: act, verify, finish, complete', async () => {
+    const { root, ws } = failingNodeWorkspace();
+    const turns: MockTurn[] = [
+      { toolCalls: [call('call_edit', 'edit_file', { path: 'src/math.js', old_string: '/ (xs.length - 1)', new_string: '/ xs.length' })], usage: USAGE, stopReason: 'tool_use' },
+      { text: 'Fixed `mean`.', usage: USAGE, stopReason: 'end_turn' },
+      { text: 'The tests passed.', usage: USAGE, stopReason: 'end_turn' },
+    ];
+    const { result, events, provider } = await run(ws, root, 'fix mean', turns, undefined, { agentVerify: 'tests' });
+    expect(result.stopReason).toBe('complete');
+    const steps = of(events, 'step:end').map((e) => e.record);
+    expect(steps.map((s) => s.agent?.kind)).toEqual(['act', 'verify', 'finish']);
+    expect(steps[1]!.proposal?.action).toMatchObject({ kind: 'run', command: 'npm test' });
+    expect(steps[1]!.judge?.tests).toMatchObject({ allPassed: true, passed: 1, failed: 0 });
+    expect(JSON.stringify(provider.requests[2]!.agent!.messages)).toContain('The harness ran `npm test` to check your change: exit 0');
+  }, 60_000);
+
   it('§A2 / §A5 git_discard under full autonomy: the discard runs, its note is true, its step lists the files it put back, and /undo restores the modified AND the untracked file (S6 live L7c)', async () => {
     const { root, ws } = failingNodeWorkspace();
-    // HEAD's tests pass, so the harness verify is green and the run completes; then the user's own uncommitted work
+    // HEAD's tests pass, so the harness verify (agent.verify tests) is green and the run completes; then the user's own uncommitted work
     const git = (...args: string[]): string => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'commit.gpgsign=false', ...args], { cwd: ws, encoding: 'utf8' });
     writeFileSync(join(ws, 'src', 'math.js'), BUGGY.replace('(xs.length - 1)', 'xs.length'));
     git('commit', '-q', '-am', 'fix');
@@ -180,7 +218,7 @@ describe('the agent loop end to end: real engine, real driver, mock provider, a 
       { text: 'Discarded: the edit to src/math.js and the untracked notes.txt.', usage: USAGE, stopReason: 'end_turn' },
       { text: 'The tests passed.', usage: USAGE, stopReason: 'end_turn' },
     ];
-    const { result, events } = await run(ws, root, 'discard all local changes with git reset --hard and git clean -fd', turns);
+    const { result, events } = await run(ws, root, 'discard all local changes with git reset --hard and git clean -fd', turns, undefined, { agentVerify: 'tests' });
     expect(result.stopReason).toBe('complete');
     expect(readFileSync(join(ws, 'src', 'math.js'), 'utf8')).not.toContain('my local note');
     expect(() => readFileSync(join(ws, 'notes.txt'), 'utf8')).toThrow();

@@ -7,6 +7,16 @@ import type { Json, JsonObject, LoopTrip } from '../core/types.js';
 import { AGENT_LOOP_WINDOW, AGENT_STATE_MAX_BYTES } from './limits.js';
 import type { Todo } from './tools/todo.js';
 
+/** A failed run of the test command, as the failed-test nudge reports it (§5.4). */
+export interface FailedTest {
+  passed: number;
+  failed: number;
+  errors: number;
+  /** the output was parsed into the counts; false = the counts are zeros and only the exit code says it failed */
+  parsed: boolean;
+  exitCode: number | null;
+}
+
 export interface AgentStateV1 {
   v: 1;
   /** model turns sampled in this run */
@@ -34,8 +44,12 @@ export interface AgentStateV1 {
   // --- additive, driver-private -------------------------------------------------------
   /** a loop trip whose nudge the next turn still has to send (RA1 picks its wording) */
   pendingLoop: (LoopTrip & { testCommand: string | null }) | null;
-  /** the model's own last unscoped run of the detected test command after its last change, when it failed */
-  failedTest: { passed: number; failed: number; errors: number } | null;
+  /**
+   * the model's own last unscoped run of the detected test command after its last change, when it failed: the counts when
+   * the output was parsed (`parsed`), else only the exit code (null when the command was killed). A state written before
+   * `parsed` / `exitCode` existed reads as parsed, with no exit code.
+   */
+  failedTest: FailedTest | null;
   /** the step of the last compaction (the meter's `summaryAt`) */
   lastCompactionStep: number | null;
 }
@@ -73,8 +87,10 @@ const str = (v: Json | undefined, d: string): string => (typeof v === 'string' ?
 const strOrNull = (v: Json | undefined): string | null => (typeof v === 'string' ? v : null);
 const bool = (v: Json | undefined): boolean => v === true;
 
-function counts(v: Json | undefined): { passed: number; failed: number; errors: number } | null {
-  return isObj(v) ? { passed: num(v['passed'], 0), failed: num(v['failed'], 0), errors: num(v['errors'], 0) } : null;
+function failedTest(v: Json | undefined): FailedTest | null {
+  if (!isObj(v)) return null;
+  // a state from before `parsed` existed only ever held parsed counts
+  return { passed: num(v['passed'], 0), failed: num(v['failed'], 0), errors: num(v['errors'], 0), parsed: v['parsed'] !== false, exitCode: numOrNull(v['exitCode']) };
 }
 
 function loopTrip(v: Json | undefined): AgentStateV1['pendingLoop'] {
@@ -109,7 +125,7 @@ export function parseState(j: Json | null): AgentStateV1 | null {
     compactions: num(o['compactions'], 0),
     lastCompactionAt: strOrNull(o['lastCompactionAt']),
     pendingLoop: loopTrip(o['pendingLoop']),
-    failedTest: counts(o['failedTest']),
+    failedTest: failedTest(o['failedTest']),
     lastCompactionStep: numOrNull(o['lastCompactionStep']),
   };
 }

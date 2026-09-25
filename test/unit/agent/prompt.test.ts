@@ -21,8 +21,30 @@ describe('the system prompt', () => {
     expect(p).toContain('- A question is not a request for a change, even when it points at a bug ("this is wrong, right?"): answer it, reading what you need, and offer to make the change.');
     expect(p).toContain('without tools');
     expect(p).toContain('read-only tools');
-    expect(p).toContain('(`npm test` was detected)');
+    expect(p).toContain("- `npm test` runs the project's whole test suite;");
     expect(p).toContain('writes are allowed only inside the workspace and the run temp dir');
+  });
+
+  it('verification is the model\'s and proportionate: the five Verifying bullets, "check it" in How you work, and the Finishing line (docs/DECISIONS.md 2026-09-25)', () => {
+    const p = buildAgentSystemPrompt(facts);
+    const section = (h: string): string => p.slice(p.indexOf(`${h}\n`), p.indexOf('\n\n', p.indexOf(`${h}\n`)));
+    expect(section('# Verifying')).toBe(
+      [
+        '# Verifying',
+        '- Check your work in proportion to the change. After a change to code that alters behaviour, run the fastest check that covers it: the tests of the code you touched (one test file or test name, not the whole suite), or a typecheck, lint or build of what you touched.',
+        "- `npm test` runs the project's whole test suite; to run part of it, pass it a test file or test name, or call the test runner directly. Run the whole suite only when the user asks for it or the change is broad.",
+        '- Run nothing to check an answer to a question, a docs or comment edit, or a simple file operation (creating, renaming, moving or deleting a file).',
+        '- Run checks non-interactively: no watch mode.',
+        '- When a check fails because of your change, fix it. When it fails for another reason (it failed before your change, or needs a service, network access, credentials or a tool that is not available), do not change unrelated code, tests, dependencies or manifests to make it pass, and do not try to repair the environment: say what failed and why in your reply.',
+      ].join('\n'),
+    );
+    expect(section('# How you work')).toContain('Explore with the tools, make the change, check it when the change calls for it, then reply with a short summary and no tool call.');
+    expect(section('# Finishing')).toBe('# Finishing\n- When the task is done, reply without tool calls: what you changed, and what you ran to check it, if anything. If you could not finish, say what is left and why.');
+    // the old wording that sent the model to the whole suite after every change is gone
+    expect(p).not.toContain('run the tests (');
+    expect(p).not.toContain('how you verified it');
+    // write_file created a literal `$TMPDIR/` directory in the workspace in a live probe (2026-09-25)
+    expect(section('# Git and scratch files')).toContain('- Put scratch files under $TMPDIR, created with bash (write_file and edit_file take workspace paths), not in the workspace or /tmp.');
   });
 
   it('is byte-stable for the same facts and never mentions Jev, the date or the step', () => {
@@ -60,7 +82,8 @@ describe('the system prompt', () => {
     expect(i).toBeGreaterThan(0);
     expect(m).toBeGreaterThan(i);
     expect(g).toBeGreaterThan(m);
-    expect(p).toContain('no test command was detected: run what the project uses, if anything');
+    expect(p).toContain('- No test command was detected: use what the project uses, if anything.');
+    expect(p).not.toContain('whole test suite');
   });
 
   it.each([
@@ -75,18 +98,29 @@ describe('the system prompt', () => {
     expect(familyAddendum(model)).toContain(text);
   });
 
-  it('Grok, Muse and others get no addendum', () => {
-    expect(familyAddendum('grok-4.7')).toBeNull();
-    expect(familyAddendum('muse-spark-1.3')).toBeNull();
-  });
+  it.each(['grok-4.7', 'muse-spark-1.3', 'qwen/qwen3-coder', 'deepseek/deepseek-v4', 'moonshotai/kimi-k3', 'meta-llama/llama-5-70b', 'mistralai/devstral-2'])(
+    'every other family gets the native-tool-call sentence (open-weight models leak text tool calls): %s',
+    (model) => {
+      expect(familyAddendum(model)).toBe('Call tools only through the native function-calling interface. Never write tool calls as XML or JSON in your reply text.');
+      expect(buildAgentSystemPrompt({ ...facts, model }).endsWith('Never write tool calls as XML or JSON in your reply text.')).toBe(true);
+    },
+  );
 });
 
 describe('harness texts', () => {
   it('fills the §5.4 placeholders', () => {
-    expect(verifyFailedNudge('npm test', 2, 1, 0)).toBe('The last run of `npm test` after your change failed (2 passed, 1 failed, 0 errors). Fix it, or explain why the failures are unrelated, before you finish.');
-    expect(verifyResult('npm test', 'exit 0 · 1.2s', 'ok')).toBe('The harness ran `npm test` to verify your change: exit 0 · 1.2s\nok\nIf it failed, fix it and verify again. If it passed, your summary stands: reply with one short sentence that says the tests passed.');
+    expect(verifyFailedNudge('npm test', { passed: 2, failed: 1, errors: 0, parsed: true, exitCode: 1 })).toBe('The last run of `npm test` after your change failed (2 passed, 1 failed, 0 errors). Fix it, or explain why the failures are unrelated, before you finish.');
+    expect(verifyResult('npm test', 'exit 0 · 1.2s', 'ok')).toBe(
+      'The harness ran `npm test` to check your change: exit 0 · 1.2s\nok\nIf it failed because of your change, fix it. If it failed for another reason (the environment, a missing tool, failures that were there before), say so in one sentence and do not try to repair the environment. If it passed, reply with one short sentence that says the tests passed.',
+    );
     expect(verifyTimeout('npm test', 600)).toContain('did not finish within 600s, so the change is not verified');
     expect(invalidArguments('read_file', 'path is required', '{path: string}')).toBe('INVALID ARGUMENTS for read_file: path is required. Expected {path: string}.');
+  });
+
+  it('a failed run whose output no parser read is reported by its exit code, never as "0 passed, 0 failed, 0 errors"', () => {
+    // the live probe of 2026-09-25: an EPERM before any test ran read as "(0 passed, 0 failed, 0 errors)"
+    expect(verifyFailedNudge('npm test', { passed: 0, failed: 0, errors: 0, parsed: false, exitCode: 1 })).toBe('The last run of `npm test` after your change failed (exit 1). Fix it, or explain why the failures are unrelated, before you finish.');
+    expect(verifyFailedNudge('npm test', { passed: 0, failed: 0, errors: 0, parsed: false, exitCode: null })).toContain('failed (exit killed)');
   });
 
   it('builds the loop nudge from the trip and one of four wordings', () => {

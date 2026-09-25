@@ -21,7 +21,7 @@ import { CONTEXT_COMPACTIONS, CONTEXT_VIEWS, DEFAULT_CONTEXT_COMPACTION, DEFAULT
   xdgConfigDir,
 } from '../../../src/config/defaults.js';
 import type { SettingName } from '../../../src/config/types.js';
-import { AUTONOMY_DESCRIPTION, AUTONOMY_SETTING_VALUES, DEFAULT_AUTONOMY, DEFAULT_MODE, JEV_PROVIDER_SETTING_VALUES, KNOWN_KEY_ENV, MODE_BADGE_MAX_CELLS, MODE_BADGE_WORD, MODE_SETTING_VALUES } from '../../../src/config/defaults.js';
+import { AGENT_VERIFY_DESCRIPTION, AGENT_VERIFY_SETTING_VALUES, AUTONOMY_DESCRIPTION, AUTONOMY_SETTING_VALUES, DEFAULT_AGENT_VERIFY, DEFAULT_AUTONOMY, DEFAULT_MODE, JEV_PROVIDER_SETTING_VALUES, KNOWN_KEY_ENV, MODE_BADGE_MAX_CELLS, MODE_BADGE_WORD, MODE_SETTING_VALUES } from '../../../src/config/defaults.js';
 import type { EngineMode } from '../../../src/core/types.js';
 import { cellWidth } from '../../../src/tui/glyphs.js';
 
@@ -65,6 +65,7 @@ describe('the §16 SETTINGS table', () => {
       'decider.provider', // TUI-DESIGN-2 §2.3
       'mode', // TUI-DESIGN-2 §1.2
       'autonomy', // complete autonomy by default
+      'agent.verify', // the model checks its own work by default
       'seen.defaultMode', // TUI-DESIGN-3 §0.1 (D-Q)
       'context.mode', // TUI-DESIGN-4 §8 (the round-4 config rows) over COORDINATION-DESIGN §8
       'context.compaction',
@@ -187,6 +188,29 @@ describe('complete autonomy by default: the `autonomy` row', () => {
     expect(settingProblem(settingSpec('autonomy'), 'review')).toBeNull();
     expect(settingProblem(settingSpec('autonomy'), 'FULL')).toBeNull();
     expect(settingProblem(settingSpec('autonomy'), 'yolo')).toEqual({ kind: 'wrong-type', expected: 'one of full|review' });
+  });
+});
+
+describe('the model checks its own work by default: the `agent.verify` row', () => {
+  it('sits directly after `autonomy`: --agent-verify / JEVCODE_VERIFY / `agentVerify`, default off, not secret, not a launch row, an enum of off|tests', () => {
+    const names = SETTINGS.map((s) => s.name);
+    expect(names.indexOf('agent.verify')).toBe(names.indexOf('autonomy') + 1);
+    expect(settingSpec('agent.verify')).toMatchObject({ flag: 'agentVerify', env: ['JEVCODE_VERIFY'], fileKey: 'agentVerify', defaultValue: 'off', secret: false });
+    expect(settingSpec('agent.verify').description).toBe('who checks an agent run before it finishes: off = the model runs the checks the change calls for (default); tests = the harness also runs the detected test command after changes');
+    expect(settingSpec('agent.verify').description).toBe(AGENT_VERIFY_DESCRIPTION);
+    expect(settingSpec('agent.verify').launch).toBeUndefined();
+    expect(settingSpec('agent.verify').boolFlag).toBeUndefined();
+    expect(settingSpec('agent.verify').hidden).toBeUndefined();
+    expect(settingSpec('agent.verify').shape).toEqual({ kind: 'enum', values: AGENT_VERIFY_SETTING_VALUES });
+    expect(AGENT_VERIFY_SETTING_VALUES).toEqual(['off', 'tests']);
+    expect(DEFAULT_AGENT_VERIFY).toBe('off');
+    expect(settingSpec('agent.verify').defaultValue).toBe(DEFAULT_AGENT_VERIFY);
+  });
+
+  it('`jevcode config` reports a value that is not off|tests (§7.5)', () => {
+    expect(settingProblem(settingSpec('agent.verify'), 'tests')).toBeNull();
+    expect(settingProblem(settingSpec('agent.verify'), 'OFF')).toBeNull();
+    expect(settingProblem(settingSpec('agent.verify'), 'always')).toEqual({ kind: 'wrong-type', expected: 'one of off|tests' });
   });
 });
 

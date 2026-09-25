@@ -31,6 +31,7 @@ import type {
   TestCounts,
   TokenUsage,
 } from '../../../src/core/types.js';
+import { AbortError } from '../../../src/errors.js';
 import { createStepToken, type StepToken } from '../../../src/jev/router.js';
 import { isTestCommand } from '../../../src/workspace/tests.js';
 import { DEFAULT_LIMITS, createFakeSandbox, createFakeWorkspace, execResult, type ExecScript, type FakeSandbox, type FakeWorkspace } from '../loop/fakes.js';
@@ -63,6 +64,8 @@ export interface FakeAgentOptions {
   turns?: TurnScript;
   provider?: { name: AgentContext['provider']['name']; model: string };
   autonomy?: 'full' | 'review';
+  /** the `agent.verify` setting (default off, the product's default) */
+  verify?: 'off' | 'tests';
   jevAvailable?: boolean;
   /** answer (or throw from) a quick Jev ask */
   ask?: (call: AskCall, signal: AbortSignal) => Promise<Record<string, Answer>>;
@@ -161,6 +164,7 @@ export function createAgentContext(o: FakeAgentOptions = {}): FakeAgentContext {
     signal: controller.signal,
     redact: (s) => s.replace(/sk-secret-[a-z0-9]+/g, '[REDACTED]'),
     autonomy: o.autonomy ?? 'full',
+    verify: o.verify ?? 'off',
     provider: o.provider ?? { name: 'openrouter', model: 'z-ai/glm-5.3-flash' },
     generation: { temperature: 0.2, maxTokens: o.maxTokens ?? 4096 },
     windowTokens: o.windowTokens === undefined ? 200_000 : o.windowTokens,
@@ -302,13 +306,20 @@ export async function step(driver: AgentDriver, ctx: FakeAgentContext, so: StepO
       changed = (await ctx.fs.writeFile(a)).changedFiles;
       outcome = { status: 'executed', summary: `wrote ${a.path}`, changedFiles: changed };
     } else if (a.kind === 'run') {
-      const exec = await ctx.sb.run(a.command, { timeoutMs: a.timeoutMs ?? 120_000, maxOutputBytes: 200_000, signal: ctx.signal, ...(a.cwd !== undefined ? { cwd: a.cwd } : {}) });
-      output = exec.stderr.length > 0 ? `${exec.stdout}\n[stderr]\n${exec.stderr}` : exec.stdout;
-      changed = so.changedFiles?.(a.command) ?? [];
-      tests = testsOf(ctx, a.command, exec);
-      outcome = { status: 'executed', exec, summary: `exit ${exec.exitCode}`, changedFiles: changed };
-      if (tests !== null && tests.parsed !== null) {
-        ctx.lastTestRun = { step: ctx.step, command: a.command, passed: tests.parsed.passed, failed: tests.parsed.failed, errors: tests.parsed.errors, allPassed: tests.allPassed === true };
+      // a command the sandbox could not start is an action error, as in the engine: a `failed` outcome, not a stage failure
+      const exec = await ctx.sb.run(a.command, { timeoutMs: a.timeoutMs ?? 120_000, maxOutputBytes: 200_000, signal: ctx.signal, ...(a.cwd !== undefined ? { cwd: a.cwd } : {}) }).catch((e: unknown) => {
+        if (e instanceof AbortError) throw e;
+        return e instanceof Error ? e : new Error(String(e));
+      });
+      if (exec instanceof Error) outcome = { status: 'failed', error: exec.message };
+      else {
+        output = exec.stderr.length > 0 ? `${exec.stdout}\n[stderr]\n${exec.stderr}` : exec.stdout;
+        changed = so.changedFiles?.(a.command) ?? [];
+        tests = testsOf(ctx, a.command, exec);
+        outcome = { status: 'executed', exec, summary: `exit ${exec.exitCode}`, changedFiles: changed };
+        if (tests !== null && tests.parsed !== null) {
+          ctx.lastTestRun = { step: ctx.step, command: a.command, passed: tests.parsed.passed, failed: tests.parsed.failed, errors: tests.parsed.errors, allPassed: tests.allPassed === true };
+        }
       }
     } else outcome = { status: 'noop', summary: 'done' };
     observed = await driver.observe(ctx, { step: ctx.step, outcome, output, changedFiles: changed, tests, error: outcome.status === 'failed' ? { code: 'edit', message: outcome.error } : null });

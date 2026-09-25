@@ -852,7 +852,7 @@ export interface SerializedError {
   requestId?: string | null;
 }
 
-export type EngineMode = 'jev-on' | 'jev-off' | 'jev-only' | 'llm-jev' | 'agent'; // jev-only: no generating LLM; a Synthesizer proposes (§JEV-ONLY.md); llm-jev: the generator writes candidate patches inside the Jev-only synthesizer; Jev decides, tests verify (docs/LLM-JEV-DESIGN.md); agent: the code model drives with native tools, tests verify, Jev makes a few quick routing calls (docs/AGENT-LOOP-DESIGN.md)
+export type EngineMode = 'jev-on' | 'jev-off' | 'jev-only' | 'llm-jev' | 'agent'; // jev-only: no generating LLM; a Synthesizer proposes (§JEV-ONLY.md); llm-jev: the generator writes candidate patches inside the Jev-only synthesizer; Jev decides, tests verify (docs/LLM-JEV-DESIGN.md); agent: the code model drives with native tools and checks its own work, Jev makes a few quick routing calls (docs/AGENT-LOOP-DESIGN.md)
 
 export interface RunResult {
   runId: string;
@@ -1886,6 +1886,12 @@ export interface EngineOptions {
    * agent that acts on its own by default; the bench pins `'review'` so its arms keep the policy they were measured with.
    */
   autonomy?: 'full' | 'review';
+  /**
+   * The `agent.verify` setting (agent mode only; absent = `'off'`): `'tests'` makes the agent driver run the detected test
+   * command itself after changes before a finish (docs/AGENT-LOOP-DESIGN.md §3.3 rule 2); under `'off'` the model decides
+   * what to run.
+   */
+  agentVerify?: 'off' | 'tests';
   meter: SpendMeter;
   limits: RunLimits;
   sandboxProfile: SandboxProfile;
@@ -3096,6 +3102,12 @@ export interface ResolvedConfig {
    * the blocking y/n card. A `block` verdict stops the run under both.
    */
   readonly autonomy: 'full' | 'review';
+  /**
+   * The `agent.verify` setting (flag > JEVCODE_VERIFY > dotenv > file > `off`): who checks an agent run before it
+   * finishes. `off` — the model runs the checks its change calls for (a targeted test, a typecheck) and nothing for
+   * questions, docs or simple file operations; `tests` — the harness also runs the detected test command after changes.
+   */
+  readonly agentVerify: 'off' | 'tests';
   /** validates the generator section on first call; ConfigError names setting and sources */
   generator(): GeneratorConfig;
   /** validates the decider section on first call */
@@ -4119,6 +4131,8 @@ export interface AgentContext {
   readonly signal: AbortSignal;
   readonly redact: (s: string) => string;
   readonly autonomy: 'full' | 'review';
+  /** the `agent.verify` setting: `tests` = the harness runs the detected test command before a finish after changes (§3.3 rule 2, opt-in); `off` = the model decides what to run */
+  readonly verify: 'off' | 'tests';
   /** the CONFIGURED provider and model (§6.5: the replay rule compares against these, never the served id) */
   readonly provider: { name: ProviderName; model: string };
   readonly generation: { temperature: number | null; maxTokens: number };

@@ -199,12 +199,13 @@ const SUMMARY_SYSTEM =
 /** §7.4 `llm`: the main provider fills the template from the removed turns; null on any failure (the caller falls back to `code`). */
 export async function llmSummary(ctx: AgentContext, t: Transcript, state: AgentStateV1, turn: number): Promise<string | null> {
   const template = codeSummary(ctx, t, state);
+  const reasoning = lowEffortReasoning(ctx.provider.name) ?? agentReasoning(ctx.provider.name, ctx.provider.model);
   const req: GenerateRequest = {
     system: SUMMARY_SYSTEM,
     messages: [{ role: 'user', content: `Template (keep the headings; improve and complete every section from the turns below):\n${template}\n\nThe turns to summarise:\n${renderForSummary(t.live())}` }],
     maxTokens: AGENT_COMPACT_SUMMARY_TOKENS,
     temperature: agentTemperature(ctx.provider.name, ctx.generation.temperature),
-    reasoning: lowEffortReasoning(ctx.provider.name) ?? agentReasoning(ctx.provider.name),
+    ...(reasoning !== undefined ? { reasoning } : {}),
   };
   try {
     const r = await ctx.generate(req, { turn, silent: true });

@@ -200,6 +200,7 @@ import { synthesizerHandles } from '../jev-modes/synth/index.js';
 import { LLM_DEADLINE_ADAPT, hedgeOriginOf } from '../jev-modes/synth/llm/source.js';
 import { hedgedCall, providerOrderFor, s2Mode } from '../jev-modes/synth/llm/hedge.js';
 import { warmPlaneEnabled } from '../jev-modes/synth/warm/index.js';
+import { isDocsOnlyChange } from '../workspace/docs-paths.js';
 import { isTestCommand, scopeUsable } from '../workspace/tests.js';
 import { runIntentStage, INTENT_FALLBACK, PLAN_STALE_THRESHOLD, type IntentStageResult } from '../jev-modes/stages/intent.js';
 import { codeJudge, ledgerGoalsOf } from './judge-code.js';
@@ -219,7 +220,6 @@ import {
   destructiveNote,
   isAgentRefusal,
   isOutputPart,
-  isUnscopedGreenRun,
   recordedTestCommand,
   ruleRiskAssessment,
   runAgentStage,
@@ -631,6 +631,8 @@ interface StepDraft {
   agentGate: AgentGate | null;
   /** §2.2: a command other than the detected test command changed a workspace file this step — `lastChangeStep` at commit */
   agentChanged: boolean;
+  /** §3.3: this agent step's per-step change set is docs alone (`isDocsOnlyChange`) — it does not move `lastChangeStep` */
+  agentDocsOnly: boolean;
 }
 
 /** docs/AGENT-LOOP-DESIGN.md §3.4 / §A5: what an agent `act` / `verify` step's images said, for the change set and the note. */
@@ -3229,6 +3231,7 @@ class EngineImpl implements Engine {
       agent: null,
       agentGate: null,
       agentChanged: false,
+      agentDocsOnly: false,
     };
   }
 
@@ -3801,6 +3804,7 @@ class EngineImpl implements Engine {
       signal: this.signal,
       redact: this.redact,
       autonomy: this.opts.autonomy ?? 'full',
+      verify: this.opts.agentVerify ?? 'off',
       provider: { name: this.opts.provider.name, model: this.opts.provider.model },
       generation: this.opts.generation,
       // §7.1: the window the engine's own policy resolves (an explicit `contextPolicy.windowTokens`, else the pricing table's)
@@ -4033,8 +4037,11 @@ class EngineImpl implements Engine {
       draft.judge = codeJudge({ tests: draft.tests, exitCode: exec?.exitCode ?? null, evidence: null, testsPassUnparsed: null }, draft.claims, ledgerGoalsOf(draft.claims));
     }
     draft.agent = { ...summary, seqAfter, ...(loopTrip !== null ? { loopTrip } : {}) };
-    // §2.2: a command other than the detected test command that changed a workspace file makes every earlier test run stale
-    if (action.kind === 'run' && draft.tests === null && changed.length > 0) draft.agentChanged = true;
+    // §2.2: a command other than the detected test command that changed a workspace file makes every earlier test run stale;
+    // §3.3: a change to docs alone does not (the driver arms no verify for it either), so a README edit after a green run
+    // still completes
+    draft.agentDocsOnly = isDocsOnlyChange(changed);
+    if (action.kind === 'run' && draft.tests === null && changed.length > 0 && !draft.agentDocsOnly) draft.agentChanged = true;
   }
 
   /** §A2 / §A5: one truthful line for a destructive command that ran — what left the machine, and what `/undo` can restore. */
@@ -4057,9 +4064,16 @@ class EngineImpl implements Engine {
     return this.agentDriverInstance;
   }
 
-  /** §3.3 / §8: the agent `complete` — a current, green run of the unscoped detected test command (the plan is not consulted). */
+  /**
+   * §3.3 / §8: the agent `complete` — the last recognised test run passed and came after the last change (the plan is not
+   * consulted). Any run the parser recognises counts: the detected command, a scoped form (`pytest -q tests/test_a.py`), a
+   * subdirectory run (recorded as `cd <dir> && …`) or a piped one; `allPassed` is count-based (parsed, no failure or error,
+   * at least one pass), so a `| tail` pipe's exit code decides nothing. The residual risk: a green targeted test that does
+   * not cover the change also completes; the step row names the command that ran.
+   */
   private agentVerifiedCompletion(): boolean {
-    return isUnscopedGreenRun(this.lastTestRun, this.wsInfo.testCommand) && testsCurrent(this.lastTestRun, this.lastChangeStep);
+    const run = this.lastTestRun;
+    return run !== null && run.allPassed && testsCurrent(run, this.lastChangeStep);
   }
 
   /**
@@ -6469,7 +6483,7 @@ class EngineImpl implements Engine {
     const window = pushWindow(this.window, entry);
 
     // Code-computed workspace facts (§5.5), persisted for --resume.
-    if (status === 'executed' && draft.changedFiles.length > 0 && proposal && proposal.action.kind !== 'run' && proposal.action.kind !== 'read') this.lastChangeStep = step;
+    if (status === 'executed' && draft.changedFiles.length > 0 && proposal && proposal.action.kind !== 'run' && proposal.action.kind !== 'read' && !(this.mode === 'agent' && draft.agentDocsOnly)) this.lastChangeStep = step;
     // docs/AGENT-LOOP-DESIGN.md §2.2: in agent mode a command other than the test command that changed a file (its per-step set)
     if (this.mode === 'agent' && draft.agentChanged) this.lastChangeStep = step;
     if (draft.tests?.parsed) {

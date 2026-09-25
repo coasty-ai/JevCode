@@ -51,6 +51,7 @@ import {
   CACHE_READ_FACTOR,
   CACHE_WRITE_FACTOR,
   DEFAULT_MODE,
+  type AgentVerify,
   type Autonomy,
   KNOWN_KEY_ENV,
   MODE_SETTING_VALUES,
@@ -76,6 +77,7 @@ import {
   normaliseJevModelId,
   parseBooleanSetting,
   parseJevProviderSetting,
+  parseAgentVerifySetting,
   parseAutonomySetting,
   parseModeSetting,
   readAllowUnpriced,
@@ -660,6 +662,8 @@ export async function resolveConfig(flags: ParsedFlags, env: NodeJS.ProcessEnv, 
   // Complete autonomy by default: eager like `mode` / `sandbox`, so a malformed value is a ConfigError naming its source
   // rather than a surprise at the first review. The row itself came through the SETTINGS loop above (default `full`).
   const autonomy: Autonomy = parseAutonomySetting(reader);
+  // The model checks its own work by default; eager for the same reason, so `JEVCODE_VERIFY=yes` fails before the first run
+  const agentVerify: AgentVerify = parseAgentVerifySetting(reader);
   // SecretSet (§8.4): resolved secret settings, then every secret-looking variable in every loaded .env and the config file.
   const secrets: SecretEntry[] = [];
   const secretNames = new Set<string>(SECRET_SETTINGS);
@@ -754,6 +758,7 @@ export async function resolveConfig(flags: ParsedFlags, env: NodeJS.ProcessEnv, 
     // re-resolve) or the chain (flag > JEVCODE_MODE > dotenv > file > DEFAULT_MODE)
     mode,
     autonomy,
+    agentVerify,
     generator() {
       if (!generatorMemo) generatorMemo = validateGenerator(reader, warn, { allowUnpriced: readAllowUnpriced(reader) });
       return generatorMemo;

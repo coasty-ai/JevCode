@@ -488,7 +488,7 @@ describe('parseCliArgs: --mode and the jev-only condition (TUI-DESIGN-2 §1.2)',
   it('--mode help names the default through DEFAULT_MODE (TUI-DESIGN-3 §1.1, D-N) and lists the advertised modes agent|jev-only plus one legacy clause (AGENT-LOOP-DESIGN §14.1); the flag itself stays optional (the default lives in the config layer)', () => {
     const mode = FLAGS.find((f) => f.key === 'mode');
     expect(mode?.arg).toBe('agent|jev-only');
-    expect(mode?.help).toBe(`engine mode (default ${DEFAULT_MODE}): agent (the code model works through tools, tests verify), jev-only (Jev alone, no generating LLM); legacy, accepted for saved configs, resume and the bench: llm-jev, jev-on, jev-off`);
+    expect(mode?.help).toBe(`engine mode (default ${DEFAULT_MODE}): agent (the code model works through tools and checks its own work), jev-only (Jev alone, no generating LLM); legacy, accepted for saved configs, resume and the bench: llm-jev, jev-on, jev-off`);
     expect(mode?.help).not.toMatch(/jev-only \(default|Claude|GLM/);
     expect(FLAGS.find((f) => f.key === 'condition')?.arg).toBe('jev-only|jev-on|jev-off|llm-jev');
     expect(MODES).toEqual(['jev-only', 'jev-on', 'jev-off', 'llm-jev', 'agent']);

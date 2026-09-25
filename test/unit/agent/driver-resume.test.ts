@@ -10,7 +10,7 @@ import type { Json } from '../../../src/core/types.js';
 import { AgentTranscriptMissingError, createAgentDriver } from '../../../src/agent/index.js';
 import { parseState } from '../../../src/agent/state.js';
 import { readTranscript, transcriptPath } from '../../../src/agent/transcript.js';
-import { call, createAgentContext, messagesOf, runUntilFinish, step, tempRunDir } from './helpers.js';
+import { call, createAgentContext, messagesOf, runUntilFinish, step, tempRunDir, userText } from './helpers.js';
 
 describe('the checkpoint state', () => {
   it('every step hands the engine a state whose transcriptSeq covers the records on disk', async () => {
@@ -94,6 +94,21 @@ describe('resume', () => {
     rmSync(transcriptPath(runDir));
     const resumed = createAgentContext({ runDir, resumed: true, state: first.state });
     await expect(createAgentDriver().next(resumed)).rejects.toBeInstanceOf(AgentTranscriptMissingError);
+  });
+
+  it('a state written before failedTest had `parsed` / `exitCode` resumes as parsed counts, and the nudge under agent.verify tests names them', async () => {
+    const runDir = tempRunDir();
+    const first = createAgentContext({ runDir, turns: [{ toolCalls: [call('read_file', { path: 'src/a.py' })] }] });
+    await step(createAgentDriver(), first);
+    // the 0.7.0 shape: the counts alone
+    const old = { ...(first.state as Record<string, Json>), changedSinceVerify: true, failedTest: { passed: 2, failed: 1, errors: 0 } };
+    expect(parseState(old)!.failedTest).toEqual({ passed: 2, failed: 1, errors: 0, parsed: true, exitCode: null });
+    expect(parseState({ ...old, failedTest: { passed: 0, failed: 0, errors: 0, parsed: false, exitCode: 2 } })!.failedTest).toEqual({ passed: 0, failed: 0, errors: 0, parsed: false, exitCode: 2 });
+    const resumed = createAgentContext({ runDir, resumed: true, state: old, verify: 'tests', turns: [{ text: 'Done.' }, { text: 'Checked.' }], sandbox: () => ({ exitCode: 0, stdout: '3 passed in 0.01s\n' }) });
+    const steps = await runUntilFinish(createAgentDriver(), resumed);
+    expect(steps.map((s) => s.next.kind)).toEqual(['finish']);
+    expect(resumed.sb.commands).toEqual([]);
+    expect(userText(resumed, 1)).toContain('The last run of `pytest -q` after your change failed (2 passed, 1 failed, 0 errors).');
   });
 
   it('a resume with no agent state yet (paused before the first commit) starts fresh', async () => {

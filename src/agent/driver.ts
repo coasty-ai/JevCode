@@ -36,6 +36,7 @@ import { planOf } from './tools/todo.js';
 import type { ToolResult } from './tools/result.js';
 import { sampleTurn, buildRequest, requestChars, type TurnSetup } from './turn.js';
 import { AgentTranscriptMissingError, Transcript, readTranscript, transcriptPath, wireToolName, type AssistantRecord, type NoteRecord, type NoteTag, type RecordedCall } from './transcript.js';
+import { isDocsOnlyChange } from '../workspace/docs-paths.js';
 import { isTestCommand } from '../workspace/tests.js';
 
 type Pending =
@@ -178,15 +179,19 @@ class Driver implements AgentDriver {
         if (sampled.calls.length > 0) continue;
         reply = sampled.record;
       }
-      const d = decideStop(reply, this.state, ctx.workspaceInfo.testCommand);
+      // §3.3 rule 2 is the `agent.verify tests` opt-in: by default the model decides what to run, and nothing is run for it
+      const d = decideStop(reply, this.state, ctx.verify === 'tests' ? ctx.workspaceInfo.testCommand : null);
       if (d.kind === 'continue') {
         this.state.continueNudges += 1;
         await this.note(d.note, 'continue');
         continue;
       }
       if (d.kind === 'verify_nudge') {
+        // the model has the failure once, from its own run: the reply that follows finishes, and the harness does not run
+        // the same suite again; only a new change re-arms rule 2
         this.state.verifyRuns += 1;
         this.state.failedTest = null;
+        this.state.changedSinceVerify = false;
         await this.note(d.note, 'verify');
         continue;
       }
@@ -234,9 +239,10 @@ class Driver implements AgentDriver {
       }
     }
     ctx.reportContext(contextUsage({ tokens: this.estimate.tokens(chars), budget: this.budget, promptChars: chars, turns: this.state.turns, state: this.state, writer, buildMs: ctx.now() - t0 }));
-    // §A4 RA0: the first turn of a run may go at low effort — asked only when that could change the request
+    // §A4 RA0: the first turn of a run may go at low effort — asked only when that could change the request (not for a
+    // GLM model, whose default is already low)
     const low = lowEffortReasoning(ctx.provider.name);
-    const lowEffort = this.state.turns === 0 && low !== null && !sameReasoning(agentReasoning(ctx.provider.name), low) ? await effortHint(ctx, this.state) : false;
+    const lowEffort = this.state.turns === 0 && low !== null && !sameReasoning(agentReasoning(ctx.provider.name, ctx.provider.model), low) ? await effortHint(ctx, this.state) : false;
     const sampled = await sampleTurn(setup(lowEffort));
     this.live = new Map(sampled.calls.map((c) => [c.id, c]));
     return sampled;
@@ -399,8 +405,12 @@ class Driver implements AgentDriver {
     // memory first (the call is resolved even if the disk append then fails), then the counters
     const appending = t.append({ kind: 'result', turn: this.state.turns, toolUseId: call.id, name: call.name === 'invalid' ? wireToolName(call.rawName) : call.name, content: ctx.redact(report.text), isError: !report.ok, summary: ctx.redact(report.summary), ...(report.pointer !== undefined ? { pointer: report.pointer } : {}) });
     if (changesWorkspace(act, o, testRun)) {
-      this.state.changedSinceVerify = true;
-      this.state.failedTest = null;
+      // a change to docs alone (README.md, LICENSE, an image) is nothing a test run can check: it arms no verification
+      const paths = [...(act.path !== null ? [act.path] : []), ...o.changedFiles];
+      if (!isDocsOnlyChange(paths)) {
+        this.state.changedSinceVerify = true;
+        this.state.failedTest = null;
+      }
       if (act.path !== null) this.filesEdited.add(act.path);
       for (const f of o.changedFiles) this.filesEdited.add(f);
       // the agent's own edit is not an outside change: the next edit of this file must not report a stale read
@@ -412,7 +422,7 @@ class Driver implements AgentDriver {
       if (exitOk && (parsed === null || o.tests?.allPassed !== false)) {
         this.state.changedSinceVerify = false;
         this.state.failedTest = null;
-      } else if (this.state.changedSinceVerify) this.state.failedTest = { passed: parsed?.passed ?? 0, failed: parsed?.failed ?? 0, errors: parsed?.errors ?? 0 };
+      } else if (this.state.changedSinceVerify) this.state.failedTest = { passed: parsed?.passed ?? 0, failed: parsed?.failed ?? 0, errors: parsed?.errors ?? 0, parsed: parsed !== null, exitCode: o.outcome.exec?.exitCode ?? null };
     }
     if (testRun && o.tests?.parsed) this.testTrend.push(`${o.tests.parsed.passed}p/${o.tests.parsed.failed}f`);
     if (report.refused) this.state.blocks += 1;
@@ -441,15 +451,16 @@ class Driver implements AgentDriver {
       const clipped = clipMiddle(o.output, 6_000, 1_500, 4_500).text;
       text = verifyResult(p.command, bashStatusLine(exec, null, o.tests?.parsed ?? null), clipped);
       const parsed = o.tests?.parsed ?? null;
-      if (exec.ok && (parsed === null || o.tests?.allPassed !== false)) {
-        this.state.changedSinceVerify = false;
-        this.state.failedTest = null;
-      } else {
-        // a reply with no new change gets the counts once (the failed-test nudge), not the same suite run again
-        this.state.failedTest = { passed: parsed?.passed ?? 0, failed: parsed?.failed ?? 0, errors: parsed?.errors ?? 0 };
-      }
+      // pass or fail, the result is handed to the model once, in the note below: a reply with no new change finishes (a
+      // failure it explains is not nudged again, and the suite is not run again); a new change arms the next verify
+      this.state.changedSinceVerify = false;
+      this.state.failedTest = null;
       if (parsed !== null) this.testTrend.push(`${parsed.passed}p/${parsed.failed}f`);
-    } else text = verifyResult(p.command, o.outcome.status === 'failed' ? `could not run (${o.outcome.error})` : o.outcome.status, '');
+    } else {
+      text = verifyResult(p.command, o.outcome.status === 'failed' ? `could not run (${o.outcome.error})` : o.outcome.status, '');
+      // the command did not run (it could not start, or it was refused or declined): a second verify would end the same way
+      this.state.verifyRuns = Math.max(this.state.verifyRuns, AGENT_VERIFY_MAX);
+    }
     this.remember(`verify: ${p.command} → ${exec !== undefined ? (exec.exitCode ?? 'killed') : o.outcome.status}`);
     await this.note(ctx.redact(text), 'verify');
   }

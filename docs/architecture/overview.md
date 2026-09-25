@@ -219,7 +219,7 @@ and the bench (`/mode legacy` lists them).
 
 | mode | who writes the change | who decides | badge |
 |---|---|---|---|
-| `agent` (default) | the code model, through native tool calls | the code model; your tests verify; Jev only makes a few quick routing calls | `agent` |
+| `agent` (default) | the code model, through native tool calls | the code model, which checks its own work in proportion to the change; Jev only makes a few quick routing calls | `agent` |
 | `jev-only` | the synthesizer alone — no generator is called | tests; Jev ranks and arbitrates | `jev-only` |
 | `llm-jev` (legacy) | the generator, writing candidate patches **inside** the synthesizer | tests, then a harm-only risk check | `llm+jev · verified` |
 | `jev-on` (legacy) | the generator, writing one action per step | Jev at every stage, tests at the judge | `jev+llm` |

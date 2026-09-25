@@ -18,6 +18,8 @@ export type SettingName =
   | 'mode'
   // who approves a `review` risk verdict — `full` (the default) auto-approves and logs it, `review` stops for y/n
   | 'autonomy'
+  // who checks an agent run before it finishes — `off` (the default): the model; `tests`: the harness also runs the detected test command
+  | 'agent.verify'
   | 'decider.baseUrl'
   | 'decider.apiKey'
   | 'decider.model'

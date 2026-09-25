@@ -120,8 +120,8 @@ flowchart TD
 ## One task, end to end
 
 Describe a change and press <kbd>Enter</kbd>. The model reads, edits and runs commands through
-tools until it answers without one; the harness checkpoints every step and verifies with your
-tests.
+tools until it answers without one, and checks its work in proportion to the change; the harness
+checkpoints every step and reads every test run itself.
 
 ```mermaid
 stateDiagram-v2
@@ -138,13 +138,13 @@ stateDiagram-v2
     Checkpoint: tool results into the conversation · step record · state.json
     Checkpoint --> Turn: budgets permitting
     Stop: stop rules
-    Stop --> Verify: files changed and the tests were not run since
+    Stop --> Verify: --agent-verify tests only, files changed and the tests were not run since
     Verify: the harness runs your test command
     Verify --> Turn
     Stop --> Answered: no tool was ever called
     Stop --> Finished: otherwise
     Answered: answered — a reply
-    Finished: complete when the last full test run is green and current; else not verified
+    Finished: complete when the last test run is green and current; else generator_done
     Answered --> [*]
     Finished --> [*]
 ```
@@ -177,12 +177,14 @@ rows are the harness's.
 - **`[step 2]`** and **`[step 3]`** are act steps: one edit each, with a pre-image of
   `calc/core.py` taken first. `/undo` reverts the last one, `/rewind` picks a step, `/diff 2`
   shows one.
-- **`[step 4]`** is the model running your tests. `7 passed` is the harness's own parse of the
-  output, not the model's claim. Had the model stopped without running them, the harness would
-  have run `python -m pytest` itself and handed the result back.
-- The run ends `complete` because the last run of the whole detected test command was green and
-  came after the last edit. On the live check of 2026-09-23 this task took about 9 seconds and a
-  tenth of a cent, with no Jev spend at all.
+- **`[step 4]`** is the model checking its change by running your tests. `7 passed` is the
+  harness's own parse of the output, not the model's claim. The model picks the check the change
+  calls for, usually the tests of what it touched; for a question or a new empty file it runs
+  nothing. With `--agent-verify tests`, a model that stopped without running the tests would have
+  seen the harness run `python -m pytest` itself and hand the result back.
+- The run ends `complete` because the last test run was green and came after the last edit; a
+  run that ends without one ends `generator_done`, which exits 0 too. On the live check of
+  2026-09-23 this task took about 9 seconds and a tenth of a cent, with no Jev spend at all.
 
 `--plain` prints the same rows as they happen, and `--json` writes every underlying event as
 one JSON object per line.

@@ -14,7 +14,7 @@
  */
 import { readFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
-import type { AgentContext, Candidate, GitState, Json, JsonObject, UndoLogEntry } from '../core/types.js';
+import type { AgentContext, Candidate, GitState, Json, JsonObject, TestCommand, UndoLogEntry } from '../core/types.js';
 import { clip } from '../core/text.js';
 import {
   AGENT_CHAT_CARRY_CHARS,
@@ -121,6 +121,92 @@ export function rootLine(name: string, candidates: readonly Candidate[]): string
   return `${name} (your working directory: tool paths are relative to it, so \`src/a.ts\`, never \`${name}/src/a.ts\`)`;
 }
 
+/**
+ * A package manager's run of the package.json `test` script (`npm test`, `pnpm run test`, `yarn test`, `bun run test`).
+ * `bun test` is bun's own runner, not the script.
+ */
+const PM_TEST_SCRIPT_RE = /^(?:(npm|pnpm|yarn)\s+(?:run\s+)?test|(bun)\s+run\s+test)(?:\s|$)/;
+const TEST_SCRIPT_SHOWN_CHARS = 120;
+
+/** Runners that take test files as positional arguments on their own (`vitest run a.test.ts`, `jest a.test.js`). */
+const FILE_RUNNERS: ReadonlySet<string> = new Set(['vitest', 'jest', 'mocha', 'ava', 'tap', 'jasmine']);
+/** Programs that take test files only in their test form: `node --test`, `tsx --test`, `bun test`, `playwright test`. */
+const FILE_RUNNER_FLAG: ReadonlyMap<string, string> = new Map([['node', '--test'], ['tsx', '--test']]);
+const FILE_RUNNER_SUBCOMMAND: ReadonlyMap<string, string> = new Map([['bun', 'test'], ['playwright', 'test']]);
+
+/**
+ * True when a one-command package script (no `&&`, `;` or pipe) ends in a runner known to take a file path, with no file,
+ * directory or glob of its own, so an appended `<file>` runs that one file. Launchers before the runner are skipped:
+ * `VAR=…` assignments, `cross-env`, `c8` / `nyc` (and their flags), `npx` (and its flags), `pnpm exec`, `yarn`. Anything
+ * else is false: `ng test` reads the file as a project name, `karma start` as a config file, `nx` / `turbo` / `lerna` /
+ * `gulp` / `grunt` do not pass it on, `cypress run` needs `--spec`, and `node test/run.js` or `./scripts/test.sh` ignore
+ * it and run everything. A positional argument after the runner (`node --test test/`, `mocha 'test/**'`, the value of a
+ * flag such as `--config jest.config.js`) is also false: the file would be added to what the script already names.
+ */
+export function scriptTakesFile(script: string): boolean {
+  const toks = script.trim().split(/\s+/).filter((t) => t !== '');
+  let i = 0;
+  const skipFlags = (): void => {
+    while (toks[i]?.startsWith('-') === true) i += 1;
+  };
+  for (;;) {
+    const t = toks[i];
+    if (t === undefined) return false;
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(t) || t === 'cross-env' || t === 'yarn') i += 1;
+    else if (t === 'c8' || t === 'nyc' || t === 'npx') {
+      i += 1;
+      skipFlags();
+    } else if (t === 'pnpm' && toks[i + 1] === 'exec') i += 2;
+    else break;
+  }
+  const program = toks[i]!.slice(toks[i]!.lastIndexOf('/') + 1);
+  let rest = toks.slice(i + 1);
+  const flag = FILE_RUNNER_FLAG.get(program);
+  const sub = FILE_RUNNER_SUBCOMMAND.get(program);
+  if (FILE_RUNNERS.has(program)) {
+    if (program === 'vitest' && rest[0] === 'run') rest = rest.slice(1);
+  } else if (flag !== undefined) {
+    if (!rest.includes(flag)) return false;
+  } else if (sub !== undefined) {
+    if (rest[0] !== sub) return false;
+    rest = rest.slice(1);
+  } else return false;
+  return rest.every((t) => t.startsWith('-'));
+}
+
+/**
+ * The detected test command, said to be the whole suite, and how to run less of it: the one-file form when the runner can
+ * scope, or what a package.json `test` script runs (`node --test`, `vitest run`), so the model can call the runner directly
+ * with a file. A one-file form of the script itself (`npm test -- <file>`) is named only when `scriptTakesFile` holds. The
+ * model is told to run the tests of what it touched (§5.1 "Verifying"); in a large repository the whole suite takes minutes.
+ */
+export function testCommandLine(test: TestCommand | null, packageTestScript: string | null = null): string {
+  if (test === null) return 'none detected';
+  if (test.scope !== undefined) return `\`${test.command}\` (the whole suite); one file: \`${test.scope(['<file>'])}\``;
+  const script = packageTestScript?.replace(/\s+/g, ' ').trim() ?? '';
+  const m = PM_TEST_SCRIPT_RE.exec(test.command);
+  const pm = m?.[1] ?? m?.[2];
+  if (script === '' || script === test.command || pm === undefined) return `\`${test.command}\` (the whole suite)`;
+  const runs = `\`${test.command}\` (the whole suite; it runs \`${clip(script, TEST_SCRIPT_SHOWN_CHARS)}\`)`;
+  // arguments after the script name reach the end of the script (npm and pnpm need `--` first, or they keep the
+  // argument): a chain (`tsc && vitest run`, `a; b`, a pipe) would hand the file to its last part only
+  if (/&&|\|\||[;|<>]/.test(script) || !scriptTakesFile(script)) return runs;
+  return `${runs}; one file: \`${test.command}${pm === 'npm' || pm === 'pnpm' ? ' --' : ''} <file>\``;
+}
+
+/** package.json's `scripts.test`, when the workspace root has one. */
+async function packageTestScript(ctx: AgentContext, top: ReadonlySet<string>): Promise<string | null> {
+  if (!top.has('package.json')) return null;
+  try {
+    const pkg: unknown = JSON.parse((await ctx.workspace.read('package.json', 64 * 1024)).content);
+    const scripts = typeof pkg === 'object' && pkg !== null ? (pkg as { scripts?: unknown }).scripts : undefined;
+    const test = typeof scripts === 'object' && scripts !== null ? (scripts as { test?: unknown }).test : undefined;
+    return typeof test === 'string' ? test : null;
+  } catch {
+    return null;
+  }
+}
+
 async function workspaceBlock(ctx: AgentContext): Promise<string> {
   const g = ctx.workspace.gitState?.() ?? ctx.workspaceInfo.gitState ?? null;
   const candidates = await ctx.workspace.listCandidates();
@@ -132,7 +218,7 @@ async function workspaceBlock(ctx: AgentContext): Promise<string> {
     lines.push(`- your uncommitted changes: ${shown.join(', ')}${paths.length > shown.length ? `, … (+${paths.length - shown.length} more)` : ''}`);
   }
   lines.push(`- detected: ${await detectedLine(ctx, top.files)}`);
-  lines.push(`- test command: ${ctx.workspaceInfo.testCommand !== null ? `\`${ctx.workspaceInfo.testCommand.command}\`` : 'none detected'}`);
+  lines.push(`- test command: ${testCommandLine(ctx.workspaceInfo.testCommand, await packageTestScript(ctx, top.files))}`);
   lines.push(`- top level: ${top.line || '(empty)'}`);
   return `# Workspace\n${lines.join('\n')}`;
 }

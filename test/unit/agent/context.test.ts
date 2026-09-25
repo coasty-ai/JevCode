@@ -1,7 +1,7 @@
 /** Context policy (docs/AGENT-LOOP-DESIGN.md §7.1-§7.5) and the per-provider capabilities it keys on (§6.3, §7.3). */
 import { describe, expect, it } from 'vitest';
 import { ContextEstimate, budgetFor, clearToolResultsFor, codeSummary, compactionDue, compactionWriter, contextUsage, editedFiles, maskCandidates, maskDue } from '../../../src/agent/context.js';
-import { agentReasoning, agentTemperature, isClaudeModel, lowEffortReasoning, maskingModeFor, providerLabel } from '../../../src/agent/providers.js';
+import { agentReasoning, agentTemperature, isClaudeModel, isGlmModel, lowEffortReasoning, maskingModeFor, providerLabel } from '../../../src/agent/providers.js';
 import { initialState } from '../../../src/agent/state.js';
 import { Transcript, transcriptPath } from '../../../src/agent/transcript.js';
 import { createAgentContext, tempRunDir } from './helpers.js';
@@ -115,8 +115,18 @@ describe('compaction policy', () => {
 
 describe('request settings and the meter', () => {
   it('reasoning per provider, the RA0 low effort, temperature and the display label', () => {
-    expect(agentReasoning('anthropic')).toEqual({ effort: 'high' });
-    expect(agentReasoning('openrouter')).toEqual({ effort: 'low' });
+    expect(agentReasoning('anthropic', 'claude-sonnet-5')).toEqual({ effort: 'high' });
+    // GLM on any provider: low (reasoning is mandatory on OpenRouter's GLM, and low keeps the default model fast)
+    expect(agentReasoning('openrouter', 'z-ai/glm-5.3-flash')).toEqual({ effort: 'low' });
+    expect(agentReasoning('fireworks', 'accounts/fireworks/models/glm-5p3-flash')).toEqual({ effort: 'low' });
+    expect(agentReasoning('mock', 'mock-model')).toEqual({ effort: 'low' });
+    // every other model: its provider's own default (no reasoning member is sent)
+    expect(agentReasoning('openai', 'gpt-5.6-luna')).toBeUndefined();
+    expect(agentReasoning('openrouter', 'openai/gpt-5.6-luna')).toBeUndefined();
+    expect(agentReasoning('gemini', 'gemini-3.8-flash')).toBeUndefined();
+    expect(agentReasoning('xai', 'grok-4.7')).toBeUndefined();
+    expect(isGlmModel('Z-AI/GLM-5.3-FLASH')).toBe(true);
+    expect(isGlmModel('qwen/qwen3-coder')).toBe(false);
     expect(lowEffortReasoning('anthropic')).toEqual({ effort: 'low' });
     expect(lowEffortReasoning('mock')).toBeNull();
     expect(agentTemperature('anthropic', 0.2)).toBeNull();

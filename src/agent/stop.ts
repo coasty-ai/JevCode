@@ -3,9 +3,10 @@
  *
  *  1. Continuation, narrow and at most twice per run: the turn was cut off at the output limit, or its last line
  *     announces an action and ends with `:` / `…` (never when it says "let me know"). Final answers never trigger it.
- *  2. Verification, at most twice per run: files changed since the last passing unscoped test run and a test command is
- *     known. If the model's own unscoped run after its last change failed, it gets one nudge with the counts; otherwise
- *     the harness runs the detected command itself (a `verify` step).
+ *  2. Verification, only under `agent.verify tests` (the opt-in; by default the model decides what to run, and the
+ *     driver passes no test command here), at most twice per run: files other than docs changed since the last passing
+ *     unscoped test run and a test command is known. If the model's own unscoped run after its last change failed, it
+ *     gets one nudge with the counts; otherwise the harness runs the detected command itself (a `verify` step).
  *  3. Finish.
  *
  * The test command is never a model's choice: it is `detectTestCommand()`'s (`WorkspaceInfo.testCommand`).
@@ -32,7 +33,7 @@ export function announcesAction(text: string): boolean {
   return endsOpen && ANNOUNCE_RE.test(last) && !/let me know/i.test(last);
 }
 
-/** A run of the detected test command at the root, as detected: the only run that can verify (§3.3 "Passing"). */
+/** A run of the detected test command at the root, as detected: the only run that clears rule 2 under `agent.verify tests` (§3.3 "Passing"). */
 export function isUnscopedTestRun(command: string, workdir: string | null, test: TestCommand | null): boolean {
   if (test === null || workdir !== null) return false;
   const norm = (s: string): string => s.replace(/\s+/g, ' ').trim();
@@ -45,15 +46,19 @@ export type StopDecision =
   | { kind: 'verify'; command: string }
   | { kind: 'finish' };
 
-/** Apply the rules to a text-only turn. Pure: the caller updates the counters for the decision it acts on. */
+/**
+ * Apply the rules to a text-only turn. Pure: the caller updates the counters for the decision it acts on. `test` is the
+ * detected test command under `agent.verify tests` and null otherwise (no rule 2: the model decides what to run).
+ */
 export function decideStop(turn: { text: string; stopReason: string }, state: AgentStateV1, test: TestCommand | null): StopDecision {
   if (state.continueNudges < AGENT_CONTINUE_MAX) {
     if (isCutOff(turn.stopReason)) return { kind: 'continue', note: CONTINUE_CUT_NUDGE };
     if (announcesAction(turn.text)) return { kind: 'continue', note: CONTINUE_NUDGE };
   }
+  // rule 2, `agent.verify tests` only
   if (state.changedSinceVerify && test !== null && state.verifyRuns < AGENT_VERIFY_MAX) {
     const f = state.failedTest;
-    if (f !== null) return { kind: 'verify_nudge', note: verifyFailedNudge(test.command, f.passed, f.failed, f.errors) };
+    if (f !== null) return { kind: 'verify_nudge', note: verifyFailedNudge(test.command, f) };
     return { kind: 'verify', command: test.command };
   }
   return { kind: 'finish' };

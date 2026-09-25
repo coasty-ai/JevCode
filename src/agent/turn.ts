@@ -51,7 +51,9 @@ export interface SampledTurn {
 export function buildRequest(s: TurnSetup, replay: boolean): GenerateRequest {
   const { ctx } = s;
   const messages = s.transcript.messages({ provider: ctx.provider.name, model: ctx.provider.model, systemHash: s.systemHash, replay });
-  const reasoning = s.lowEffort ? (lowEffortReasoning(ctx.provider.name) ?? agentReasoning(ctx.provider.name)) : agentReasoning(ctx.provider.name);
+  const byDefault = agentReasoning(ctx.provider.name, ctx.provider.model);
+  // absent = the model's own default effort (§6.3)
+  const reasoning = s.lowEffort ? (lowEffortReasoning(ctx.provider.name) ?? byDefault) : byDefault;
   return {
     system: s.system,
     messages: [],
@@ -59,7 +61,7 @@ export function buildRequest(s: TurnSetup, replay: boolean): GenerateRequest {
     temperature: agentTemperature(ctx.provider.name, ctx.generation.temperature),
     tools: s.tools,
     toolChoice: 'auto',
-    reasoning,
+    ...(reasoning !== undefined ? { reasoning } : {}),
     agent: {
       messages,
       parallelToolCalls: true,

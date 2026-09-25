@@ -10,7 +10,11 @@ document, not part of this repository — are also listed in `docs/DESIGN.md` un
 
 ## Contents
 
-102 entries, newest first.
+103 entries, newest first.
+
+**2026-09-25**
+
+- [Verification is the model's, in proportion to the change; the harness runs the test suite only under `agent.verify tests`](#2026-09-25-verification-is-the-models-in-proportion-to-the-change-the-harness-runs-the-test-suite-only-under-agentverify-tests)
 
 **2026-09-23**
 
@@ -2024,3 +2028,60 @@ does not reprint the mark, like the header. So it is committed exactly once per 
 (the mark at index 0), `src/tui/WordmarkBlock.tsx` (new: `SplashRow`, the committed block), `src/tui/wordmark.ts`
 (`wordmarkWanted` without the height tiers, `scrollbackMarkPad`, `scrollbackMarkRows`), `scripts/pty/polish-check.mjs`,
 `test/pty/helpers.ts`, `test/pty/run-smoke.sh`, and the app, pty and smoke pins of the mark's position.
+
+## 2026-09-25 Verification is the model's, in proportion to the change; the harness runs the test suite only under `agent.verify tests`
+
+**Decision.** By default the agent loop's harness runs no test command of its own. The system prompt asks the model to check
+its work in proportion to the change: after a change in behaviour, the fastest check that covers it (the tests of the code it
+touched, one file or test name, or a typecheck, lint or build of what it touched); the whole suite only when the user asks for
+it or the change is broad; nothing for a question, a docs or comment edit, or a simple file operation; checks run
+non-interactively; and a check that fails for a reason other than the change is reported, never fixed by changing unrelated
+code, tests, dependencies or manifests or by repairing the environment. The harness's verify step, which ran the detected
+test command after any change before the run could finish, becomes the opt-in `agent.verify tests` (`--agent-verify
+off|tests`, `JEVCODE_VERIFY`, file key `agentVerify`; default `off`). The run stays honest without nagging: `complete` needs
+the last test run the harness recognised (the detected command, a scoped or subdirectory form, another package manager, the
+runner called directly, a run piped through `tail`) to be green and to come after the last change; anything else that
+finishes is `generator_done`, exit 0, and renders as an ordinary finish. Under `tests` a failed run of the suite is handed
+back once, whether the harness or the model ran it, and a change to docs alone arms nothing; in either setting a change to
+docs alone leaves a green run current. This supersedes two clauses of the 2026-09-23 default-mode entry: "verifies with
+the workspace's own detected test command — `complete` needs a green, current run of the whole command", and RA0 being asked
+"today Anthropic alone".
+
+**The owner's directive** (2026-09-25, quoted in `docs/AGENT-LOOP-DESIGN.md` §A6): "Why is it taking so much time to test
+make sure it is generic and generlized and all these tools work for the majority of population and is not finetuned". The
+session behind it, inside this repository: `create temp.py` was written in 3.2 s, then the harness's own verify ran `npm test`,
+the whole ~11,500-test suite with a 600 s timeout, until the user pressed Esc after 134 s.
+
+**Why.** Every leading coding agent (Codex CLI, Claude Code, OpenCode) leaves verification to the model, with prompt guidance
+on what to run; none runs the whole suite after every change. Probes at 0.7.0 showed what the forced verify cost: the same
+task took 13 steps and 654 s when the suite failed with `EPERM` under the seatbelt, and the failed-test nudge ("0 passed, 0
+failed, 0 errors") drove ten minutes of sandbox repair, including a 603 s suite run killed at its timeout; in a repository
+with a known-failing test, a README edit made the model rewrite a test marked as a known issue; in a fresh clone it ran `npm
+install` and rewrote `package.json`. A prototype with the verify off did the first task in 2 steps and 7 s. On this branch,
+with the harness verify off, `create temp.py` in a small node fixture is 2 steps, 1 s and $0.001; a one-line fix in a
+31-test-file fixture makes the model run `npm test -- test/sum.test.js` (1 test, 0.7 s) and end `complete`.
+
+**The rest of the wave** (the same directive; evidence in each commit):
+- **Output is cleaned whole before it is shown, logged, redacted or sent to the model.** One shared helper removes whole
+  escape sequences, and a sequence split across stream chunks is held; the user's session showed `[33m[2m✓[22m[39m`
+  remnants, and colours had hidden keys from redaction and test counts from the parser.
+- **The test command is detected by manifest**, with the package manager the project names, across the common ecosystems,
+  and the common spellings of a run of that runner are recognised as test runs.
+- **A command inherits the user's environment minus secrets**, the way the leading agents run commands, instead of an
+  allow-list of four variables, which lost proxy and CA settings, `JAVA_HOME` and toolchain shims.
+- **The file tools refuse a file that is not UTF-8** for edits and overwrites, instead of rewriting its bytes, and refuse
+  `$`-variable paths that only `bash` expands.
+- **Tuning that served only the default model is removed**: a model other than GLM or Claude gets its provider's default
+  reasoning effort instead of a forced `low` (Claude gets `high` on every adapter, since OpenRouter thinks on it only when
+  asked), and every open-weight family gets the native-tool-call prompt paragraph.
+
+**What it gives up.** A model that changes code and runs no check finishes `generator_done` instead of being made to run the
+suite; `--agent-verify tests` restores the harness run for anyone who wants it. A green targeted test that does not cover the
+change also completes a run; the step row names the command that ran, so the evidence is visible. The prompt's guidance is
+followed unevenly by small models: glm-5.3-flash still runs `npm test` in a one-file project, where that is the whole suite.
+
+**Affects.** `src/agent/{driver,stop,state,prompt,head,providers,turn,context}.ts`, the engine's completion rule
+(`src/loop/engine.ts`, `src/loop/stages/agent.ts`), the docs-path rule both share (`src/workspace/docs-paths.ts`), the `agent.verify` setting (`src/config/*`, `src/cli/args.ts`,
+`src/cli/session.ts`, `src/core/types.ts`), the output, test-detection and tool changes of the same wave, and the
+documentation (`docs/AGENT-LOOP-DESIGN.md` §A6, §3.3, §5, §6.3; `docs/architecture/agent-loop.md`;
+`docs/concepts/verification.md`; the configuration, environment and CLI references; the README).

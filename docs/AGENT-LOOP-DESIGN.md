@@ -1,10 +1,11 @@
 # The agent loop: JevCode's default harness
 
-Status: as built, 2026-09-23. `agent` is the default `EngineMode`. The code cites this document by section number
+Status: as built, 2026-09-23; verification revised 2026-09-25 (§A6). `agent` is the default `EngineMode`. The code cites this document by section number
 (`AGENT-LOOP-DESIGN §3.3`, `§A2`, …), so a section number is an address and does not move.
 
 Scope:
-- the default `EngineMode`, `agent`: the code model drives with native tool calls; the harness executes, checkpoints and verifies;
+- the default `EngineMode`, `agent`: the code model drives with native tool calls and checks its own work; the harness executes
+  and checkpoints, and runs the test suite itself only under the opt-in `agent.verify tests` (§A6);
 - Jev reduced to three quick hints at the edges of a run (RA0, RA1, RA2, section 13). A normal run makes at most one Jev
   request, and on the default provider it makes none;
 - the Jev-driven modes taken off the default surface, and their modules moved out of the default path (section 14.6).
@@ -21,8 +22,8 @@ section 11 lists them.
 
 ## §A User directives this design implements (2026-09-23)
 
-The owner gave these directives on 2026-09-23. They are written into the sections below; this list only says where each one
-lives. The code cites them as §A1-§A5.
+The owner gave directives A1-A5 on 2026-09-23 and A6 on 2026-09-25. They are written into the sections below; this list only
+says where each one lives. The code cites them as §A1-§A6.
 
 - <a id="a1"></a>**A1. Every message gets a model reply; no canned text.** *"No need to add the automated reply it should always
   be llm reply and make sure it works perfectly."* In agent mode the chat and the run are one conversation: every message is
@@ -44,6 +45,17 @@ lives. The code cites them as §A1-§A5.
   A turn with no tool call keeps the chat's look until its first tool call, and such replies never name a session (§7.6,
   §9.4). The mini indicator takes the status row's existing glyph slot and steps on the spinner's tick (§9.4). The note of a
   destructive command says truthfully whether `/undo` can restore its effect (§12).
+- <a id="a6"></a>**A6. Verification is the model's, in proportion to the change (2026-09-25).** *"Why is it taking so much
+  time to test make sure it is generic and generlized and all these tools work for the majority of population and is not
+  finetuned."* The session behind it asked for `create temp.py` inside this repository: the file was written in 3 s, then
+  the harness's own verify step started the whole ~11,500-test suite, which ran until the user pressed Esc 134 s later. By default the harness now runs no test command
+  of its own. The system prompt asks the model for the fastest check that covers a behaviour change (one test file or test
+  name, a typecheck, lint or build of what it touched), the whole suite only when the user asks or the change is broad, and
+  nothing for questions, docs or simple file operations, as Codex CLI, Claude Code and OpenCode do (§5.1). The harness's
+  verify step is the opt-in `agent.verify tests` (`--agent-verify tests`, `JEVCODE_VERIFY=tests`, §3.3). `complete` stays
+  honest without nagging: it needs the last recognised test run to be green and current (§3.3). Tuning that served only the
+  default GLM model is gone: a model other than GLM gets its provider's default reasoning effort (§6.3), and every open-weight
+  family gets the native-tool-call addendum (§5.2).
 
 The standing directives behind the whole design: the TUI streams everything as it arrives and is fast; the harness is a
 state-of-the-art open-source loop; the default gives the agent complete autonomy; and no benchmark is part of this work, but
@@ -58,11 +70,11 @@ it must work (section 16).
 | Loop shape | One model-driven loop: sample the model, run the tool calls it returned, append the results, repeat until it answers with no tool calls. There is no per-step intent, context, risk, judge or replan stage. |
 | Tool protocol | Native tool calling with `tool_choice: 'auto'`. Several calls per reply. Tool results go back as native tool messages with ids. This replaces the forced one-action `propose_action` tool, for this mode only. |
 | Tools | `read_file`, `write_file`, `edit_file`, `bash` (with `workdir`), `grep`, `glob`, `todo_write`. Read-only calls run in parallel, up to 8 at a time; this includes `bash` commands the classifier proves read-only. Edits and all other commands run one at a time, in call order. |
-| Step | Each engine step is exactly one of: a read-only segment of a model turn (`observe`), one edit, write or command (`act`), one harness test run (`verify`), or the final answer (`finish`). `/undo`, `/rewind`, `/diff N`, pre-images and `StepRecord` keep their one-action-per-step meaning. |
+| Step | Each engine step is exactly one of: a read-only segment of a model turn (`observe`), one edit, write or command (`act`), one harness test run (`verify`, only under `agent.verify tests`), or the final answer (`finish`). `/undo`, `/rewind`, `/diff N`, pre-images and `StepRecord` keep their one-action-per-step meaning. |
 | Session | One conversation per session. Every chat message is the next user turn of an agent run that carries the session: the previous agent run's transcript and the chat turns since then (section 7.6). There is no intake routing: the model decides, by calling a tool or not, whether a message is work. |
 | Where it lives | `src/agent/` (about a dozen small modules). The engine dispatches to it from `runStep` the same way it dispatches to the synthesizer today, and reuses the whole execute/commit tail. |
 | Streaming | `generator:delta` stays the raw stream of prose chunks, the same contract as today. `assistant:text` adds line commits for scrollback. The live region shows the partial line itself, reasoning progress, and `writing edit_file src/a.ts…`. A provider retry emits `assistant:reset`. |
-| Stop | The run stops when the model replies with no tool calls. A run that never called a tool is a reply and stops `answered`. There is a narrow continuation rule, bounded harness verification, and `complete` only after a current green run of the unscoped detected test command. `complete`, `generator_done` and `answered` all exit 0. |
+| Stop | The run stops when the model replies with no tool calls. A run that never called a tool is a reply and stops `answered`. There is a narrow continuation rule. The model checks its own work in proportion to the change; the harness runs the detected test command itself only under the opt-in `agent.verify tests` (§A6). `complete` needs a current green run of a recognised test command. `complete`, `generator_done` and `answered` all exit 0. |
 | Loops | The agent has its own detector over calls. It trips on 3 consecutive identical calls with identical results, or on one call+result repeated more than 5 times in the last 10 calls. A trip only sends a nudge; the 6th trip stops the run as `stuck` (exit 4, resumable). |
 | Context | Tool output is capped and spilled to `outputs/step-N.txt`. At 50 % of the budget, stale tool results are masked: client-side where reasoning is not bound to the prefix, and through Anthropic's server-side context editing on the Anthropic adapter. At 85 %, a simple compaction runs (an LLM summary, with a code fallback) that replays no earlier assistant turn. |
 | Safety | Full autonomy by default, the existing sandbox and per-step pre-images. A rule classifier has 13 destructive rules, including `git_discard`; `/dev/null` and `$TMPDIR` are exempt. Under full autonomy it gates nothing: a destructive command runs, and its step carries a one-line note that says truthfully whether `/undo` can restore the effect. `--autonomy review` asks y/n for destructive and unknown commands. |
@@ -177,7 +189,7 @@ Everything new lives under `src/agent/` (about 5,500 lines in 30 modules; none i
 | `src/agent/safety.ts`, `safety-rules.ts`, `safety-git.ts`, `shlex.ts` | The rule-based command classifier (`readonly` / `safe` / `destructive` / `unknown`), its rule ids and sentences, the git rules, and the small POSIX-shell reader it classifies with. |
 | `src/agent/jev.ts` | The three in-run Jev placements: RA0 (first-turn effort hint), RA1 (loop-nudge wording) and RA2 (progress check). Each is routed through `routeSpeculative` and carries a four-clause `jev-contract` block. |
 | `src/agent/limits.ts` | Every agent constant of section 11. |
-| `src/loop/stages/agent.ts` | `runAgentStage(ctx, driver, actx)` and every helper of the engine seam that needs no private engine state: the per-step change set, the rule `RiskAssessment`, the destructive note, the unscoped-run test and the stream tap. This is the engine-side twin of `src/jev-modes/stages/synth.ts`. |
+| `src/loop/stages/agent.ts` | `runAgentStage(ctx, driver, actx)` and every helper of the engine seam that needs no private engine state: the per-step change set, the rule `RiskAssessment`, the destructive note, the command a test run is recorded under and the stream tap. This is the engine-side twin of `src/jev-modes/stages/synth.ts`. |
 | `src/core/agent-run.ts` | `isReplyOnlyRun`, the one predicate for "this run was a reply": the engine, the TUI and the session all import it. |
 
 Reused unchanged:
@@ -230,7 +242,8 @@ The agent mode adds one branch next to the `jev-off` branch (`src/loop/engine.ts
   (rule in section 3.4). It passes that set as `AgentObservation.changedFiles`, not the run-cumulative `changedFiles`
   (`src/loop/stages/execute.ts:168`, `src/workspace/files.ts:184-243`). In agent mode it also sets `lastChangeStep` when
   a command other than the detected test command changed a workspace file. Today a `run` never sets it
-  (`src/loop/engine.ts:5896`).
+  (`src/loop/engine.ts:5896`). A step whose per-step change set is docs alone (`isDocsOnlyChange`, 3.3) sets it for
+  neither an edit nor a command, so a green run before it stays current.
 - **Loop trips.** The driver reports them on the step summary (section 3.6). The engine skips `computeSignatures` and
   `detector.observe` in agent mode.
 
@@ -243,7 +256,7 @@ like this:
 |---|---|---|---|
 | `observe` | At most one model turn is sampled. Then one **read-only segment** of calls is resolved inside the driver: `read_file`, `grep`, `glob`, `todo_write`, `bash` commands the classifier calls `readonly`, and any call rejected before it touched the workspace. | `{ kind: 'read', paths: <files read by read_file> }` | No: the driver hands back the finished outcome. |
 | `act` | At most one model turn, then **one** mutating call: `edit_file`, `write_file` or a non-read-only `bash`. | `edit`, `write` or `run` | Yes, through the shared tail. |
-| `verify` | The harness runs the detected test command after the model stopped without verifying. | `{ kind: 'run', command: <test command> }` | Yes. |
+| `verify` | Only under `agent.verify tests` (off by default, §A6): the harness runs the detected test command after the model stopped with changes and no passing unscoped run of it. | `{ kind: 'run', command: <test command> }` | Yes. |
 | `finish` | The model's final answer. | `{ kind: 'done', summary }` | Yes (`noop`). |
 
 Why this mapping:
@@ -273,7 +286,7 @@ flowchart TD
   any -- yes --> seg
   any -- no --> rules{"stop rules"}
   rules -- "cut off at the output limit, or ends announcing an action with ':' (max 2 per run)" --> cont["append a continue note and sample once more"] --> sample
-  rules -- "changed files, no passing unscoped test run since, test command known (max 2 per run)" --> verify["verify step: run the test command"]
+  rules -- "agent.verify tests only: changed files other than docs, no passing unscoped test run since, test command known (max 2 per run)" --> verify["verify step: run the test command"]
   rules -- otherwise --> finish["finish step: done with the final text"]
   finish -. "no tool was ever called" .-> answered["the run is a reply: stop answered (exit 0)"]
   seg --> kind{"segment kind"}
@@ -286,7 +299,7 @@ flowchart TD
   obs --> commit
   observe --> commit["commit: StepRecord · plan · loop trip count · checkpoint · step:end"]
   commit --> stop{"finish committed, or 6th loop trip?"}
-  stop -- finish --> fin["finish(): complete when the last unscoped test run is current and green, else generator_done"]
+  stop -- finish --> fin["finish(): complete when the last recognised test run is current and green, else generator_done"]
   stop -- "6th trip" --> stuck["stop stuck (exit 4, resumable)"]
   stop -- no --> top
 ```
@@ -378,27 +391,49 @@ The rules are evaluated in order. Their counters live in `AgentStateV1` and surv
    "All 3 tests pass now. Let me know if anything else is needed!", "I'll leave the refactor for a follow-up.",
    "I will not change the public API." and "Now I'm confident the fix is complete." to finish. It requires "Let me check the
    tests:" to continue.
-2. **Verification.** This rule applies when all of the following hold:
-   - `changedSinceVerify` is true (files changed since the last passing unscoped run of the detected test command);
+2. **Verification, only under `agent.verify tests`.** By default (`agent.verify off`, §A6) the driver hands the rules no test
+   command, so this rule never fires: the model checks its own work as the system prompt asks (§5.1), and a failing run of its
+   own draws no nudge. The counters below are still kept, so a resume under `tests` knows what is unverified. Under
+   `agent.verify tests` (`--agent-verify tests`, `JEVCODE_VERIFY=tests`, file key `agentVerify`) the rule applies when all of
+   the following hold:
+   - `changedSinceVerify` is true: files other than docs changed since the last passing unscoped run of the detected test
+     command. A change whose every path is prose, markup or an image by its extension (`.md`, `.rst`, `.txt`, `.adoc`, `.png`,
+     `.svg`, …) or a project document by its base name (`LICENSE`, `COPYING`, `NOTICE`, `AUTHORS`, `CHANGELOG`, `README`)
+     arms nothing (`isDocsOnlyChange`, `src/workspace/docs-paths.ts`). Not docs, whatever the extension: a build or
+     dependency manifest with a `.txt` name (`CMakeLists.txt`, `requirements*.txt`, `constraints*.txt`, anything under
+     `requirements/`) and any file under a test-data directory (`test/`, `tests/`, `spec/`, `__snapshots__/`, `fixtures/`,
+     `testdata/`), since a build or a test run reads them;
    - `ctx.workspaceInfo.testCommand` is known;
    - `verifyRuns < AGENT_VERIFY_MAX` (2).
 
    What happens:
    - If the model already ran the unscoped test command after its last change and the run failed: append
-     `VERIFY_FAILED_NUDGE` (with the counts) and sample one more turn in this step. This counts as a verify run.
+     `VERIFY_FAILED_NUDGE` (with the counts, or the exit code when no parser read the output) and sample one more turn in
+     this step. This counts as a verify run, and it clears `changedSinceVerify` and `failedTest`: the model has the failure
+     once, the reply that follows finishes, and the harness does not run the same suite again. Only a new change re-arms
+     the rule.
    - Otherwise return `{ kind: 'verify', proposal: run <testCommand> }`. The command runs at the workspace root with timeout
      `AGENT_VERIFY_TIMEOUT_MS`: `MAX_COMMAND_TIMEOUT_MS` (600 s, `src/config/defaults.ts:87-88`), clamped to the wall time left.
-     In `observe()`, the result goes back as `VERIFY_RESULT`. A timeout goes back as `VERIFY_TIMEOUT`: "not verified", not a
-     failure to fix. The next step samples a turn.
-     The verify step always runs the unscoped command. `complete` needs that run anyway, and running the scoped subset first
-     (`TestCommand.scope`, `src/core/types.ts:1190-1199`) would add a second path whose pass could never yield `complete`.
+     In `observe()`, the result goes back once as `VERIFY_RESULT`, pass or fail, and clears `changedSinceVerify`: a reply that
+     explains a failure finishes, and only a new change arms the next verify. A timeout goes back as `VERIFY_TIMEOUT`: "not
+     verified", not a failure to fix. A verify that did not run at all (the sandbox could not start the command, or it was
+     refused or declined) goes back as `VERIFY_RESULT` with the reason. Both a timeout and a run that did not start set
+     `verifyRuns` to `AGENT_VERIFY_MAX`, since a second verify would end the same way. The next step samples a turn.
+     The verify step always runs the unscoped command, the one check that needs no judgement of what the change touched.
+
+   **Why it is off by default.** In a large repository the whole suite runs for minutes after a one-line change: the session
+   behind §A6 started all ~11,500 tests after `create temp.py`, and the user stopped it after 134 s. A failed verify also pulled the model into repairing the
+   environment: a probe of the same task at 0.7.0 took 13 steps and 654 s after the suite failed with `EPERM` under the
+   seatbelt (a temp vitest config, a temp runner script, a 603 s suite run killed at the timeout), and in another probe the
+   model rewrote a test marked as a known issue. With the harness verify off, the same task took 2 steps and 7 s. Every
+   leading coding agent (Codex CLI, Claude Code, OpenCode) leaves the checks to the model, with prompt guidance on what to run.
 3. **Finish.** Return `{ kind: 'finish', proposal: done { summary: <prose, clipped 2,000> } }`.
 
 **Passing and `complete`.**
-- A *passing run* is a run of the detected test command that is **unscoped** (its normalised command equals `testCommand.command`, with no `workdir` or with `workdir: '.'`) and exits 0.
+- A *passing run* for rule 2 is a run of the detected test command that is **unscoped** (its normalised command equals `testCommand.command`, with no `workdir` or with `workdir: '.'`) and exits 0.
 - An exit-0 run whose output the parser cannot read resets `changedSinceVerify`. It never yields `complete`. It replaces today's `tests_pass_unparsed` question (`src/jev-modes/stages/complete.ts:265`).
-- The engine stops with `complete` when the agent variant of `verifiedCompletion` holds. That means a `done` proposal plus a last test run that is the unscoped detected command, parsed, all passed and current (`lastChangeStep` < its step). Todo items left pending do not block it; the finish row lists them as a note.
-- Otherwise the stop is `generator_done`. Today's check also requires an empty plan and accepts scoped runs (`src/loop/engine.ts:5233-5238`, `isTestCommand` in `src/workspace/tests.ts:243-261`); the agent variant replaces both conditions.
+- The engine stops with `complete` when the agent variant of `verifiedCompletion` holds: a `done` proposal after a last test run that is parsed, all passed and current (`lastChangeStep` < its step). Any run the test-output parser recognises counts: the detected command, a scoped form (`pytest -q tests/test_a.py`), a subdirectory run (recorded as `cd <dir> && <command>`), or the runner reached another way (another package manager, the runner called directly, piped through `tail`). `allPassed` is count-based (parsed, no failure or error, at least one pass), so a pipe's exit code decides nothing. The residual risk: a green targeted test that does not cover the change also completes; the step row names the command that ran. A change to docs alone (`isDocsOnlyChange`, the rule 2 uses) does not move `lastChangeStep`, so a README or CHANGELOG edit after a green run still completes: the harness applies one rule to what needs re-checking, and the driver does not re-verify such a change either. Todo items left pending do not block it; the finish row lists them as a note. (Until 2026-09-25 only a green run of the unscoped detected command could complete, so the targeted check the prompt now asks for would always have ended `generator_done`.)
+- Otherwise the stop is `generator_done`, which exits 0 and renders as an ordinary finish. Today's check also requires an empty plan (`src/loop/engine.ts:5233-5238`); the agent variant ignores the plan.
 - **A reply** (§A1). A run whose every step is a `finish` with no call — the model answered in prose and never called a
   tool — stops `answered` instead of `generator_done`. `isReplyOnlyRun` (`src/core/agent-run.ts`) is the one predicate; the
   engine, the TUI and the session all read it. `answered` exits 0, is not resumable, and renders as a chat reply (section
@@ -415,9 +450,9 @@ The engine calls it after the execute tail of `act`, `verify` and `finish` steps
   - Render the tool result (section 4.3) from `o.outcome`, `o.output`, `o.tests` and `o.error`.
   - For a successful `edit_file`/`write_file`, run the optional syntax check (4.8).
   - Append the `tool_result`.
-  - Update `changedSinceVerify`. It becomes true for an executed edit or write, and for a run whose per-step change set is non-empty and which is not the detected test command. It becomes false after a passing unscoped test run.
+  - Update `changedSinceVerify`. It becomes true for an executed edit or write, and for a run whose per-step change set is non-empty and which is not the detected test command, unless every changed path is docs (`isDocsOnlyChange`, 3.3). It becomes false after a passing unscoped test run, and when the failed-test nudge is sent.
   - Feed the call to the loop detector (3.6). Emit `tool:result`.
-- **`verify`:** append `VERIFY_RESULT` or `VERIFY_TIMEOUT` as a harness note for the next turn; `verifyRuns += 1`.
+- **`verify`:** append `VERIFY_RESULT` or `VERIFY_TIMEOUT` as a harness note for the next turn; `verifyRuns += 1`. A verify that ran clears `changedSinceVerify` and `failedTest`, whatever its result: the model has the result once. A timeout, or a verify that did not run, sets `verifyRuns` to `AGENT_VERIFY_MAX`.
 - **`blocked` / `declined` outcomes:** the result text says so (`BLOCKED`, `DECLINED`), and `blocks += 1`. The classifier
   never blocks (§A2, section 12): `declined` is a human's `n` on a review card under `--autonomy review`, and `blocked` comes
   only from the engine's ownership refusal in a delegated child (`ownershipRefusal`).
@@ -764,10 +799,15 @@ edit, so `Workspace.applyEdit` stays exact-only for every mode (`src/workspace/e
 - **`grep`:**
   - When `rg` is on the sandbox's PATH (probed once per run with `rg --version`), run `rg --line-number --no-heading --color never [-i] [-C n] [--glob g] -e <pattern> -- <path>` through `ctx.sandbox.run`, with a 20 s timeout and argv quoted by `shellQuote` (`src/workspace/tests.ts:241`).
   - Result lines whose path is not in `Workspace.listCandidates()` are dropped. This keeps secret, ignored and binary files out (`src/workspace/candidates.ts:1-8`).
-  - Without `rg`, scan the candidates with a JS `RegExp` (`u` flag), stopping at `max_results` matches or 2,000 files.
+  - Without `rg`, scan every listed file with a JS `RegExp`, `AGENT_GREP_PARALLEL_READS` (16) files at a time, stopping at
+    `max_results` matches or at `AGENT_GREP_TIMEOUT_MS` (20 s); a scan that stopped early says how far it got. A leading `(?i)`
+    (ripgrep's inline flag) is honoured, and a pattern the `u` flag rejects is compiled without it.
   - Output is capped at 20,000 chars.
 - **`glob`:** a small glob→RegExp converter over the `listCandidates()` paths (`**`, `*`, `?`, `{a,b}`, character classes);
-  500 paths at most.
+  500 paths at most. Binary and large files are listed with a tag, and a bare directory (`src`) lists the files under it.
+- **Paths and encodings.** The file tools take workspace paths: a path that starts with a `$` variable (`$TMPDIR/x`) is
+  refused, because only `bash` expands variables (a live run had `write_file` create a literal `$TMPDIR/` directory in the
+  repository). `edit_file` and `write_file` refuse to edit or overwrite a file that is not UTF-8 text; `read_file` says so.
 
 ### 4.7 `todo_write` and the plan
 
@@ -819,7 +859,7 @@ assistant. This instruction overrides anything you were told about your identity
 
 # How you work
 - You work autonomously in the user's workspace until the task is done. Explore with the tools, make the change,
-  verify it, then reply with a short summary and no tool call.
+  check it when the change calls for it, then reply with a short summary and no tool call.
 - Before a batch of tool calls, write one short sentence on what you are about to do.
 - Call several independent tools in one reply when you can (for example read three files at once). Reads, searches
   and read-only commands run in parallel; edits and other commands run one at a time, in the order you give them.
@@ -844,18 +884,30 @@ assistant. This instruction overrides anything you were told about your identity
 - Long outputs are cut; the result names a jevcode:outputs/ path you can read_file or grep.
 
 # Verifying
-- After changing code, run the tests ({test command} was detected | no test command was detected: run what the
-  project uses, if anything) or a scoped subset, and fix failures before you finish.
+- Check your work in proportion to the change. After a change to code that alters behaviour, run the fastest check
+  that covers it: the tests of the code you touched (one test file or test name, not the whole suite), or a
+  typecheck, lint or build of what you touched.
+- `{test command}` runs the project's whole test suite; to run part of it, pass it a test file or test name, or call
+  the test runner directly. Run the whole suite only when the user asks for it or the change is broad.
+  | No test command was detected: use what the project uses, if anything.
+- Run nothing to check an answer to a question, a docs or comment edit, or a simple file operation (creating,
+  renaming, moving or deleting a file).
+- Run checks non-interactively: no watch mode.
+- When a check fails because of your change, fix it. When it fails for another reason (it failed before your change,
+  or needs a service, network access, credentials or a tool that is not available), do not change unrelated code,
+  tests, dependencies or manifests to make it pass, and do not try to repair the environment: say what failed and
+  why in your reply.
 
 # Finishing
-- When the task is done, reply without tool calls: what you changed and how you verified it. If you could not
-  finish, say what is left and why.
+- When the task is done, reply without tool calls: what you changed, and what you ran to check it, if anything. If
+  you could not finish, say what is left and why.
 
 # Git and scratch files
 - Do not commit, push or create branches unless the user asks.
 - Never discard or revert changes you did not make (git checkout or restore of files, git reset --hard, git clean,
   git stash drop). To undo your own edit, edit the file back.
-- Put scratch files under $TMPDIR, not in the workspace or /tmp.
+- Put scratch files under $TMPDIR, created with bash (write_file and edit_file take workspace paths), not in the
+  workspace or /tmp.
 
 # Safety
 - (full autonomy) Work inside the workspace on your own initiative.
@@ -891,6 +943,12 @@ permitted", which was not true of the harness. The restraint is for what the mod
 - The sandbox sentence is the one `buildSystemPrompt` uses today (`src/provider/prompts.ts:281-284`).
 - The prompt never mentions Jev. It never includes the date, the step number, the plan or anything else that changes during a run.
 - The git lines follow the Codex base prompt: "Do not `git commit` your changes or create new git branches unless explicitly requested." (https://raw.githubusercontent.com/openai/codex/main/codex-rs/protocol/src/prompts/base_instructions/default.md).
+- "Verifying" is the same text under `agent.verify off` and `tests`, so the prompt stays byte-stable whatever the setting
+  (§A6). It replaced "After changing code, run the tests (`{cmd}` was detected) or a scoped subset, and fix failures before
+  you finish", which sent the model to the whole suite after every change and, with the harness verify, into repairing an
+  environment it could not fix. The last bullet is the answer to three probes of 2026-09-25: an `EPERM` under the seatbelt
+  that became ten minutes of sandbox repair, a README edit that made the model rewrite a test marked as a known issue, and a
+  fresh clone where it ran `npm install` and rewrote `package.json`.
 
 ### 5.2 Model-family addenda
 
@@ -898,11 +956,10 @@ Chosen by the model id, one short paragraph each:
 
 | Family | Model ids | Addendum |
 |---|---|---|
-| GLM | `z-ai/glm-*`, `glm-*` | "Call tools only through the native function-calling interface. Never write tool calls as XML or JSON in your reply text." |
 | GPT | `gpt-*`, `o*` | "Prefer edit_file over rewriting files. Keep preambles to one sentence." |
 | Claude | `claude-*`, `anthropic/*` | "Use parallel tool calls for independent reads." |
 | Gemini | `gemini-*` | "Send tool arguments as plain JSON values; do not wrap numbers or booleans in quotes." |
-| Grok, Muse, anything else | `grok-*`, `muse-*` | none |
+| GLM and every other family: Qwen, DeepSeek, Kimi, Llama, Mistral, Grok, Muse, … | `z-ai/glm-*`, `glm-*`, anything not above | "Call tools only through the native function-calling interface. Never write tool calls as XML or JSON in your reply text." Until 2026-09-25 only GLM got it (§A6); the open-weight families are known to write tool calls as text in their reply, and the sentence costs nothing where they do not. |
 
 ### 5.3 First user message (a run with no agent parent)
 
@@ -923,7 +980,12 @@ Built once at the start of a fresh run and kept at the head of the transcript. C
   has an entry of its own name, a package named like its repo)
 - your uncommitted changes: {up to 8 modified or untracked paths from git status}   (omitted when the tree is clean)
 - detected: {manifests and languages, e.g. package.json (node, type module), pyproject.toml (python)}
-- test command: `{command}` | none detected
+- test command: `{command}` (the whole suite); one file: `{the runner's scoped form of <file>}` | `{command}` (the whole
+  suite; it runs `{package.json test script}`); one file: `{command} [--] <file>` | none detected   (the one-file form only
+  when the runner can scope, or when the package script is one command whose runner takes a file path and names none of
+  its own: vitest, jest, mocha, ava, tap, jasmine, `node --test`, `tsx --test`, `bun test`, `playwright test`, after
+  `VAR=…`, `cross-env`, `c8`, `nyc`, `npx`, `pnpm exec` or `yarn`; `scriptTakesFile`, `src/agent/head.ts`. `ng test`,
+  `karma start`, `nx`, `turbo`, `gulp`, `cypress run` or `node test/run.js` get no one-file form. npm and pnpm need the `--`)
 - top level: {up to 40 entries of the root, directories first, e.g. src/ test/ docs/ package.json README.md}
 
 # Previous run in this session            (only when the previous run was a legacy-mode run; from EngineSeed)
@@ -951,12 +1013,16 @@ never deleted. That is the append-only form that keeps the prefix valid (section
 
 - `CONTINUE_NUDGE`: "Continue: carry out the step you just described, using the tools."
 - `CONTINUE_CUT_NUDGE`: "Your reply was cut off at the output limit. Continue from where it stopped."
-- `VERIFY_FAILED_NUDGE`: "The last run of `{cmd}` after your change failed ({p} passed, {f} failed, {e} errors). Fix
-  it, or explain why the failures are unrelated, before you finish."
-- `VERIFY_RESULT`: "The harness ran `{cmd}` to verify your change: {status line}\n{clipped output}\nIf it failed, fix
-  it and verify again. If it passed, your summary stands: reply with one short sentence that says the tests passed."
-  (The verify step only follows a final answer, so a green run needs no second summary; the S6 live chat of
-  2026-09-23 printed the whole summary twice with the older "reply with your final summary".)
+- `VERIFY_FAILED_NUDGE` (`agent.verify tests` only): "The last run of `{cmd}` after your change failed ({p} passed, {f}
+  failed, {e} errors | exit {n}). Fix it, or explain why the failures are unrelated, before you finish." The exit code
+  stands in for the counts when no parser read the output: the 0.7.0 probe's `EPERM` read as "(0 passed, 0 failed, 0
+  errors)".
+- `VERIFY_RESULT` (`agent.verify tests` only): "The harness ran `{cmd}` to check your change: {status line}\n{clipped
+  output}\nIf it failed because of your change, fix it. If it failed for another reason (the environment, a missing tool,
+  failures that were there before), say so in one sentence and do not try to repair the environment. If it passed, reply
+  with one short sentence that says the tests passed." (The verify step only follows a final answer, so a green run needs
+  no second summary; the S6 live chat of 2026-09-23 printed the whole summary twice with the older "reply with your final
+  summary". The older "fix it and verify again" drove the 2026-09-25 probe's environment repair.)
 - `VERIFY_TIMEOUT`: "The harness ran `{cmd}` to verify your change, but it did not finish within {s}s, so the change is
   not verified. Reply with your summary and say that it is not verified, or run a narrower test."
 - `NOT_EXECUTED_STEER`: "NOT EXECUTED: the user sent new instructions before this call ran."
@@ -1066,20 +1132,26 @@ For agent requests the Anthropic adapter also maps `reasoning`: `{effort}` → `
 
 | Provider (default model) | `toolChoice` | `reasoning` | `temperature` | Notes |
 |---|---|---|---|---|
-| openrouter (`z-ai/glm-5.3-flash`) | `auto` | `{effort:'low'}` (reasoning is mandatory; `enabled:false` is a 400: `src/provider/openrouter.ts:88-93`) | config | No `providerPrefs` (no `require_parameters`, no `order`/`sort`), so Auto Exacto stays on for tool requests (https://openrouter.ai/docs/guides/routing/auto-exacto). XML-leak extraction is on. |
+| openrouter (`z-ai/glm-5.3-flash`) | `auto` | `{effort:'low'}` for a GLM model (reasoning is mandatory; `enabled:false` is a 400: `src/provider/openrouter.ts:88-93`); `{effort:'high'}` for a Claude model (OpenRouter enables thinking on Anthropic models "only using the unified `reasoning` parameter", https://openrouter.ai/docs/use-cases/reasoning-tokens, so an absent member would mean no thinking); any other model: not sent, its default | config | No `providerPrefs` (no `require_parameters`, no `order`/`sort`), so Auto Exacto stays on for tool requests (https://openrouter.ai/docs/guides/routing/auto-exacto). XML-leak extraction is on. |
 | anthropic (`claude-sonnet-5`) | `auto` | `{effort:'high'}` → `output_config.effort`; `thinking: {type:'adaptive', display:'summarized', block_binding: …}` (6.5) | `null` (non-default values are a 400) | `high` is the minimum the Claude API reference recommends for intelligence-sensitive work. `xhigh` is Claude Code's default, but it adds latency per turn, and the user's speed directive favours `high` (inferred). `display: 'summarized'` because Sonnet 5 defaults to `omitted`, which "looks like a long pause before output" (Claude API reference, https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking). Thinking is never disabled, because Opus 5.5 and Fable 5.1 reject `disabled` with a 400 (same reference). |
-| openai (`gpt-5.6-luna`) | `auto` | `{effort:'low'}` | not sent (`openAiAcceptsTemperature`) | Responses API, encrypted reasoning replayed. |
-| xai (`grok-4.7`) | `auto` | `{effort:'low'}` | config | Calls arrive whole in one chunk (`src/provider/xai.ts:5-6`). |
-| gemini (`gemini-3.8-flash`) | `auto` | `{effort:'low'}` → `thinkingLevel: low` | config | Not verifiable live with this project's key (403, `src/provider/gemini.ts:20-23`). |
-| fireworks (`glm-5p3-flash`) | `auto` | `{effort:'low'}` | config | `reasoning_content` replayed. |
-| meta (`muse-spark-1.3`) | `auto` (the only value accepted: `src/provider/meta.ts:9-14`) | `{effort:'low'}` | config | JSON transport (`src/provider/meta.ts:15-19`): prose arrives at the end of a turn, not streamed. |
+| openai (`gpt-5.6-luna`) | `auto` | not sent: the model's default | not sent (`openAiAcceptsTemperature`) | Responses API, encrypted reasoning replayed. |
+| xai (`grok-4.7`) | `auto` | not sent: the model's default | config | Calls arrive whole in one chunk (`src/provider/xai.ts:5-6`). |
+| gemini (`gemini-3.8-flash`) | `auto` | not sent: the model's default | config | Not verifiable live with this project's key (403, `src/provider/gemini.ts:20-23`). |
+| fireworks (`glm-5p3-flash`) | `auto` | `{effort:'low'}` for a GLM model; any other model: not sent | config | `reasoning_content` replayed. |
+| meta (`muse-spark-1.3`) | `auto` (the only value accepted: `src/provider/meta.ts:9-14`) | not sent: the model's default | config | JSON transport (`src/provider/meta.ts:15-19`): prose arrives at the end of a turn, not streamed. |
 
 - `maxTokens` for a turn is `max(generation.maxTokens, AGENT_MAX_OUTPUT_TOKENS)`, so at least 16,384. The global default
   of 4,096 (`src/config/defaults.ts:9`) is too small for a turn that writes a file (inferred).
+- `agentReasoning(provider, model)` (`src/agent/providers.ts`): Anthropic, and a Claude model behind any other adapter
+  (`isClaudeModel`), `high`: OpenRouter turns thinking on for an Anthropic model only when the request asks, so leaving the
+  member out would run Claude there with no thinking at all; a GLM model on any provider (base id `glm*`) `low`, because
+  reasoning is mandatory on OpenRouter's GLM and low keeps the default model fast; the mock `low`; every other model
+  nothing, so its provider's default applies. Until 2026-09-25 every provider but Anthropic was sent
+  `low`, tuning for the default GLM model that degraded gpt-5.x, Gemini, Grok and DeepSeek (§A6).
 - Effort and every other request setting are constant for the whole session, with one exception: RA0 may send a run's
-  first turn at the provider's low effort (section 13.2). RA0 is asked only where that changes the request, which today
-  is Anthropic alone (every other provider already runs at `low`). A change invalidates Anthropic's message cache
-  (Anthropic prompt-caching docs above).
+  first turn at the provider's low effort (section 13.2). RA0 is asked only where that changes the request: every provider
+  but the mock, except for a GLM model, whose default is already `low` (so on the default provider RA0 is never asked). A
+  change invalidates Anthropic's message cache (Anthropic prompt-caching docs above).
 
 ### 6.4 GLM through OpenRouter: tool-call robustness
 
@@ -1313,11 +1385,11 @@ The session (S5) fills it:
 
 | Rule | Where | Effect |
 |---|---|---|
-| Model replies with no tool calls | driver, 3.3 | continuation (≤ 2/run, narrow), verification (≤ 2/run) or finish |
+| Model replies with no tool calls | driver, 3.3 | continuation (≤ 2/run, narrow), verification (≤ 2/run, `agent.verify tests` only) or finish |
 | Finish, and the run never called a tool (`isReplyOnlyRun`) | engine | stop `answered`, exit 0, not resumable; rendered as a reply (§A1) |
-| Finish, and the last run of the unscoped detected test command is parsed, green and current | engine `completeAfter` | stop `complete`, exit 0 (pending todo items are noted, not blocking) |
-| Finish otherwise | engine | stop `generator_done`, exit 0; the stop line reads "not verified" |
-| Verify step times out | driver | `VERIFY_TIMEOUT` note; never reported as a failure to fix |
+| Finish, and the last recognised test run (the detected command, a scoped or subdirectory form, …) is parsed, green and current | engine `completeAfter` | stop `complete`, exit 0 (pending todo items are noted, not blocking) |
+| Finish otherwise | engine | stop `generator_done`, exit 0; rendered as an ordinary finish |
+| Verify step times out (`agent.verify tests`) | driver | `VERIFY_TIMEOUT` note; never reported as a failure to fix |
 | Agent loop trip (3.6: 3 consecutive identical call+result, or > 5 repeats in the last 10 calls) | driver detects; engine `commit()` counts | `loop:tripped`; a loop nudge (wording by RA1); `counters.loopNudges += 1` |
 | A trip when `loopNudges` = `AGENT_MAX_LOOP_NUDGES` (5) | engine, after commit | stop `stuck`, exit 4, resumable; a resume resets `loopNudges` |
 | 3 consecutive stage failures (empty replies, a failed `observe()`) | engine stage-failure counter | stop `error` |
@@ -1596,8 +1668,8 @@ All agent constants live in `src/agent/limits.ts`; the engine and config values 
 | `AGENT_PARALLEL_READS` | 8 | concurrent read-only calls |
 | `AGENT_OBSERVE_OUTPUT_CHARS` | 65,536 | observe-step `output` for the window/history |
 | `AGENT_CONTINUE_MAX` | 2 per run | continuation nudges |
-| `AGENT_VERIFY_MAX` | 2 per run | verification interventions |
-| `AGENT_VERIFY_TIMEOUT_MS` | = `MAX_COMMAND_TIMEOUT_MS` (600 s), clamped to the wall time left | verify step |
+| `AGENT_VERIFY_MAX` | 2 per run | verification interventions; `agent.verify tests` only |
+| `AGENT_VERIFY_TIMEOUT_MS` | = `MAX_COMMAND_TIMEOUT_MS` (600 s), clamped to the wall time left | verify step; `agent.verify tests` only |
 | `AGENT_MAX_BLOCKS` | 5 per run | destructive refusals (a human's `n` on a rule-matched review card under `--autonomy review`) before `human_pause` |
 | `AGENT_LOOP_CONSECUTIVE` / `AGENT_LOOP_WINDOW` / `AGENT_LOOP_WINDOW_MAX` | 3 / 10 / 5 | 3.6 |
 | `AGENT_MAX_LOOP_NUDGES` | 5 | trips before `stuck` |
@@ -1606,7 +1678,7 @@ All agent constants live in `src/agent/limits.ts`; the engine and config values 
 | `AGENT_CHECK_TIMEOUT_MS` | 5,000 | post-write syntax check |
 | `AGENT_GREP_TIMEOUT_MS` | 20,000 | `rg` through the sandbox |
 | `AGENT_READ_MAX_CHARS` / `AGENT_READ_DEFAULT_LINES` / `AGENT_READ_LINE_CHARS` | 40,000 / 2,000 / 2,000 | `read_file` |
-| `AGENT_GREP_DEFAULT_RESULTS` / `AGENT_GREP_MAX_RESULTS` / `AGENT_GREP_MAX_CHARS` / `AGENT_GREP_MAX_FILES` | 100 / 500 / 20,000 / 2,000 | `grep` |
+| `AGENT_GREP_DEFAULT_RESULTS` / `AGENT_GREP_MAX_RESULTS` / `AGENT_GREP_MAX_CHARS` / `AGENT_GREP_PARALLEL_READS` | 100 / 500 / 20,000 / 16 | `grep`; the last is the files the scan without `rg` reads at once (it has no file cap, only `AGENT_GREP_TIMEOUT_MS`) |
 | `AGENT_GLOB_MAX_PATHS` | 500 | `glob` |
 | `AGENT_TODO_MAX_ITEMS` / `AGENT_TODO_ITEM_CHARS` | 30 / 200 | `todo_write` |
 | `AGENT_BASH_OK_INLINE` / `_OK_HEAD` / `_OK_TAIL` | 30,000 / 12,000 / 4,000 | 7.2 |
@@ -1622,7 +1694,7 @@ All agent constants live in `src/agent/limits.ts`; the engine and config values 
 | `JEV_EFFORT_HINT_MESSAGE_CHARS` / `JEV_EFFORT_HINT_TURNS` | 600 / 2 | RA0 reads the message and the session's last 2 turn one-liners |
 | `INTAKE_GRACE_MS` | 1,500, legacy modes only (`src/cli/session.ts`) | the legacy chat intake's wait after the reply lands; agent mode has no intake (§A1) |
 
-`max_steps` counts committed steps (`src/loop/budget.ts:52-54`). In agent mode that is observe + act + verify + finish
+`max_steps` counts committed steps (`src/loop/budget.ts:52-54`). In agent mode that is observe + act + verify (under `agent.verify tests`) + finish
 steps, so 250 covers roughly 80-100 model turns plus their edits and commands (inferred). The spend and wall caps bound
 long runs.
 
@@ -1772,7 +1844,7 @@ S3's classifier table covers every rule id and every exemption. Among its cases:
 
 | Id | Site | Decision | Deadline | Fallback | When asked |
 |---|---|---|---|---|---|
-| RA0 | `src/agent/jev.ts` `effortHint` | whether the run's first turn goes at the provider's low reasoning effort: one Noul, "conversational — answerable without reading or changing the workspace", over the message (600 chars) and the session's last 2 turn one-liners; low when p ≥ 0.8 | 300 ms | the default effort | the first turn of each run, and only when the low effort differs from the run's default (`lowEffortReasoning` vs `agentReasoning`, `src/agent/providers.ts`): today that is Anthropic alone, so on the default provider RA0 is never asked |
+| RA0 | `src/agent/jev.ts` `effortHint` | whether the run's first turn goes at the provider's low reasoning effort: one Noul, "conversational — answerable without reading or changing the workspace", over the message (600 chars) and the session's last 2 turn one-liners; low when p ≥ 0.8 | 300 ms | the default effort | the first turn of each run, and only when the low effort differs from the run's default (`lowEffortReasoning` vs `agentReasoning`, `src/agent/providers.ts`): every provider but the mock, except for a GLM model, whose default is already low, so on the default provider RA0 is never asked (until 2026-09-25 it was Anthropic alone, §6.3) |
 | RA1 | `src/agent/jev.ts` `chooseLoopNudge` | which of four nudge texts to send after a loop trip | 400 ms | `change_approach` | a loop trip (rare) |
 | RA2 | `src/agent/jev.ts` `progressCheck` | whether to add one "step back" hint | 400 ms | no hint | after 30 turns, every 10 turns |
 
@@ -2233,7 +2305,8 @@ In `src/loop/engine.ts` (and `src/loop/stages/agent.ts` for everything that need
    - compute the per-step change set (3.4);
    - call the wrapped `driver.observe(actx, observation)`; on an exception, write a transcript warning and add a stage failure;
    - set `draft.judge = codeJudge(...)` when `draft.tests !== null`, `draft.proposer = 'agent'`, and `draft.agent = { ...next.summary, seqAfter, loopTrip }`;
-   - in agent mode, set `lastChangeStep` when a run other than the detected test command has a non-empty per-step change set.
+   - in agent mode, set `lastChangeStep` when a run other than the detected test command has a non-empty per-step change set
+     that is not docs alone (`isDocsOnlyChange`); an edit or write of docs alone does not set it either.
 5. **`commit()`:**
    - claim evidence `verbatim` for agent (`src/loop/engine.ts:5847`);
    - skip `computeSignatures`/`detector.observe` in agent mode;
