@@ -95,6 +95,62 @@ const readCall = (id: string): EngineEvent => ({ type: 'tool:call', step: 1, tur
 const agentScript = (opts: EngineOptions): RunScript => (/^(hi|hello|thanks|who|what)\b/i.test(opts.task) ? { stop: 'answered', steps: 1, cost: { generator: 0.001, jev: 0 } } : { events: [toolCall('c1')], stop: 'complete', steps: 4, cost: { generator: 0.02, jev: 0 } });
 const PROVIDER_503: SerializedError = { name: 'ProviderHttpError', code: 'provider_http', message: 'openrouter HTTP 503: upstream overloaded', exitCode: 5 };
 
+describe('a message typed while a reply streams (the engine applies the steer; 01b94c9)', () => {
+  const queued = (index: number, text: string): EngineEvent => ({ type: 'steer:queued', step: 1, index, text, queued: index });
+  const applied = (count: number): EngineEvent => ({ type: 'steer:applied', step: 1, count, superseded: [] });
+  /** the [you] lines of a session: the controller's own bubbles, then the ones it wrote through a live run's Engine.annotate */
+  const youLines = (h: Harness): string[] => [
+    ...bubbles(h, '[you]'),
+    ...h.factory.engines.flatMap((eng) => eng.emitted.flatMap((ev) => (ev.type === 'notice' && ev.label === '[you]' ? [ev.text] : []))),
+  ];
+
+  it('while the run is still a reply, each applied steer is the next [you] bubble, in order', async () => {
+    const h = await build({ ...AGENT, script: () => ({ events: [queued(1, 'also say bye'), queued(2, 'and wave')], stop: 'answered', steps: 1 }) });
+    void h.controller.run();
+    await h.ready();
+    await h.submit('hi');
+    await tick(0);
+    expect(youLines(h)).toEqual(['hi']);
+    // the scripted engine applied nothing: the queued texts are not shown until the engine applies them
+    const h2 = await build({ ...AGENT, script: () => ({ events: [queued(1, 'also say bye'), queued(2, 'and wave'), applied(2)], stop: 'answered', steps: 1 }) });
+    void h2.controller.run();
+    await h2.ready();
+    await h2.submit('hi');
+    await tick(0);
+    expect(youLines(h2)).toEqual(['hi', 'also say bye', 'and wave']);
+  });
+
+  it('a withdrawn steer never becomes a bubble', async () => {
+    const h = await build({ ...AGENT, script: () => ({ events: [queued(1, 'never mind'), { type: 'steer:withdrawn', step: 1, index: 1 }, queued(2, 'say bye'), applied(1)], stop: 'answered', steps: 1 }) });
+    void h.controller.run();
+    await h.ready();
+    await h.submit('hi');
+    await tick(0);
+    expect(youLines(h)).toEqual(['hi', 'say bye']);
+  });
+
+  it('once the run works through tools a steer stays a directive: no [you] bubble', async () => {
+    const h = await build({ ...AGENT, script: () => ({ events: [toolCall('e1'), queued(1, 'use tabs'), applied(1)], stop: 'complete', steps: 2 }) });
+    void h.controller.run();
+    await h.ready();
+    await h.submit('fix the failing test');
+    await tick(0);
+    expect(youLines(h)).toEqual(['fix the failing test']);
+  });
+
+  it('the bubble is redacted like every chat message', async () => {
+    const secret = 'sk-or-v1-' + 'a'.repeat(64);
+    const h = await build({ ...AGENT, env: { OPENROUTER_API_KEY: secret }, script: () => ({ events: [queued(1, `use ${secret}`), applied(1)], stop: 'answered', steps: 1 }) });
+    void h.controller.run();
+    await h.ready();
+    await h.submit('hi');
+    await tick(0);
+    const shown = youLines(h);
+    expect(shown).toHaveLength(2);
+    expect(shown[1]).not.toContain(secret);
+  });
+});
+
 describe('§A1: every chat message becomes one agent run', () => {
   it('`hi` → one agent run, the [you] bubble, prose only: no intake, no Jev call, no ON_IT / DO_IT / catalogue text, no epilogue, no title', async () => {
     const h = await build({ ...AGENT, script: agentScript });

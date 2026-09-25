@@ -931,8 +931,10 @@ export function isHoldableAgentRow(item: Pick<TranscriptItem, 'kind' | 'level' |
       return true;
     case 'notice':
       // a `[ui]` notice is the human's own command answering while the reply is in flight (`/status` through Engine.annotate):
-      // never held — it lands at once, in the order transcript.log records it, not after the reply
-      return item.level === 'info' && item.label !== '[ui]';
+      // never held — it lands at once, in the order transcript.log records it, not after the reply. A chat bubble
+      // (`[you]` / `[jevcode]`) is the conversation itself — a message typed while the reply streamed, applied by the engine —
+      // and lands at once too
+      return item.level === 'info' && item.label !== '[ui]' && item.label !== '[you]' && item.label !== '[jevcode]';
     default:
       return false;
   }

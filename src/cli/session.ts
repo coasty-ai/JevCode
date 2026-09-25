@@ -1568,6 +1568,8 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
   let carryMark: ChatTurn | null = null;
   /** §A5: the live agent run has made no tool call yet — Esc / Ctrl-C then stop the REPLY (an abort, never a pause) and keep the session */
   let replyPhase = false;
+  /** steers typed while the agent turn is still a reply: when the engine applies them they are the human's next message (a [you] bubble) */
+  let replySteers: { index: number; text: string }[] = [];
   /** §A5: the live run was stopped during its reply phase — its run:end is "reply stopped": a toast, no epilogue item */
   let replyStopped = false;
   /** §A1 latency: the previous run's run.json + state.json, loaded in the background when an agent run ends, so the next seed has it at Enter */
@@ -1960,6 +1962,17 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         break;
       case 'steer:queued':
         if (current && sessionId) indexLine({ v: 1, t: nowIso(), kind: 'steer', sessionId, runId: current.runId, step: e.step, text60: e.text });
+        if (replyPhase) replySteers.push({ index: e.index, text: e.text });
+        break;
+      case 'steer:withdrawn':
+        replySteers = replySteers.filter((x) => x.index !== e.index);
+        break;
+      case 'steer:applied':
+        // a message typed while a reply streams is applied before that turn's step ends and answered by one more turn: while
+        // the run has made no tool call it is the next chat message, so it reads as a [you] bubble (redacted like any other),
+        // not a directive row; once the run works through tools a steer stays a directive
+        if (replyPhase) for (const x of replySteers) say('you', bubbleLines(x.text, redact));
+        replySteers = [];
         break;
       case 'pause:requested':
         phase = 'pausing';
@@ -2975,6 +2988,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     runs.push(record);
     // AGENT-LOOP-DESIGN §A5: an agent chat turn is a reply until its first tool call (onEvent `tool:call` ends the phase)
     replyPhase = f.agentTurn !== undefined;
+    replySteers = [];
     replyStopped = false;
     if (sessionId === null) sessionId = f.runId;
     const sid = sessionId;
