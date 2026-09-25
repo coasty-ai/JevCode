@@ -30,14 +30,16 @@ export function maskingModeFor(provider: ProviderName, model: string): MaskingMo
 }
 
 /**
- * §6.3: the reasoning setting of every agent turn. Anthropic gets effort `high` (the Claude reference's minimum for
- * intelligence-sensitive work; thinking can never be disabled on Opus 5.5 / Fable 5.1). A GLM model, on any provider, gets
- * `low`: reasoning is mandatory on OpenRouter's GLM (`enabled:false` is a 400) and low keeps the default model fast; the
- * mock gets `low` too. Every other model gets nothing (undefined): its provider's own default effort. Forcing `low` on every
+ * §6.3: the reasoning setting of every agent turn. Anthropic, and a Claude model behind any other adapter, gets effort
+ * `high` (the Claude reference's minimum for intelligence-sensitive work; thinking can never be disabled on Opus 5.5 /
+ * Fable 5.1). OpenRouter enables thinking on an Anthropic model only when the request's `reasoning` asks for it, so a
+ * Claude model there with no `reasoning` member would run without thinking. A GLM model, on any provider, gets `low`:
+ * reasoning is mandatory on OpenRouter's GLM (`enabled:false` is a 400) and low keeps the default model fast; the mock
+ * gets `low` too. Every other model gets nothing (undefined): its provider's own default effort. Forcing `low` on every
  * provider was GLM-flash tuning that degraded gpt-5.x, Gemini, Grok and DeepSeek users (docs/DECISIONS.md 2026-09-25).
  */
 export function agentReasoning(provider: ProviderName, model: string): GenerateReasoning | undefined {
-  if (provider === 'anthropic') return { effort: 'high' };
+  if (provider === 'anthropic' || isClaudeModel(model)) return { effort: 'high' };
   if (provider === 'mock' || isGlmModel(model)) return { effort: 'low' };
   return undefined;
 }

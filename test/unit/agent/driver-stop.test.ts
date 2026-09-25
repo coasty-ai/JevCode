@@ -8,7 +8,8 @@ import { describe, expect, it } from 'vitest';
 import type { Answer } from '../../../src/core/types.js';
 import { GeneratorResponseError, ProviderHttpError } from '../../../src/errors.js';
 import { createAgentDriver } from '../../../src/agent/index.js';
-import { announcesAction, isDocsOnlyChange } from '../../../src/agent/stop.js';
+import { announcesAction } from '../../../src/agent/stop.js';
+import { isDocsOnlyChange } from '../../../src/workspace/docs-paths.js';
 import { call, createAgentContext, messagesOf, runUntilFinish, step, userText, type ScriptedTurn } from './helpers.js';
 
 describe('continuation', () => {
@@ -116,15 +117,33 @@ describe('verification under agent.verify tests (the opt-in)', () => {
     expect(ctx.sent.map((_r, i) => userText(ctx, i)).join('\n')).not.toContain('The last run of');
   });
 
-  it("the model's own failing unscoped run gets the failed-test nudge once, then the harness verifies", async () => {
+  it("the model's own failing unscoped run gets the failed-test nudge once; the reply that follows finishes and the suite is not run again", async () => {
     const ctx = createAgentContext({
       verify: 'tests',
-      turns: [edit(), { toolCalls: [call('bash', { command: 'pytest -q' })] }, { text: 'Done.' }, { text: 'Still done.' }, { text: 'Bye.' }],
+      turns: [edit(), { toolCalls: [call('bash', { command: 'pytest -q' })] }, { text: 'Done.' }, { text: 'The failure is unrelated.' }, { text: 'Bye.' }],
       sandbox: () => ({ exitCode: 1, stdout: 'F\n1 failed, 2 passed in 0.02s\n' }),
     });
     const steps = await runUntilFinish(createAgentDriver(), ctx);
-    expect(kinds(steps)).toEqual(['act', 'act', 'verify', 'finish']);
+    expect(kinds(steps)).toEqual(['act', 'act', 'finish']);
+    expect(ctx.sb.commands.filter((c) => c === 'pytest -q')).toHaveLength(1);
+    expect(ctx.sent).toHaveLength(4);
     expect(userText(ctx, 3)).toContain('The last run of `pytest -q` after your change failed (2 passed, 1 failed, 0 errors). Fix it, or explain why the failures are unrelated, before you finish.');
+    const done = steps[2]!.next.proposal.action;
+    expect(done.kind === 'done' && done.summary).toBe('The failure is unrelated.');
+    expect((ctx.state as { changedSinceVerify: boolean; verifyRuns: number }).changedSinceVerify).toBe(false);
+  });
+
+  it('after the failed-test nudge, a new change re-arms the harness verify', async () => {
+    const edit2 = (): ScriptedTurn => ({ toolCalls: [call('edit_file', { path: 'src/a.py', old_string: 'return 2', new_string: 'return 3' })] });
+    let runs = 0;
+    const ctx = createAgentContext({
+      verify: 'tests',
+      turns: [edit(), { toolCalls: [call('bash', { command: 'pytest -q' })] }, { text: 'Done.' }, edit2(), { text: 'Fixed.' }, { text: 'Checked.' }],
+      sandbox: (cmd) => (cmd !== 'pytest -q' ? { stdout: '' } : (runs += 1) === 1 ? { exitCode: 1, stdout: '1 failed, 2 passed in 0.02s\n' } : { exitCode: 0, stdout: '3 passed in 0.02s\n' }),
+    });
+    const steps = await runUntilFinish(createAgentDriver(), ctx);
+    expect(kinds(steps)).toEqual(['act', 'act', 'act', 'verify', 'finish']);
+    expect(ctx.sb.commands.filter((c) => c === 'pytest -q')).toHaveLength(2);
   });
 
   it('a failing run whose output no parser reads is reported by its exit code, not as zero counts', async () => {
@@ -135,7 +154,8 @@ describe('verification under agent.verify tests (the opt-in)', () => {
       sandbox: () => ({ exitCode: 1, stdout: "Error: EPERM: operation not permitted, mkdir 'node_modules/.vite-temp'\n" }),
     });
     const steps = await runUntilFinish(createAgentDriver(), ctx);
-    expect(kinds(steps)).toEqual(['act', 'act', 'verify', 'finish']);
+    expect(kinds(steps)).toEqual(['act', 'act', 'finish']);
+    expect(ctx.sb.commands.filter((c) => c === 'npm test')).toHaveLength(1);
     expect(userText(ctx, 3)).toContain('The last run of `npm test` after your change failed (exit 1).');
     expect(userText(ctx, 3)).not.toContain('0 passed, 0 failed, 0 errors');
   });
@@ -176,6 +196,22 @@ describe('verification under agent.verify tests (the opt-in)', () => {
     expect(userText(ctx, 2)).toContain('The harness ran `pytest -q` to verify your change, but it did not finish within 600s, so the change is not verified.');
   });
 
+  it('a verify the sandbox could not start goes back once: the next reply finishes, with no second verify', async () => {
+    const ctx = createAgentContext({
+      verify: 'tests',
+      turns: [edit(), { text: 'Done.' }, { text: 'The tests could not run here.' }, { text: 'Final.' }],
+      sandbox: (cmd) => {
+        if (cmd === 'pytest -q') throw new Error('spawn pytest ENOENT');
+        return { stdout: '' };
+      },
+    });
+    const steps = await runUntilFinish(createAgentDriver(), ctx);
+    expect(kinds(steps)).toEqual(['act', 'verify', 'finish']);
+    expect(ctx.sb.commands.filter((c) => c === 'pytest -q')).toHaveLength(1);
+    expect(userText(ctx, 2)).toContain('could not run (spawn pytest ENOENT)');
+    expect((ctx.state as { verifyRuns: number }).verifyRuns).toBe(2);
+  });
+
   it('with no test command there is nothing to verify', async () => {
     const ctx = createAgentContext({ verify: 'tests', turns: [edit(), { text: 'Done.' }], testCommand: null });
     expect(kinds(await runUntilFinish(createAgentDriver(), ctx))).toEqual(['act', 'finish']);
@@ -204,6 +240,21 @@ describe('isDocsOnlyChange', () => {
     [['README.py', 'LICENSE.sh'], false],
     [['Makefile'], false],
     [['package.json'], false],
+    // build and dependency manifests with a .txt name are not docs
+    [['CMakeLists.txt'], false],
+    [['src/lib/CMakeLists.txt'], false],
+    [['requirements.txt'], false],
+    [['requirements-dev.txt'], false],
+    [['requirements/base.txt'], false],
+    [['constraints.txt'], false],
+    // golden files, fixtures and snapshots under a test-data directory are read by the tests
+    [['tests/fixtures/expected.txt'], false],
+    [['test/golden.md'], false],
+    [['spec/output.svg'], false],
+    [['src/__snapshots__/logo.png'], false],
+    [['pkg/fixtures/readme.md'], false],
+    [['internal/testdata/input.txt'], false],
+    [['docs/testing.md', 'docs/latest.txt'], true],
   ] as const)('%j → %s', (paths, want) => {
     expect(isDocsOnlyChange(paths)).toBe(want);
   });
@@ -264,7 +315,7 @@ describe('the request', () => {
     expect(ctx.sent[0]).toMatchObject({ temperature: null, reasoning: { effort: 'high' }, agent: { clearToolResults: { triggerTokens: 100_000, keep: 6, clearAtLeastTokens: 5_000 } } });
   });
 
-  it('reasoning effort per model (§6.3): GLM low on any provider, the others their provider\'s default (no reasoning member)', async () => {
+  it('reasoning effort per model (§6.3): Claude high and GLM low on any provider, the others their provider\'s default (no reasoning member)', async () => {
     const sent = async (provider: { name: 'openai' | 'openrouter' | 'fireworks' | 'gemini' | 'xai'; model: string }): Promise<unknown> => {
       const ctx = createAgentContext({ provider, turns: [{ text: 'ok' }] });
       await step(createAgentDriver(), ctx);
@@ -276,6 +327,8 @@ describe('the request', () => {
     expect(await sent({ name: 'xai', model: 'grok-4.7' })).not.toHaveProperty('reasoning');
     expect(await sent({ name: 'openrouter', model: 'z-ai/glm-5.3-flash' })).toMatchObject({ reasoning: { effort: 'low' } });
     expect(await sent({ name: 'fireworks', model: 'accounts/fireworks/models/glm-5p3-flash' })).toMatchObject({ reasoning: { effort: 'low' } });
+    // OpenRouter thinks on a Claude model only when asked: Claude gets `high` there, as on the Anthropic adapter
+    expect(await sent({ name: 'openrouter', model: 'anthropic/claude-sonnet-5' })).toMatchObject({ reasoning: { effort: 'high' } });
   });
 
   it('a 400 naming the thinking signature is retried once without reasoning state, and replay stays off', async () => {

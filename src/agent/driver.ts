@@ -27,7 +27,7 @@ import { NOT_EXECUTED_STEER, PROGRESS_NUDGE, buildAgentSystemPrompt, loopNudgeTe
 import { lowEffortReasoning, agentReasoning, maskingModeFor, providerLabel, sameReasoning, type MaskingMode } from './providers.js';
 import { deriveCall, type NormalisedCall } from './repair.js';
 import { initialState, parseState, stateJson, type AgentStateV1 } from './state.js';
-import { decideStop, isDocsOnlyChange, isUnscopedTestRun } from './stop.js';
+import { decideStop, isUnscopedTestRun } from './stop.js';
 import { bashStatusLine, clipMiddle, oneLine } from './tools/format.js';
 import type { ReadHashes } from './tools/read.js';
 import { createRgProbe } from './tools/search.js';
@@ -36,6 +36,7 @@ import { planOf } from './tools/todo.js';
 import type { ToolResult } from './tools/result.js';
 import { sampleTurn, buildRequest, requestChars, type TurnSetup } from './turn.js';
 import { AgentTranscriptMissingError, Transcript, readTranscript, transcriptPath, wireToolName, type AssistantRecord, type NoteRecord, type NoteTag, type RecordedCall } from './transcript.js';
+import { isDocsOnlyChange } from '../workspace/docs-paths.js';
 import { isTestCommand } from '../workspace/tests.js';
 
 type Pending =
@@ -186,8 +187,11 @@ class Driver implements AgentDriver {
         continue;
       }
       if (d.kind === 'verify_nudge') {
+        // the model has the failure once, from its own run: the reply that follows finishes, and the harness does not run
+        // the same suite again; only a new change re-arms rule 2
         this.state.verifyRuns += 1;
         this.state.failedTest = null;
+        this.state.changedSinceVerify = false;
         await this.note(d.note, 'verify');
         continue;
       }
@@ -452,7 +456,11 @@ class Driver implements AgentDriver {
       this.state.changedSinceVerify = false;
       this.state.failedTest = null;
       if (parsed !== null) this.testTrend.push(`${parsed.passed}p/${parsed.failed}f`);
-    } else text = verifyResult(p.command, o.outcome.status === 'failed' ? `could not run (${o.outcome.error})` : o.outcome.status, '');
+    } else {
+      text = verifyResult(p.command, o.outcome.status === 'failed' ? `could not run (${o.outcome.error})` : o.outcome.status, '');
+      // the command did not run (it could not start, or it was refused or declined): a second verify would end the same way
+      this.state.verifyRuns = Math.max(this.state.verifyRuns, AGENT_VERIFY_MAX);
+    }
     this.remember(`verify: ${p.command} → ${exec !== undefined ? (exec.exitCode ?? 'killed') : o.outcome.status}`);
     await this.note(ctx.redact(text), 'verify');
   }

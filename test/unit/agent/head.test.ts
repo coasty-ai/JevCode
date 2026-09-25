@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { EngineSeed } from '../../../src/core/types.js';
-import { buildHead, chatLines, firstUserMessage, testCommandLine } from '../../../src/agent/head.js';
+import { buildHead, chatLines, firstUserMessage, scriptTakesFile, testCommandLine } from '../../../src/agent/head.js';
 import { scopeBuilderFor } from '../../../src/workspace/tests.js';
 import { initialState } from '../../../src/agent/state.js';
 import type { TranscriptRecord } from '../../../src/agent/transcript.js';
@@ -76,6 +76,55 @@ describe('the first user message (no agent parent)', () => {
     expect(testCommandLine({ command: 'npm test', runner: 'npm' }, 'tsc && node --test')).toBe('`npm test` (the whole suite; it runs `tsc && node --test`)');
     expect(testCommandLine({ command: 'make test', runner: 'unknown' }, 'node --test')).toBe('`make test` (the whole suite)');
     expect(testCommandLine({ command: 'npm test', runner: 'npm' }, '')).toBe('`npm test` (the whole suite)');
+    // a script whose program does not take a file path names what it runs, and no one-file form
+    expect(testCommandLine({ command: 'npm test', runner: 'npm' }, 'ng test')).toBe('`npm test` (the whole suite; it runs `ng test`)');
+    expect(testCommandLine({ command: 'npm test', runner: 'npm' }, 'karma start')).toBe('`npm test` (the whole suite; it runs `karma start`)');
+    expect(testCommandLine({ command: 'npm test', runner: 'npm' }, 'cross-env NODE_ENV=test jest --runInBand')).toBe('`npm test` (the whole suite; it runs `cross-env NODE_ENV=test jest --runInBand`); one file: `npm test -- <file>`');
+    // `bun test` is bun's own runner, not the package script
+    expect(testCommandLine({ command: 'bun test', runner: 'unknown' }, 'vitest run')).toBe('`bun test` (the whole suite)');
+    expect(testCommandLine({ command: 'bun run test', runner: 'npm' }, 'vitest run')).toBe('`bun run test` (the whole suite; it runs `vitest run`); one file: `bun run test <file>`');
+  });
+
+  it.each([
+    ['vitest', true],
+    ['vitest run', true],
+    ['vitest run --coverage', true],
+    ['jest', true],
+    ['mocha --recursive', true],
+    ['ava', true],
+    ['tap', true],
+    ['jasmine', true],
+    ['node --test', true],
+    ['node --experimental-strip-types --test', true],
+    ['tsx --test', true],
+    ['bun test', true],
+    ['playwright test', true],
+    ['npx playwright test', true],
+    ['npx --yes vitest run', true],
+    ['cross-env NODE_ENV=test CI=1 jest', true],
+    ['NODE_OPTIONS=--experimental-vm-modules jest', true],
+    ['c8 --reporter=lcov node --test', true],
+    ['nyc mocha', true],
+    ['pnpm exec vitest run', true],
+    ['yarn jest', true],
+    ['./node_modules/.bin/jest', true],
+    ['ng test', false],
+    ['karma start', false],
+    ['nx test', false],
+    ['turbo run test', false],
+    ['lerna run test', false],
+    ['gulp test', false],
+    ['grunt test', false],
+    ['cypress run', false],
+    ['node test/run.js', false],
+    ['./scripts/test.sh', false],
+    ['node --test test/', false],
+    ["mocha 'test/**/*.spec.js'", false],
+    ['jest --config jest.config.js', false],
+    ['tsc', false],
+    ['', false],
+  ] as const)('scriptTakesFile(%j) → %s', (script, want) => {
+    expect(scriptTakesFile(script)).toBe(want);
   });
 
   it('the workspace block reads the test script from package.json', async () => {

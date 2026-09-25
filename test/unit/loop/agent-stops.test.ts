@@ -71,6 +71,15 @@ describe('complete needs a current, green run of a recognised test command (§3.
     expect((await stale.engine.run()).stopReason).toBe('generator_done');
   });
 
+  it('a change to docs alone after the green run leaves it current (the driver re-verifies nothing for it either): complete', async () => {
+    const write = (path: string): ToolTurn => ({ toolCalls: [{ name: 'write_file', input: { path, content: 'f returns 2\n' } }] });
+    const docs = await agent([edit, bash('pytest -q'), write('README.md'), { text: 'Fixed and documented.' }], { sandbox: tests(() => passingTests) });
+    expect((await docs.engine.run()).stopReason).toBe('complete');
+    // a golden file under tests/ is read by the tests: the run is stale
+    const fixture = await agent([edit, bash('pytest -q'), write('tests/fixtures/expected.txt'), { text: 'Fixed.' }], { sandbox: tests(() => passingTests) });
+    expect((await fixture.engine.run()).stopReason).toBe('generator_done');
+  });
+
   it('a legacy-mode `done` is untouched by the agent rule: jev-off still stops generator_done on its own done', async () => {
     const { makeEngine, turn } = await import('./fakes.js');
     const h = await makeEngine({ mode: 'jev-off', turns: [turn({ kind: 'done', summary: 'x' })] });

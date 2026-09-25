@@ -106,7 +106,8 @@ describe('resume', () => {
     expect(parseState({ ...old, failedTest: { passed: 0, failed: 0, errors: 0, parsed: false, exitCode: 2 } })!.failedTest).toEqual({ passed: 0, failed: 0, errors: 0, parsed: false, exitCode: 2 });
     const resumed = createAgentContext({ runDir, resumed: true, state: old, verify: 'tests', turns: [{ text: 'Done.' }, { text: 'Checked.' }], sandbox: () => ({ exitCode: 0, stdout: '3 passed in 0.01s\n' }) });
     const steps = await runUntilFinish(createAgentDriver(), resumed);
-    expect(steps.map((s) => s.next.kind)).toEqual(['verify', 'finish']);
+    expect(steps.map((s) => s.next.kind)).toEqual(['finish']);
+    expect(resumed.sb.commands).toEqual([]);
     expect(userText(resumed, 1)).toContain('The last run of `pytest -q` after your change failed (2 passed, 1 failed, 0 errors).');
   });
 

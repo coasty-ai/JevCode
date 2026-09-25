@@ -40,23 +40,6 @@ export function isUnscopedTestRun(command: string, workdir: string | null, test:
   return norm(command) === norm(test.command);
 }
 
-/** Extensions of files no test run can check: prose, markup and images. */
-const DOCS_EXT_RE = /\.(md|mdx|markdown|rst|txt|adoc|asciidoc|org|png|jpe?g|gif|svg|webp|ico)$/i;
-/** Base names of the usual project documents with no extension (`LICENSE`, `LICENSE-MIT`, `README`); `NOTICE.md` is DOCS_EXT_RE's, `README.py` is code. */
-const DOCS_NAME_RE = /^(LICENSE|COPYING|NOTICE|AUTHORS|CHANGELOG|README)([-_][^.]*)?$/i;
-
-/**
- * §3.3 rule 2: a change to docs alone arms no verification — every path is prose, markup or an image by its extension, or
- * a project document by its base name (`LICENSE`, `COPYING-GPL`, `README`). False for an empty list.
- */
-export function isDocsOnlyChange(paths: readonly string[]): boolean {
-  if (paths.length === 0) return false;
-  return paths.every((p) => {
-    const base = p.slice(p.replace(/\\/g, '/').lastIndexOf('/') + 1);
-    return DOCS_EXT_RE.test(base) || DOCS_NAME_RE.test(base);
-  });
-}
-
 export type StopDecision =
   | { kind: 'continue'; note: string }
   | { kind: 'verify_nudge'; note: string }
