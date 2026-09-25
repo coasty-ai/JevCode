@@ -29,7 +29,7 @@ describe('the agent copy never says "Jev decides"', () => {
 
   it('how_to_task: agent mode says what holds under full autonomy (§A2 — destructive commands are not refused)', () => {
     const facts = Object.fromEntries(harnessFacts({ ...keyedFixture(), nextMode: 'agent' }).map((f) => [f.key, f.text]));
-    expect(facts['how_to_task']).toBe(`${HOW_TO_TASK_TEXT_AGENT} The code model works through tools and your tests verify it.`);
+    expect(facts['how_to_task']).toBe(`${HOW_TO_TASK_TEXT_AGENT} The code model works through tools and checks its own work, running your tests when they apply.`);
     expect(facts['how_to_task']).not.toMatch(/refused|stops to ask/);
     // a legacy next mode keeps its sentence
     const legacy = Object.fromEntries(harnessFacts({ ...keyedFixture(), nextMode: 'jev-on' }).map((f) => [f.key, f.text]));

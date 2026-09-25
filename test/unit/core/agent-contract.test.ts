@@ -165,10 +165,10 @@ describe('§14.1: agent is accepted everywhere; the advertised and legacy lists 
   });
 
   it('the agent rows of the four mode tables carry the §14.5 texts verbatim, the badge word read from MODE_BADGE_WORD', () => {
-    expect(HOW_TO_TASK_SUFFIX['agent']).toBe(' The code model works through tools and your tests verify it.');
-    expect(MODE_SENTENCE['agent']).toBe('Mode: agent — the code model works through tools, tests verify, Jev makes a few quick routing calls.');
-    expect(MODE_SET_ITEM['agent']).toBe('mode agent from the next run — the code model works through tools, tests verify (persist: jevcode config set mode agent)');
-    expect(MODE_VALUE_HINTS['agent'].title).toBe('agent: the code model works through tools, tests verify');
+    expect(HOW_TO_TASK_SUFFIX['agent']).toBe(' The code model works through tools and checks its own work, running your tests when they apply.');
+    expect(MODE_SENTENCE['agent']).toBe('Mode: agent — the code model works through tools and checks its own work; Jev makes a few quick routing calls.');
+    expect(MODE_SET_ITEM['agent']).toBe('mode agent from the next run — the code model works through tools and checks its own work (persist: jevcode config set mode agent)');
+    expect(MODE_VALUE_HINTS['agent'].title).toBe('agent: the code model works through tools and checks its own work');
     // every Record<EngineMode, …> table has exactly one row per accepted mode
     for (const table of [MODE_BADGE_WORD, HOW_TO_TASK_SUFFIX, MODE_SENTENCE, MODE_SET_ITEM, MODE_VALUE_HINTS]) {
       expect(Object.keys(table).sort()).toEqual([...MODE_SETTING_VALUES].sort());

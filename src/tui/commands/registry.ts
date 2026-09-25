@@ -92,7 +92,7 @@ export const MODE_VALUE_HINTS: Readonly<Record<EngineMode, { readonly title: str
   'llm-jev': { title: `${MODE_BADGE_WORD['llm-jev']}: candidate patches, tests verify, Jev arbitrates` },
   'jev-only': { title: 'no generating LLM; code proposes, Jev decides, tests verify' },
   'jev-off': { title: 'the generator alone (bench condition)' },
-  'agent': { title: `${MODE_BADGE_WORD['agent']}: the code model works through tools, tests verify` },
+  'agent': { title: `${MODE_BADGE_WORD['agent']}: the code model works through tools and checks its own work` },
 };
 /**
  * AGENT-LOOP-DESIGN §14.1 / §14.3: the advertised mode surface — `/mode` lists agent · jev-only · legacy (`/mode legacy` names the rest),

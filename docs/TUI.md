@@ -110,7 +110,7 @@ reads its task like `run` and exits at `run:end`. The interactive rule is `stdin
 TERM !== 'dumb' && !--plain && !--json && !--no-input` (`CI` / `CONTINUOUS_INTEGRATION` set and not `0`/`false`).
 
 **Engine modes and the badge.** `agent` (the default since 2026-09-23, badge `agent`: the code model works through
-tools, your tests verify, Jev makes a few quick routing calls — the section above). The rest of this paragraph
+tools and checks its own work (`--agent-verify tests` also has the harness run the detected test command after changes), Jev makes a few quick routing calls — the section above). The rest of this paragraph
 describes the modes as they were before that flip; they stay accepted as legacy modes, and `/mode legacy` lists
 them. `llm-jev` (the default from 2026-09-22 to 2026-09-23, badge `llm+jev · verified`: the code model writes candidate patches inside the Jev-only search, tests verify, Jev arbitrates — docs/LLM-JEV-DESIGN.md), `jev-on` (badge `jev+llm`: the code model writes the code,
 Jev decides every step; one OpenRouter key serves both; run cap $10.00, session cap $50.00), `jev-only` (badge `jev-only`:

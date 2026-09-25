@@ -156,13 +156,13 @@ export const HOW_TO_TASK_TEXT = 'Describe the change in plain words and press En
  * AGENT-LOOP-DESIGN §14.5, amended by §A2: the agent-mode sentence. §14.5 ends with "Destructive commands are refused", which §A2 makes
  * false under the default full autonomy (they run inside the sandbox, with pre-images and a note), so the sentence keeps what holds.
  */
-export const HOW_TO_TASK_TEXT_AGENT = 'Describe the change in plain words and press Enter; a run starts, streams what it does and verifies with your tests, and /undo reverts any step.';
+export const HOW_TO_TASK_TEXT_AGENT = 'Describe the change in plain words and press Enter; a run starts, streams what it does, runs your tests when the change calls for it, and /undo reverts any step.';
 export const HOW_TO_TASK_SUFFIX: Readonly<Record<EngineMode, string>> = {
   'jev-only': ' In jev-only I fix what tests can verify; for open-ended changes switch with /mode jev-on.',
   'jev-on': ' The code model writes the code, Jev decides each step.',
   'jev-off': ' The generator alone runs it; reviews still ask.',
   'llm-jev': ' The code model writes candidate patches, tests verify them, Jev arbitrates.',
-  'agent': ' The code model works through tools and your tests verify it.',
+  'agent': ' The code model works through tools and checks its own work, running your tests when they apply.',
 };
 /** TUI-DESIGN-3 §1.9: the `mode_now` sentence per mode — ONE table, the badge words from `MODE_BADGE_WORD` */
 export const MODE_SENTENCE: Readonly<Record<EngineMode, string>> = {
@@ -170,7 +170,7 @@ export const MODE_SENTENCE: Readonly<Record<EngineMode, string>> = {
   'jev-on': `Mode: ${MODE_BADGE_WORD['jev-on']} — the code model writes the code, Jev decides every step.`,
   'jev-off': `Mode: ${MODE_BADGE_WORD['jev-off']} — the generator alone, no Jev (bench condition; reviews still ask).`,
   'llm-jev': `Mode: ${MODE_BADGE_WORD['llm-jev']} — the code model writes candidate patches, tests verify them, Jev arbitrates.`,
-  'agent': `Mode: ${MODE_BADGE_WORD['agent']} — the code model works through tools, tests verify, Jev makes a few quick routing calls.`,
+  'agent': `Mode: ${MODE_BADGE_WORD['agent']} — the code model works through tools and checks its own work; Jev makes a few quick routing calls.`,
 };
 /**
  * AGENT-LOOP-DESIGN §13 / peer review G: what `/jev`, `/why` and `/decisions` answer in agent mode when there is nothing to show — a

@@ -69,7 +69,7 @@ export function chatIdentityHeader(model: string, provider: string): string {
  * quick routing calls. The verified identity header above stays the FIRST block (§A5); slice S3 leads the agent system prompt with it.
  */
 export const CHAT_IDENTITY =
-  'The code model, you in this reply, does the work: in a run it reads, searches, edits and runs commands in this workspace through tools, and the workspace\'s tests verify the change. A small decision model (Jev) only makes a few quick routing calls, such as a speed hint for a conversational message.';
+  'The code model, you in this reply, does the work: in a run it reads, searches, edits and runs commands in this workspace through tools, and checks its own work, running the workspace\'s tests when a change calls for them. A small decision model (Jev) only makes a few quick routing calls, such as a speed hint for a conversational message.';
 
 /** the paragraph of the Jev-driven modes (llm-jev, jev-on, jev-off chats): unchanged, because there Jev does decide every step */
 export const CHAT_IDENTITY_LEGACY =
@@ -85,7 +85,7 @@ function modesLine(): string {
 /** what the human can ask for (AGENT-LOOP-DESIGN §14.5) */
 export const CHAT_CAPABILITIES = [
   '## What JevCode can do',
-  '- It runs coding tasks in this workspace when the human describes a change: the code model works through tools, shows what it is doing as it goes, and verifies with the tests.',
+  '- It runs coding tasks in this workspace when the human describes a change: the code model works through tools, shows what it is doing as it goes, and checks its own work, running the tests when a change calls for them.',
   modesLine(),
   '- Commands start with `/`: `/help` lists them; `/mode`, `/undo`, `/diff`, `/resume`, `/new`.',
 ].join('\n');
