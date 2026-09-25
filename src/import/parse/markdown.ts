@@ -8,6 +8,7 @@
  * secret-named target is refused independently of the root check (§6 row 33).
  */
 import { basename, dirname, isAbsolute, resolve as resolvePath } from 'node:path';
+import { ESC_SEQ_RE } from '../../core/ansi.js';
 import { sha256Hex } from '../../core/hash.js';
 import { PATTERN_MARKER, detectSecrets, redactSpans, type ExactDetector } from '../../core/redact.js';
 import { IMPORT_LIMITS } from '../../core/limits.js';
@@ -17,8 +18,6 @@ import { parseFrontmatter } from './frontmatter.js';
 
 /** §2.9: the bidi controls of `session/index.ts:47`, reused rather than re-derived. */
 const BIDI_RE = /[\u{200e}\u{200f}\u{202a}-\u{202e}\u{2066}-\u{2069}]/gu;
-/** CSI / OSC escape sequences. */
-const ANSI_RE = /\u001b\[[0-9;?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[@-Z\\-_]/g;
 /** C0 and DEL, keeping `\n` and `\t`. */
 const CONTROL_RE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
 /** A heading line, outside fences. */
@@ -84,7 +83,8 @@ export function normaliseText(raw: string | Buffer): { text: string; controlsRem
   const crlf = decoded.includes('\r\n');
   const lf = decoded.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
   let removed = 0;
-  const noAnsi = lf.replace(ANSI_RE, (m) => {
+  // the one escape-sequence grammar (core/ansi.ts): whole sequences, counted by what they removed
+  const noAnsi = lf.replace(ESC_SEQ_RE, (m) => {
     removed += m.length;
     return '';
   });

@@ -10,6 +10,7 @@
  */
 import { appendFileSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { stripTerminalControls } from './ansi.js';
 import { patternRedact } from './redact.js';
 
 /** TUI-DESIGN §13.6: the five levels, most severe first. */
@@ -151,20 +152,18 @@ export function fallbackLogPath(dir: string, pid: number, now: Date): string {
   return join(dir, `jevcode-${pid}-${stamp(now)}.log`);
 }
 
-// CSI and OSC sequences first (so `ESC [ 2 J` does not leave `[2J` behind), then SS2/SS3 with their payload, nF sequences and every other 7-bit `ESC x`, then every other C0 control and DEL.
-const ESC_SEQ_RE = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)?|\u001b[NO][@-~]|\u001b[ -/]+[0-~]|\u001b[0-~]/g;
-const CONTROL_RE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
 
 /**
  * TUI-DESIGN §13.6: one line — ISO time, level padded to five, the message on one line, clipped
- * to 512 chars. Order matters: newlines, escape sequences and control bytes are stripped FIRST and
- * `redact` runs on the cleaned text, so a key split by an ESC sequence or a NUL (command output
+ * to 512 chars. Order matters: escape sequences (whole, `core/ansi.ts`), control bytes and newlines are
+ * stripped FIRST and `redact` runs on the cleaned text, so a key split by an ESC sequence or a NUL (command output
  * routed here via `routeConsole`) is recognised instead of being reassembled after redaction;
  * clipping happens last so it can never split a marker back into secret bytes. Pure; `redact`
  * defaults to `patternRedact`.
  */
 export function formatLogLine(level: LogLevel, msg: string, at: Date, redact: (s: string) => string = patternRedact): string {
-  const clean = String(msg).replace(/\r\n|\r|\n/g, ' ⏎ ').replace(ESC_SEQ_RE, '').replace(CONTROL_RE, '');
+  // sequences before the line breaks are flattened: an unterminated OSC ends at its own line, not at the message's end
+  const clean = stripTerminalControls(String(msg)).replace(/\r\n|\r|\n/g, ' ⏎ ');
   const flat = redact(clean);
   const head = `${Number.isFinite(at.getTime()) ? at.toISOString() : '0000-00-00T00:00:00.000Z'} ${level.padEnd(5)} `;
   const room = Math.max(0, LOG_LINE_MAX - head.length);

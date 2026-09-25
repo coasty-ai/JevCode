@@ -8,6 +8,7 @@
  */
 import type { FailureView, TestRunSummary } from '../types.js';
 import { bound, tail, VALUE_BOUND } from './text.js';
+import { stripAnsi } from '../../../core/ansi.js';
 
 // ---------------------------------------------------------------------------------------
 // Shared: expected / actual from a Python traceback
@@ -259,7 +260,6 @@ export interface SympyParse {
   anonymous: { passed: number; failed: number; errors: number; skipped: number };
 }
 
-const ANSI = /\u001b\[[0-9;]*m/g;
 const SYMPY_FILE_LINE = /^(\S+\.py)\[(\d+|\?)\]\s*(.*)$/;
 const SYMPY_VERBOSE_LINE = /^(test\w*)\s+(?:.*?\s+)?(ok|F|E|s|w|T|K|f|X)\s*(?:\[(?:OK|FAIL)\])?\s*$/;
 const SYMPY_STATUS_CHARS = /^([.FEswTKfX]+)\s*(?:\[(?:OK|FAIL)\])?\s*$/;
@@ -289,7 +289,7 @@ function countAnonymous(a: SympyParse['anonymous'], ch: string): void {
  * at the terminal width. ANSI colours are stripped first (`-C` is not assumed).
  */
 export function parseSympyOutput(output: string): SympyParse {
-  const clean = output.replace(ANSI, '');
+  const clean = stripAnsi(output);
   const lines = clean.split(/\r?\n/);
   const statuses = new Map<string, SympyStatus>();
   const sections = new Map<string, string[]>();

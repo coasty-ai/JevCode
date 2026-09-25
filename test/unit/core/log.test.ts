@@ -44,6 +44,8 @@ describe('formatLogLine / keyTraceLine (pure)', () => {
     expect(long.length).toBeLessThanOrEqual(LOG_LINE_MAX + 1);
     expect(long.endsWith('…\n')).toBe(true);
     expect(formatLogLine('error', 'a\u0007b\u001b[2Jc', fixedNow())).toBe('2026-09-20T19:15:06.123Z error abc\n');
+    // the shared grammar (core/ansi.ts): an unterminated OSC hides the rest of ITS line only, an 8-bit CSI goes whole
+    expect(formatLogLine('warn', 'a\u001b]0;title\nb\u009b31mc\u0085', fixedNow())).toBe('2026-09-20T19:15:06.123Z warn  a ⏎ bc\n');
     expect(formatLogLine('trace', '', new Date(NaN))).toBe('0000-00-00T00:00:00.000Z trace \n');
   });
 

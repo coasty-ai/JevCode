@@ -360,6 +360,9 @@ describe('verify output', () => {
     expect(parseVerifyCounts('python -m pytest', '===== 3 passed, 1 skipped in 0.12s =====\n')).toEqual({ passed: 3, failed: 0, errors: 0, skipped: 1 });
     expect(parseVerifyCounts('npm run typecheck', 'no test output at all\n')).toBeNull();
     expect(parseVerifyCounts('npm test', '')).toBeNull();
+    // vitest colours into a pipe (TERM passed through): the summary parses once its sequences are gone (core/ansi.ts)
+    const coloured = '\u001b[2m      Tests \u001b[22m \u001b[1m\u001b[31m1 failed\u001b[39m\u001b[22m\u001b[2m | \u001b[22m\u001b[1m\u001b[32m2 passed\u001b[39m\u001b[22m\u001b[90m (3)\u001b[39m\n';
+    expect(parseVerifyCounts('npx vitest run', coloured)).toEqual({ passed: 2, failed: 1, errors: 0, skipped: 0 });
   });
 
   it('tailLines keeps the last n lines and drops the trailing blank', () => {
