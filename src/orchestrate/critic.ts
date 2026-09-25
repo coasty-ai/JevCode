@@ -30,6 +30,7 @@
 import type { TestCounts } from '../core/types.js';
 import { VERIFY_TAIL_LINES } from '../core/limits.js';
 import { parseTestOutput, runnerFromCommand } from '../workspace/tests.js';
+import { cleanCommandOutput } from '../core/ansi.js';
 import { parseOwnGlob, ownsPath } from './split/globs.js';
 import type { OwnGlob } from './split/globs.js';
 import type { SyncedDirtyEntry } from './types.js';
@@ -404,7 +405,8 @@ export function flakyFlag(
  * buys; the observable contract "null when unparsed" is unchanged).
  */
 export function parseVerifyCounts(command: string, output: string): TestCounts | null {
-  return parseTestOutput(runnerFromCommand(command) ?? 'unknown', output);
+  // a coloured summary (vitest colours into a pipe) parses only once its escape sequences are gone (core/ansi.ts)
+  return parseTestOutput(runnerFromCommand(command) ?? 'unknown', cleanCommandOutput(output));
 }
 
 /** The last `n` lines of a command's combined output, for `VerifyResult.tail` / `land.jsonl`. */

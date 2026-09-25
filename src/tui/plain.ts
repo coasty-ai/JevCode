@@ -30,6 +30,8 @@ import type {
 import { DEFAULT_COMPLETE_THRESHOLD, MODE_BADGE_WORD } from '../config/defaults.js';
 import { isReplyOnlyRun } from '../core/agent-run.js';
 import { AbortError } from '../errors.js';
+import { isFinishedStop } from '../loop/stop.js';
+import { createTerminalStreamSanitizer, stripTerminalControls, type TerminalStreamSanitizer } from '../core/ansi.js';
 import { clip, firstLine } from '../core/text.js';
 import { METER_RED_PCT } from '../core/limits.js';
 import { formatDuration } from '../core/time.js';
@@ -181,22 +183,21 @@ const LIST_MAX = 5;
 /** TUI-DESIGN-4 §3.6: the `replan` item names `task impossible <p>` only from this probability up. */
 export const REPLAN_IMPOSSIBLE_MIN = 0.5;
 
-// C0 (minus \t \n \r), DEL and C1: everything a terminal could read as an escape or control sequence.
-// eslint-disable-next-line no-control-regex
-const CONTROL_RE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g;
-
 /**
- * Drop control characters but keep line structure (\t, \n, \r). Applied to raw generator deltas
- * and command output before they reach any terminal, so an escape sequence produced by a command
- * or by the generator cannot clear the screen, move the cursor or write the clipboard.
+ * Drop escape sequences WHOLE (`core/ansi.ts`), then every other control character, keeping line structure (\t, \n,
+ * \r). Applied to raw generator deltas and command output before they reach any terminal, so an escape sequence produced
+ * by a command or by the generator cannot clear the screen, move the cursor or write the clipboard, and leaves no body
+ * behind (`[33m✓[39m`). Foreign text only: never run it over the renderer's own styled output. A stream that arrives in
+ * chunks uses `createTerminalStreamSanitizer`, so a sequence split between two chunks is held, not half-stripped.
  */
 export function sanitizeStream(s: string): string {
-  return s.replace(CONTROL_RE, '');
+  return stripTerminalControls(s);
 }
 
 /** Collapse a string onto one line and drop control characters (a command's escape codes must never reach the terminal raw). */
 export function oneLine(s: string): string {
-  return sanitizeStream(s.replace(/\r\n|\r|\n/g, ' ⏎ ').replace(/\t/g, ' '));
+  // sequences first, while the line breaks still bound them (an unterminated OSC hides the rest of its line, no more)
+  return sanitizeStream(s).replace(/\r\n|\r|\n/g, ' ⏎ ').replace(/\t/g, ' ');
 }
 
 export function p2(x: number): string {
@@ -789,7 +790,9 @@ export function itemsFromEvent(e: EngineEvent, seq: number, state: ItemStreamSta
         null,
         'run:end',
         `${RUN_FINISHED_WORD}${SEP}${r.stopReason}${SEP}${r.steps} steps${SEP}${formatDuration(r.wallMs)}${SEP}${cost}${exit}${err}`,
-        r.stopReason === 'complete' ? 'info' : r.stopReason === 'error' ? 'error' : 'warn',
+        // a finished run (complete / generator_done / answered) reads as a finish, not a warning: with harness
+        // verification off by default most successful agent runs end generator_done
+        isFinishedStop(r.stopReason) ? 'info' : r.stopReason === 'error' ? 'error' : 'warn',
       );
     }
     // --- AGENT-LOOP-DESIGN §9.2 / §9.4: the agent-mode members ---------------------------------------------------------
@@ -1678,6 +1681,8 @@ export function createPlainRenderer(opts: PlainRendererOptions): PlainRenderer {
   let agentSteps: Pick<StepRecord, 'agent'>[] = [];
   let turnStreamed = false;
   let lineStart = true;
+  // one per model turn (both paths): a sequence split between two deltas is held, never printed half-stripped
+  let deltas: TerminalStreamSanitizer = createTerminalStreamSanitizer();
 
   function writeItems(items: readonly TranscriptItem[]): void {
     if (items.length === 0) return;
@@ -1685,8 +1690,9 @@ export function createPlainRenderer(opts: PlainRendererOptions): PlainRenderer {
     for (const item of items) write(`${formatTranscriptItem(item)}\n`);
   }
 
-  function writeProse(raw: string): void {
-    const text = sanitizeStream(raw).replace(/\r/g, '');
+  /** `clean` is already sanitized (`deltas.push` / `deltas.flush`) */
+  function writeProse(clean: string): void {
+    const text = clean.replace(/\r/g, '');
     if (text.length === 0) return;
     let out = '';
     for (const part of text.split(/(\n)/)) {
@@ -1705,10 +1711,17 @@ export function createPlainRenderer(opts: PlainRendererOptions): PlainRenderer {
     turnStreamed = true;
   }
 
+  /** the turn's stream ended: what the sanitizer still held (an unfinished sequence is dropped) */
+  function flushProse(): void {
+    writeProse(deltas.flush());
+  }
+
   function handleAgent(e: EngineEvent): void {
     switch (e.type) {
       case 'generator:start':
         if ((e.sample ?? 0) === 0) {
+          flushProse();
+          deltas = createTerminalStreamSanitizer();
           turnStreamed = false;
           // a new turn starts a new line: two turns' prose never run together (`…exit 0).The "failure" is…`, S6 review)
           endStream();
@@ -1716,11 +1729,20 @@ export function createPlainRenderer(opts: PlainRendererOptions): PlainRenderer {
         return;
       case 'generator:delta':
         if (e.sample !== undefined && e.sample >= 1) return;
-        writeProse(e.text);
+        writeProse(deltas.push(e.text));
         return;
       case 'assistant:text':
+        // a line commit comes mid-stream (a sequence may still be open across the next delta); the final one ends it
+        if (e.final) flushProse();
         // the raw deltas already printed this turn's prose; a turn with no deltas (a JSON transport) prints its lines here
         if (turnStreamed) return;
+        break;
+      case 'assistant:reset':
+        // a provider retry restarts the text: nothing the failed attempt left half-open carries over
+        deltas = createTerminalStreamSanitizer();
+        break;
+      case 'run:end':
+        flushProse();
         break;
       case 'step:end':
         agentSteps.push(e.record.agent !== undefined ? { agent: e.record.agent } : {});
@@ -1755,7 +1777,15 @@ export function createPlainRenderer(opts: PlainRendererOptions): PlainRenderer {
     writeItems(items);
   }
 
+  /** the legacy modes' raw generator stream: already sanitized text, printed as it came */
+  function writeRaw(text: string): void {
+    if (text.length === 0) return;
+    stdout.write(text);
+    streamOpen = !text.endsWith('\n');
+  }
+
   function handle(e: EngineEvent): void {
+    if (e.type === 'run:start') deltas = createTerminalStreamSanitizer();
     if (e.type === 'run:start' && e.mode === 'agent') {
       agentRun = true;
       agentTools = false;
@@ -1773,15 +1803,14 @@ export function createPlainRenderer(opts: PlainRendererOptions): PlainRenderer {
     if (e.type === 'generator:delta') {
       // llm-jev (docs/LLM-JEV-DESIGN.md §9.3): only the first candidate streams; later samples would interleave here
       if (e.sample !== undefined && e.sample >= 1) return;
-      const text = sanitizeStream(e.text);
-      if (text.length === 0) return;
-      stdout.write(text);
-      streamOpen = !text.endsWith('\n');
+      writeRaw(deltas.push(e.text));
       return;
     }
     const items = itemsFromEvent(e, seq);
     if (items.length === 0) return;
     seq += items.length;
+    // an item ends the raw stream: what the sanitizer held is flushed onto its line first
+    writeRaw(deltas.flush());
     endStream();
     for (const item of items) write(`${formatTranscriptItem(item)}\n`);
   }

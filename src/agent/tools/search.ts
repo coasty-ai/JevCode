@@ -8,6 +8,7 @@
  */
 import { basename } from 'node:path';
 import type { AgentContext, Candidate } from '../../core/types.js';
+import { cleanCommandOutput, stripTerminalControls } from '../../core/ansi.js';
 import { shellQuote } from '../../workspace/tests.js';
 import {
   AGENT_FILE_MAX_BYTES,
@@ -167,6 +168,15 @@ interface GrepLine {
 
 const LINE_TEXT_MAX = 500;
 
+/**
+ * A matched or context line as the model reads it, from either executor: escape sequences removed whole and every other
+ * control byte dropped (core/ansi.ts), a CRLF file's CR gone and a stray CR shown as a space, so one match stays one
+ * row. read_file still shows the file's exact bytes.
+ */
+function lineText(text: string): string {
+  return stripTerminalControls(text).replace(/\r$/, '').replace(/\r/g, ' ');
+}
+
 function render(a: GrepArgs, lines: readonly GrepLine[], capped: boolean): ToolResult {
   const max = a.max_results ?? AGENT_GREP_DEFAULT_RESULTS;
   const matches = lines.filter((l) => l.match);
@@ -180,7 +190,8 @@ function render(a: GrepArgs, lines: readonly GrepLine[], capped: boolean): ToolR
       clipped = true;
       break;
     }
-    const text = l.text.length > LINE_TEXT_MAX ? `${l.text.slice(0, LINE_TEXT_MAX)}…` : l.text;
+    const clean = lineText(l.text);
+    const text = clean.length > LINE_TEXT_MAX ? `${clean.slice(0, LINE_TEXT_MAX)}…` : clean;
     const row = l.match ? `${l.path}:${l.line}: ${text}` : `${l.path}-${l.line}- ${text}`;
     if (chars + row.length + 1 > AGENT_GREP_MAX_CHARS) {
       clipped = true;
@@ -204,7 +215,8 @@ function parseRg(stdout: string, allowed: ReadonlySet<string>): GrepLine[] {
     const nul = raw.indexOf('\0');
     if (nul < 0) continue;
     const path = raw.slice(0, nul).replace(/^\.\//, '');
-    const m = /^(\d+)([:-])(.*)$/.exec(raw.slice(nul + 1));
+    // `s`: a CRLF file's line ends in `\r`, which `.` does not match — without it every match in such a file was dropped
+    const m = /^(\d+)([:-])(.*)$/s.exec(raw.slice(nul + 1));
     if (m === null || !allowed.has(path)) continue;
     out.push({ path, line: Number(m[1]), text: m[3] ?? '', match: m[2] === ':' });
   }
@@ -219,11 +231,13 @@ async function grepWithRg(ctx: AgentContext, a: GrepArgs, dir: string | null, al
   argv.push('-e', shellQuote(a.pattern));
   if (dir !== null) argv.push('--', shellQuote(dir));
   const r = await ctx.sandbox.run(argv.join(' '), { timeoutMs: AGENT_GREP_TIMEOUT_MS, maxOutputBytes: ctx.limits.maxOutputBytes, signal: ctx.signal });
-  if (r.exitCode === 2 && /regex parse error|error parsing regex|unclosed|repetition/i.test(r.stderr)) {
-    const reason = r.stderr.split('\n').filter((l) => /error/i.test(l)).pop() ?? 'the pattern does not compile';
+  // core/ansi.ts, clean THEN redact (as every command path): stderr whole; stdout per line after the NUL-separated parse
+  const stderr = cleanCommandOutput(r.stderr);
+  if (r.exitCode === 2 && /regex parse error|error parsing regex|unclosed|repetition/i.test(stderr)) {
+    const reason = stderr.split('\n').filter((l) => /error/i.test(l)).pop() ?? 'the pattern does not compile';
     return errorResult(`ERROR: invalid regular expression: ${oneLine(ctx.redact(reason), 300)}`, `grep ${JSON.stringify(oneLine(a.pattern, 50))} (invalid regex)`);
   }
-  const lines = parseRg(ctx.redact(r.stdout), allowed);
+  const lines = parseRg(r.stdout, allowed).map((l) => ({ ...l, text: ctx.redact(lineText(l.text)) }));
   return render(a, lines, r.truncated || r.killedBy === 'timeout');
 }
 

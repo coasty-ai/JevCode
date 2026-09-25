@@ -79,6 +79,9 @@ function ttyInput(): ConfirmInput {
   return s;
 }
 
+
+/** an ESC / 8-bit CSI, or the body of an SGR / CSI / OSC that an ESC-only strip used to leave behind */
+const REMNANT_RE = /\u001b|\u009b|\[[0-9;?]+[A-Za-z]|\]52;/;
 describe('itemsFromEvent / formatTranscriptItem', () => {
   it('produces one item for transcript kinds and none for pane-only events', () => {
     const events = loadRunEvents();
@@ -246,20 +249,25 @@ describe('itemsFromEvent / formatTranscriptItem', () => {
     const item = itemsFromEvent({ type: 'transcript', step: null, level: 'warn', text: long }, 0)[0]!;
     expect(item.text.length).toBeLessThanOrEqual(600);
     const short = itemsFromEvent({ type: 'transcript', step: 1, level: 'error', text: 'a\nb\u001b[31mc' }, 0)[0]!;
-    expect(formatTranscriptItem(short)).toBe('[step 1] error: a ⏎ b[31mc');
+    // escape sequences go whole (core/ansi.ts): no ESC and no `[31m` body
+    expect(formatTranscriptItem(short)).toBe('[step 1] error: a ⏎ bc');
+    expect(formatTranscriptItem(item)).not.toMatch(REMNANT_RE);
   });
 
   it('strips C0, DEL and C1 controls from lines, stream text and proposal bodies (a command cannot drive the terminal)', () => {
-    // 0x9b is the 8-bit CSI; 0x1b]52;… is an OSC clipboard write; \x07 is BEL
+    // 0x9b is the 8-bit CSI; 0x1b]52;… is an OSC clipboard write; \x07 is BEL — each sequence goes WHOLE (core/ansi.ts),
+    // never leaving its body (`2J`, `]52;c;Zm9v`) behind as text
     const hostile = 'a\u009b2Jb\u001b]52;c;Zm9v\u0007c\u007fd';
-    expect(oneLine(hostile)).toBe('a2Jb]52;c;Zm9vcd');
-    expect(sanitizeStream('x\u001b[2J\ty\r\nz\u0085')).toBe('x[2J\ty\r\nz');
-    expect(clipDetail('l1\r\nl2\u001b[2J\rl3')).toBe('l1\nl2[2J\nl3');
+    expect(oneLine(hostile)).toBe('abcd');
+    expect(sanitizeStream('x\u001b[2J\ty\r\nz\u0085')).toBe('x\ty\r\nz');
+    expect(clipDetail('l1\r\nl2\u001b[2J\rl3')).toBe('l1\nl2\nl3');
+    for (const s of [oneLine(hostile), sanitizeStream('x\u001b[2J\ty'), clipDetail('l2\u001b[2J\rl3')]) expect(s).not.toMatch(REMNANT_RE);
     const req = mkConfirmRequest('c1', 1, { kind: 'write', path: 'x.sh', content: 'echo \u001b[2Jhi\nprintf "\u001b]0;title\u0007"' });
     for (const line of confirmPreviewLines(req)) expect(line).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/);
     const item = itemsFromEvent({ type: 'proposal', step: 1, proposal: req.proposal }, 0)[0]!;
     // §6.2: a `write` preview is a unified diff against /dev/null; the control bytes are still gone
-    expect(item.detail).toBe('--- /dev/null\n+++ b/x.sh\n@@ -0,0 +1,2 @@\n+echo [2Jhi\n+printf "]0;title"\n\\ No newline at end of file');
+    // (the review card's own diff marks each control visibly, src/tui/diff/text.ts; the transcript row drops the sequence)
+    expect(item.detail).toBe('--- /dev/null\n+++ b/x.sh\n@@ -0,0 +1,2 @@\n+echo hi\n+printf ""\n\\ No newline at end of file');
     expect(item.detail).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/);
   });
 
@@ -325,6 +333,22 @@ describe('createPlainRenderer', () => {
     expect(aborts).toEqual([]);
   });
 
+  it('a sequence split between two deltas is held for the turn, never printed half-stripped; an item flushes the rest', async () => {
+    const out = new Sink();
+    const r = createPlainRenderer({ task: 't', resumeId: null, onAbort: () => undefined, stdout: out as unknown as NodeJS.WriteStream, stdin: new PassThrough() as unknown as NodeJS.ReadStream });
+    await r.firstFrame();
+    const fe = fakeEngine();
+    r.attach(fe.engine);
+    fe.emit({ type: 'generator:start', step: 1, attempt: 1 });
+    fe.emit({ type: 'generator:delta', step: 1, text: 'plain \u001b[3' });
+    fe.emit({ type: 'generator:delta', step: 1, text: '1mred\u001b[0m text \u009b1' });
+    fe.emit({ type: 'transcript', step: 1, level: 'info', text: 'after stream' });
+    await r.unmount();
+    expect(out.text.split('\n').slice(1)).toEqual(['plain red text 1', '[step 1] after stream', '']);
+    expect(out.text).not.toMatch(REMNANT_RE);
+    expect(out.text).not.toContain('1mred');
+  });
+
   it('resume mode first line names the run id', () => {
     expect(plainFirstLine('ignored', '20260919-120000-ab12')).toBe('[run] jevcode resuming 20260919-120000-ab12 | step 0/– starting');
   });
@@ -336,14 +360,15 @@ describe('createPlainRenderer', () => {
     const fe = fakeEngine();
     r.attach(fe.engine);
     fe.emit({ type: 'generator:start', step: 1, attempt: 1 });
-    // ESC, BEL and the 8-bit CSI are dropped; what survives of an escape sequence is inert text
+    // ESC, BEL and the 8-bit CSI are dropped; an escape sequence goes whole, its body with it
     fe.emit({ type: 'generator:delta', step: 1, text: '\u001b\u0007\u009b' });
     fe.emit({ type: 'transcript', step: 1, level: 'info', text: 'after control-only delta' });
     fe.emit({ type: 'generator:delta', step: 1, text: 'plain \u001b[31mred\u001b[0m text' });
     fe.emit({ type: 'transcript', step: 1, level: 'info', text: 'after stream' });
     await r.unmount();
     const lines = out.text.split('\n');
-    expect(lines).toEqual([plainFirstLine('t', null), '[step 1] after control-only delta', 'plain [31mred[0m text', '[step 1] after stream', '']);
+    expect(lines).toEqual([plainFirstLine('t', null), '[step 1] after control-only delta', 'plain red text', '[step 1] after stream', '']);
+    expect(out.text).not.toMatch(REMNANT_RE);
   });
 
   it('llm-jev: only the first candidate streams — deltas with sample ≥ 1 are not written (docs/LLM-JEV-DESIGN.md §9.3); absent or 0 streams as before', async () => {
@@ -442,7 +467,7 @@ describe('synth transcript items (jev-only)', () => {
     expect(itemsFromEvent({ type: 'synth', step: 1, phase: 'localise', detail: 'src/a.py:2' }, 0)[0]!.text).toBe('synth · localise · src/a.py:2');
     expect(itemsFromEvent({ type: 'synth', step: 1, phase: 'p', detail: 'd', tested: 0 }, 0)[0]!.text).toBe('synth · p · d · 0 tested');
     expect(itemsFromEvent({ type: 'synth', step: 1, phase: 'p', detail: 'd', candidates: 4 }, 0)[0]!.text).toBe('synth · p · d · 4 candidates');
-    expect(itemsFromEvent({ type: 'synth', step: 1, phase: 'p', detail: 'a\nb\u001b[2J' }, 0)[0]!.text).toBe('synth · p · a ⏎ b[2J');
+    expect(itemsFromEvent({ type: 'synth', step: 1, phase: 'p', detail: 'a\nb\u001b[2J' }, 0)[0]!.text).toBe('synth · p · a ⏎ b');
     expect(itemsFromEvent({ type: 'synth', step: 1, phase: 'p', detail: 'x'.repeat(2000) }, 0)[0]!.text.length).toBeLessThanOrEqual(600);
   });
 
@@ -780,7 +805,7 @@ describe('localItem / sessionHeaderItem (TUI-DESIGN §15.1, §24)', () => {
     const s = localItem('seatbelt — writes confined to the workspace and run dirs', 1, { label: '[sandbox]', level: 'warn', detail: 'a\nb' });
     expect(formatTranscriptItem(s)).toBe('[sandbox] seatbelt — writes confined to the workspace and run dirs');
     expect(s).toMatchObject({ level: 'warn', detail: 'a\nb', key: 'local:[sandbox]:1' });
-    expect(localItem('a\u001b[2Jb\nc', 2).text).toBe('a[2Jb ⏎ c');
+    expect(localItem('a\u001b[2Jb\nc', 2).text).toBe('ab ⏎ c');
     expect(localItem('x'.repeat(2000), 3).text).toHaveLength(600);
   });
 

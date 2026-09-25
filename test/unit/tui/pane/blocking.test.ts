@@ -246,7 +246,7 @@ describe('blockingLines (§13.3, §24)', () => {
     const psep = String.fromCodePoint(0x2029);
     const bom = String.fromCodePoint(0xfeff);
     const nasty = `user${rlo}gnp.exe${lsep}second${lri}x${pdi}${psep}third\x1b[2J\x7f\x85${bom}end`;
-    expect(terminalSafeLine(nasty)).toBe('usergnp.exe secondx third[2Jend');
+    expect(terminalSafeLine(nasty)).toBe('usergnp.exe secondx thirdend');
     const forbidden = [rlo, lri, pdi, lsep, psep, bom, '\x1b', '\x7f', '\x85', String.fromCodePoint(0x200f), String.fromCodePoint(0x061c)];
     const requests = [
       req({ kind: 'key-rejected', detail: keyRejectedDetail(401, nasty), sources: [`env ${rlo}X`] }),

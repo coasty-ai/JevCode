@@ -190,7 +190,7 @@ describe('toastReducer (§7.5): durations, sequencing, pre-emption', () => {
   });
   it('sanitises text: one line, no control bytes, no bidi/format characters, grapheme-safe bound; empty text is ignored', () => {
     const q = push([], '  line1\nline2\u001b[2J\ttab  ');
-    expect(q[0]!.text).toBe('line1 ⏎ line2[2J tab');
+    expect(q[0]!.text).toBe('line1 ⏎ line2 tab');
     expect(push([], 'a\u202eb\u200bc\u2066d\u2069')[0]!.text).toBe('abcd');
     expect(push([], 'x\u2028y')[0]!.text).toBe('x ⏎ y');
     expect(push([], '👨\u200d👩\u200d👧 team')[0]!.text).toBe('👨\u200d👩\u200d👧 team');
@@ -316,7 +316,9 @@ describe('activeToast, toastText, nextToastExpiry, text helpers', () => {
     expect(oneLineSafe('a\u202eb\u200bc\u200e\u200f')).toBe('abc');
     expect(oneLineSafe('a\r\nb\tc  d')).toBe('a ⏎ b c d');
     expect(oneLineSafe('👨\u200d👩\u200d👧')).toBe('👨\u200d👩\u200d👧');
-    expect(oneLineSafe('\u0000\u009f\u001bx')).toBe('x');
+    // ECMA-48: `ESC x` is one (Fs) sequence, so the byte after a lone ESC goes with it (core/ansi.ts)
+    expect(oneLineSafe('\u0000\u009f\u001bx')).toBe('');
+    expect(oneLineSafe('\u0000\u009fx\u001b[31m!')).toBe('x!');
     expect(asciiFold('plain')).toBe('plain');
     expect(asciiFold('→ ≥ ≤ × ⚠ Σ … † • · ─ │ ↑ ↓ ✓ ✗ ⎇ ▂▃ ▍ ⏎')).toBe('-> >= <= x ! sum ... + * - - | ^ v + x br 23 3 |');
     expect(asciiFold('中文 stays')).toBe('中文 stays');
@@ -395,7 +397,7 @@ describe('cross-session message surfaces (TUI-DESIGN-5 §2.9)', () => {
     expect(sessionMessageText('mbp', 'hello', false)).toBe('mbp: hello (unverified)');
     expect(requestRowText('mbp', 'end', false).endsWith(UNVERIFIED_SUFFIX)).toBe(true);
     // hostile sender text is one line and carries no control bytes (§14.1)
-    expect(sessionMessageText('m\nbp', 'a\u001b[2Jb')).toBe('m ⏎ bp: a[2Jb');
+    expect(sessionMessageText('m\nbp', 'a\u001b[2Jb')).toBe('m ⏎ bp: ab');
   });
 
   it('§2.2 / §12 S6: the peer zone announces once on a 0 → ≥ 1 crossing and never again', async () => {

@@ -56,7 +56,8 @@ describe('clipboardPayload (pure)', () => {
   it('sanitises, redacts and caps at 64 KiB on a UTF-8 boundary; counts the markers redaction added', () => {
     const r = createRedactor([{ name: 'X', value: 'exact-secret-value-1' }]);
     const p = clipboardPayload(`a\u001b[2Jb ${KEY} exact-secret-value-1 [REDACTED:already]`, r.redact);
-    expect(p.payload).toBe('a[2Jb [REDACTED:pattern] [REDACTED:X] [REDACTED:already]');
+    // the escape sequence goes whole (core/ansi.ts): neither ESC nor its `[2J` body reaches the clipboard
+    expect(p.payload).toBe('ab [REDACTED:pattern] [REDACTED:X] [REDACTED:already]');
     expect(p.masked).toBe(2);
     expect(p.truncated).toBe(false);
     const big = clipboardPayload('日'.repeat(40_000), (s) => s);

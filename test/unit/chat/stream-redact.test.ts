@@ -3,13 +3,13 @@
  * property: over random texts built from all eight redacting pattern families, header lines, exact secrets (without
  * whitespace, with interior whitespace, with LEADING whitespace, multi-line PEM-shaped, and one that is a prefix of
  * another), unfinished prefixes of those secrets, control characters and glue, split at random delta boundaries, every
- * intermediate output is a prefix of the final one, the final one is exactly `redact(sanitizeStream(full))`, and no
+ * intermediate output is a prefix of the final one, the final one is exactly `redact(stripTerminalControls(full))`, and no
  * fragment of a secret the final output redacts is ever shown on the way.
  */
 import { describe, expect, it } from 'vitest';
 import { createStreamRedactor, type StreamRedactor } from '../../../src/chat/stream-redact.js';
 import { createRedactor, MIN_SECRET_LENGTH, PATTERN_MARKER, type Redactor } from '../../../src/core/redact.js';
-import { sanitizeStream } from '../../../src/tui/plain.js';
+import { stripTerminalControls } from '../../../src/core/ansi.js';
 
 /** the stream redactor the session builds: the redactor's own `redact` and `pendingSecretStart` */
 function streamOf(red: Redactor): StreamRedactor {
@@ -143,7 +143,7 @@ describe('createStreamRedactor — property over random texts and random splits'
     for (let seed = 1; seed <= Number(process.env['FUZZ_SEEDS'] ?? 600); seed++) {
       const c = makeCase(seed);
       const red = createRedactor(c.secrets);
-      const expected = red.redact(sanitizeStream(c.text));
+      const expected = red.redact(stripTerminalControls(c.text));
       const values = c.secrets.map((x) => x.value);
       for (const variant of ['redactor', 'reference'] as const) {
         // the redactor's own pendingSecretStart, and the definition itself (brute force) as a cross-check
@@ -237,7 +237,19 @@ describe('createStreamRedactor — the stream still flows', () => {
     const red = createRedactor([]);
     const sr = streamOf(red);
     sr.push('a\x07b \x1b[5mblink\x1b[0m \x00\x7f\x9bend ');
-    expect(sr.text).toBe('ab [5mblink[0m end ');
+    // escape sequences go WHOLE (core/ansi.ts): no ESC and no `[5m` body is left behind
+    expect(sr.text).toBe('ab blink end ');
+    expect(sr.text).not.toMatch(/\x1b|\[\d*m/);
+  });
+
+  it('an escape sequence split between two deltas is held, never shown half-stripped', () => {
+    const red = createRedactor([]);
+    const sr = streamOf(red);
+    sr.push('ok \x1b[3');
+    sr.push('3mwarn\x1b[0m done ');
+    sr.push('tail \x1b[');
+    sr.end();
+    expect(sr.text).toBe('ok warn done tail ');
   });
 
   it('reset() (a provider retry) restarts the reply: nothing of the first attempt survives', () => {

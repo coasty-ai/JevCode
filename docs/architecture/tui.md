@@ -196,6 +196,19 @@ to 30, or 15 over a remote shell, clamped between 5 and 30.
 
 <!-- src/config/defaults.ts:23-28 the frame-rate constants and the ui.* rows -->
 
+**Foreign output.** Text the TUI did not write itself (a command's output, the model's prose, a
+provider message) passes through one helper before it is drawn, logged or streamed. The live
+tail, `--plain`, `transcript.log` and the `--json` stream's `exec:output` events show that text
+with escape sequences removed whole. The old rule dropped only the escape byte, so a coloured
+test tick showed as `[33m[2m✓[22m[39m`. A sequence split across two output chunks is held
+until the next chunk completes it, so half of one never shows. In the live tail a carriage-return
+redraw (a progress bar, a download meter) collapses to its final state instead of stacking one
+row per redraw. A tab expands to the next 8-cell stop, bidirectional controls are dropped, and
+every other control character (a backspace included) is removed. The renderer's own styling is
+applied after this step and never passes through it.
+
+<!-- src/core/ansi.ts:1-35; src/tui/App.tsx liveTailRow; src/loop/stages/execute.ts the run case -->
+
 ## Where the numbers on this page come from
 
 The row caps, the thresholds and the frame-rate bounds are constants in the source, cited above.

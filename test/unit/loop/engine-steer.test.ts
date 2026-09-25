@@ -279,7 +279,8 @@ describe('annotate (§15.1 three-way identity)', () => {
     expect(accepted).toBe(true);
     const n = h.of('notice').find((x) => x.kind === 'ui')!;
     expect(n.text).toHaveLength(ANNOTATE_TEXT_MAX_CHARS);
-    expect(n.text.startsWith('red ')).toBe(true);
+    // ECMA-48: `ESC SP t` is one nF sequence (core/ansi.ts), so it goes whole — ESC, the space and the `t` after it
+    expect(n.text.startsWith('redttt')).toBe(true);
     expect(n.text).not.toContain('\x1b');
     expect(n.text.endsWith('…')).toBe(true);
     expect(n.detail).toHaveLength(ANNOTATE_DETAIL_MAX_CHARS);

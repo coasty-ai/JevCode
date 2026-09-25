@@ -52,6 +52,10 @@ describe('normaliseText — §6 row 25 encodings', () => {
     const r = normaliseText("a\u{202e}b\u{200f}c\u001b[31md\u{2028}e");
     expect(r.text).toBe('abcd\ne');
     expect(r.controlsRemoved).toBe(2 + '\u001b[31m'.length);
+    // the shared grammar (core/ansi.ts ESC_SEQ_RE): an OSC 8 link, a charset switch and an 8-bit CSI go whole and are counted
+    const osc = normaliseText('see \u001b]8;;https://x.test\u0007link\u001b]8;;\u0007 \u001b(Bok \u009b1mC1');
+    expect(osc.text).toBe('see link ok C1');
+    expect(osc.controlsRemoved).toBe('\u001b]8;;https://x.test\u0007'.length + '\u001b]8;;\u0007'.length + '\u001b(B'.length + '\u009b1m'.length);
   });
 
   it('a string input is accepted as well as a Buffer', () => {

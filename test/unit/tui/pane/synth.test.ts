@@ -10,7 +10,7 @@ describe('synth tab (TUI-DESIGN §7.2 `s`, §15.3 verbatim phase + detail)', () 
     expect(synthLines({ step: 1, phase: 'x', detail: '', tested: 3 })).toEqual(['synth  x:', '       tested=3']);
   });
   it('keeps a multi-line detail verbatim, one row per line, controls stripped', () => {
-    expect(synthLines({ step: 1, phase: 'verify', detail: 'line one\r\nline two\n\n\u001b[2Jline three' })).toEqual(['synth  verify: line one', '       line two', '       [2Jline three']);
+    expect(synthLines({ step: 1, phase: 'verify', detail: 'line one\r\nline two\n\n\u001b[2Jline three' })).toEqual(['synth  verify: line one', '       line two', '       line three']);
   });
   it('drops bidi controls and turns U+2028/2029 into row breaks-as-spaces (§14.1)', () => {
     const rows = synthLines({ step: 1, phase: 'ver\u202eify', detail: 'site \u202ekth.py:12\u202c\u2028fixed \u2066x\u2069\ny' });

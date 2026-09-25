@@ -327,7 +327,9 @@ describe('text fields (E13)', () => {
   it('text60 = clip(oneLine(redact(x)), 60), control characters and bidi marks dropped', () => {
     const redact = (s: string): string => s.replace(/sk-secret-[a-z0-9]+/g, '[REDACTED:key]');
     expect(text60('use sk-secret-abcdef12345 now', redact)).toBe('use [REDACTED:key] now');
-    expect(text60('a\nb\tc\u001bd\u200f\u202e', redact)).toBe('a ⏎ b cd');
+    // `ESC d` is one sequence (ECMA-48 Fe, core/ansi.ts): the ESC and the byte after it go together
+    expect(text60('a\nb\tc\u001bd\u200f\u202e', redact)).toBe('a ⏎ b c');
+    expect(text60('x\u001b[31mred\u001b[0m y', redact)).toBe('xred y');
     expect(text60('x'.repeat(100), redact)).toHaveLength(60);
     expect(text60('x'.repeat(100), redact).endsWith('…')).toBe(true);
     expect(indexOneLine('  padded  ')).toBe('padded');

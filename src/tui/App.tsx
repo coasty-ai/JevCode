@@ -27,6 +27,7 @@ import type { BlockingAnswer, BlockingRequest, Engine, EngineMode, ImportPlan, L
 import { VERSION } from '../version.js';
 import { detectSecrets, patternRedact } from '../core/redact.js';
 import { createLog, nullLog, type KeyClass, type Log } from '../core/log.js';
+import { resolveOverwrites } from '../core/ansi.js';
 import { resolveLaunchSettings } from '../config/launch.js';
 import { DEFAULT_MODE } from '../config/defaults.js';
 import type { TrustInputs } from '../config/trust.js';
@@ -318,11 +319,46 @@ export function builderFaultFor(pane: string): string {
   return `${renderFaultFor(pane)}:lines`;
 }
 
+/** Bidi controls (§14.1): a command's U+202E must not reorder the live row it sits in. */
+const LIVE_BIDI_RE = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
+const TAB_STOP = 8;
+
+/**
+ * One row of a command's live output as the terminal would have left it: a bare CR is a redraw, not a new row (curl's
+ * meter, tqdm, pip: only the last non-blank state shows), bidi controls are dropped, and a tab expands to the next
+ * 8-cell stop — measured in CELLS (string-width counts `\t` as 0 while the terminal draws up to 8,
+ * so an unexpanded tab made the row overflow its box and wrap). `max` (code units) cuts the resolved row before the
+ * tabs are expanded, so a 64 KB line never costs a 64 KB expansion or width measurement per frame. Every other control
+ * byte (a backspace too) was removed before the text reached the live buffer (`sanitizeStream`). Pure.
+ */
+export function liveTailRow(line: string, max: number = Number.POSITIVE_INFINITY): string {
+  const resolved = resolveOverwrites(line).replace(LIVE_BIDI_RE, '');
+  const drawn = resolved.length > max ? resolved.slice(0, max) : resolved;
+  if (!drawn.includes('\t')) return drawn;
+  const parts = drawn.split('\t');
+  let out = parts[0] ?? '';
+  let cells = stringWidth(out);
+  for (const part of parts.slice(1)) {
+    const pad = TAB_STOP - (cells % TAB_STOP);
+    out += ' '.repeat(pad) + part;
+    cells += pad + stringWidth(part);
+  }
+  return out.length > max ? out.slice(0, max) : out;
+}
+
+/** The last `n` rows of a live buffer, each through `liveTailRow`: split on `\n` only (a CR is a redraw inside its row). */
+function liveTailRows(text: string, n: number, max: number): string[] {
+  if (n <= 0 || text === '') return [];
+  const parts = text.split('\n');
+  if (parts[parts.length - 1] === '') parts.pop();
+  return parts.slice(-n).map((l) => liveTailRow(l, max));
+}
+
 /**
  * Last `rows` lines of the stream, or the bucketed char count while no line break has arrived yet (§7:
- * `streaming… 1.2k chars`). A lone `\r` counts as a line break so a progress bar shows its latest state. Lines
- * are cut to `columns + 1` characters before Ink measures them (the +1 keeps Ink's truncation ellipsis), so a
- * 64 KB unbroken tail never costs a 64 KB width measurement per frame. With an empty text buffer and
+ * `streaming… 1.2k chars`). A lone `\r` is a redraw of its row (`liveTailRow`), so a progress bar shows its latest
+ * state. Lines are cut to `columns + 1` characters before Ink measures them (the +1 keeps Ink's truncation ellipsis),
+ * so a 64 KB unbroken tail never costs a 64 KB width measurement per frame. With an empty text buffer and
  * tool-argument chars streaming, the region reads `streaming action… N chars`. In jev-only there is no generator
  * stream: with an empty buffer the region shows the last `synth` line of the step (docs/JEV-ONLY.md). In llm-jev
  * (docs/LLM-JEV-DESIGN.md §9.3) the bucketed rows carry ` · sample k/N` while `sampling` is set (null elsewhere: every
@@ -336,10 +372,7 @@ export function liveLines(live: string, rows: number, columns: number = DEFAULT_
     return synth !== null ? [synth] : [];
   }
   if (!/[\r\n]/.test(live)) return [`streaming… ${kShort(live.length)} chars${sample}`];
-  const parts = live.split(/\r\n|\r|\n/);
-  if (parts[parts.length - 1] === '') parts.pop();
-  const max = Math.max(1, Math.floor(columns)) + 1;
-  return parts.slice(-rows).map((l) => (l.length > max ? l.slice(0, max) : l));
+  return liveTailRows(live, rows, Math.max(1, Math.floor(columns)) + 1);
 }
 
 /**
@@ -373,9 +406,7 @@ export function agentLiveLines(a: AgentUi, output: string, prose: boolean, rows:
   const max = Math.max(1, Math.floor(columns)) + 1;
   const cut = (l: string): string => (l.length > max ? l.slice(0, max) : l);
   if (a.running !== null) {
-    const parts = output === '' ? [] : output.split(/\r\n|\r|\n/);
-    if (parts.length > 0 && parts[parts.length - 1] === '') parts.pop();
-    return { lines: [cut(a.running), ...parts.slice(-(n - 1)).map(cut)].slice(0, n), dim: false };
+    return { lines: [cut(a.running), ...liveTailRows(output, n - 1, max)].slice(0, n), dim: false };
   }
   if (a.calls.length > 0) return { lines: [cut(`${a.calls.map((c) => c.label).join(` ${g.dot} `)}${g.ellipsis}`)], dim: false };
   if (a.writing !== null) {

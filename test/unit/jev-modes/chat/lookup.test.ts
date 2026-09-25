@@ -139,7 +139,8 @@ describe('§3.6 lookupCode — one request, bounded reads, excerpts', () => {
     const long = excerptLines(`def parse_date():\n    ${'x'.repeat(300)} parse_date\n`, ['parse_date']);
     for (const l of long) expect(cellWidth(l.text)).toBeLessThanOrEqual(100);
     expect(excerptLines('nothing here', ['parse_date'])).toEqual([]);
-    expect(excerptLines('a\tparse_date\u001b[2J', ['parse_date'])[0]?.text).toBe('a parse_date[2J');
+    // the escape sequence goes whole (core/ansi.ts): no ESC and no `[2J` body
+    expect(excerptLines('a\tparse_date\u001b[2J', ['parse_date'])[0]?.text).toBe('a parse_date');
   });
 });
 

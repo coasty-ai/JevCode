@@ -21,14 +21,16 @@
  *
  * Every cut is then checked against the redactor itself — `redact(head) + redact(tail) === redact(head + tail)` over the
  * text not yet emitted — and moved back to an earlier word boundary when a match would straddle it, so the emitted
- * chunks always concatenate to exactly `redact(sanitizeStream(all))`. The cost per delta is a few redactions of the
+ * chunks always concatenate to exactly `redact(stripTerminalControls(all))`. The cost per delta is a few redactions of the
  * held-back text only, usually a word (one more while a header anchor is in it).
  *
- * Control characters are dropped from every delta BEFORE redaction (`sanitizeStream`, the O10 rule the engine path
- * applies in useEngine's appendTail): a BEL or an ESC can never reach the terminal, and one inside a key can never split
- * it past the pattern layer. A provider retry restarts the text (`reset`), so a retried stream is never shown twice.
+ * Escape sequences (whole) and every other control character are dropped from every delta BEFORE redaction, through
+ * core/ansi.ts's stream sanitizer (`stripTerminalControls`, statefully: a sequence split between two deltas is held until
+ * the next delta completes it): a BEL or an ESC can never reach the terminal, no sequence body is left behind, and a
+ * control character inside a key can never split it past the pattern layer. A provider retry restarts the text
+ * (`reset`), so a retried stream is never shown twice.
  */
-import { sanitizeStream } from '../tui/plain.js';
+import { createTerminalStreamSanitizer } from '../core/ansi.js';
 
 export interface StreamRedactor {
   /** One provider delta in; what became final out (often '' — the delta is still held back). */
@@ -95,6 +97,8 @@ export function createStreamRedactor(redact: (s: string) => string, pendingSecre
   /** the sanitized text not emitted yet — nothing before it can still change, so only this window is ever redacted again */
   let held = '';
   let out = '';
+  /** `stripTerminalControls` per delta, statefully: an escape sequence split between two deltas is held, never half-stripped */
+  let san = createTerminalStreamSanitizer();
 
   /** how much of `held` no later append can change, by the rules in the header comment */
   function safeCut(): number {
@@ -110,7 +114,7 @@ export function createStreamRedactor(redact: (s: string) => string, pendingSecre
 
   return {
     push(delta: string): string {
-      const clean = sanitizeStream(delta);
+      const clean = san.push(delta);
       if (clean.length === 0) return '';
       held += clean;
       let cut = safeCut();
@@ -125,9 +129,11 @@ export function createStreamRedactor(redact: (s: string) => string, pendingSecre
       return '';
     },
     end(): string {
+      held += san.flush();
       return held.length > 0 ? emit(held.length, redact(held)) : '';
     },
     reset(): void {
+      san = createTerminalStreamSanitizer();
       held = '';
       out = '';
     },

@@ -24,7 +24,7 @@ import type { BlockingKind, BlockingRequest, ConfirmRequest, EngineMode, EngineS
 // `verbatimModuleSyntax`, so `src/coordination/**` never reaches the argv path (gate G-R5-1).
 import type { Fold } from '../../coordination/index.js';
 import { MODE_BADGE_WORD } from '../../config/defaults.js';
-import { exitCodeFor } from '../../loop/stop.js';
+import { exitCodeFor, isFinishedStop } from '../../loop/stop.js';
 import { SPARKLINE_CELLS, eighthBar, sparkline } from '../bars.js';
 import { meterWord, usd2 } from '../budget/lines.js';
 import { ELLIPSIS, stringWidth, truncateCells } from '../composer/width.js';
@@ -1008,7 +1008,7 @@ export function statusSpans(s: StatusLineState, columns: number, o: StatusLineOp
       if (spinner !== null && word.startsWith(`${spinner} `)) spans.push({ from: wordAt, to: wordAt + spinner.length, role: 'accent' });
       else if (s.run === 'none' && s.done !== null && s.overlay === 'none' && s.picker !== true) {
         const idle = leftZoneWord(s, o);
-        if (word.startsWith(idle) && idle.length > 0) spans.push({ from: wordAt, to: wordAt + idle.length, role: s.done.stopReason === 'complete' ? 'ok' : 'warn', bold: true });
+        if (word.startsWith(idle) && idle.length > 0) spans.push({ from: wordAt, to: wordAt + idle.length, role: isFinishedStop(s.done.stopReason) ? 'ok' : 'warn', bold: true });
       }
     }
   }

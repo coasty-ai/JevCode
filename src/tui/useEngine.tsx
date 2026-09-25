@@ -36,6 +36,7 @@ import type { OverlayKind } from './layout.js';
 import { emptyLoopFold, foldLoopPlan, foldLoopReplan, foldLoopSteer, foldLoopStep, loopView, type LoopBannerView, type LoopFold } from './pane/banner.js';
 import { DEFAULT_COMPLETE_THRESHOLD, DEFAULT_IMPOSSIBLE_THRESHOLD, DEFAULT_MODE } from '../config/defaults.js';
 import { foldByStep, foldPlanRecord, foldStageEnd, foldStepEnd, toDecisionRow, type DecisionRow, type PaneTab, type PlanView, type SynthView, type TimelineStep } from './pane/model.js';
+import { createTerminalStreamSanitizer, type TerminalStreamSanitizer } from '../core/ansi.js';
 import { AGENT_TOOL_VERB, COMPACT_HIDDEN_KINDS, IDENTITY_REVIEWER, agentRunEndedAsReply, isAgentToolActivity, isHoldableAgentRow, isQuietAgentFinish, itemsFromEvent, localItem, oneLine, proseLinesOf, sanitizeStream, synthText, type TranscriptItem, type TranscriptLevel } from './plain.js';
 import { retryViewFrom, startTicker, type RetryView } from './retry.js';
 import type { GitZone, PeerZoneSelf, ThinkingPhase } from './status/lines.js';
@@ -1459,7 +1460,9 @@ export function createTuiConfirmer(opts: TuiConfirmerOptions = {}): TuiConfirmer
 // ---------------------------------------------------------------------------------------
 
 function appendTail(buf: string, text: string): string {
-  // Command output and generator text are untrusted: strip escapes before they can reach the frame.
+  // Command output and generator text are untrusted: strip escapes before they can reach the frame. `exec:output`
+  // arrives already cleaned by the execute stage, which holds a sequence split between two chunks; this pass keeps the
+  // frame safe for any other source (idempotent on clean text).
   const joined = buf + sanitizeStream(text);
   return joined.length > LIVE_BUFFER_MAX ? joined.slice(joined.length - LIVE_BUFFER_MAX) : joined;
 }
@@ -1471,10 +1474,11 @@ function appendTail(buf: string, text: string): string {
  */
 export const PROSE_BUFFER_MAX = 1024 * 1024;
 
-function appendProse(buf: string, text: string): string {
-  // a CR (a CRLF stream) is dropped here, as the committed rows drop it, so the live rows and the rows they commit
+function appendProse(buf: string, clean: string): string {
+  // `clean` comes through the turn's stream sanitizer (a sequence split between two deltas is held, never half-shown).
+  // A CR (a CRLF stream) is dropped here, as the committed rows drop it, so the live rows and the rows they commit
   // are one text (a caret after a bare CR would draw over the label column)
-  const joined = buf + sanitizeStream(text).replace(/\r/g, '');
+  const joined = buf + clean.replace(/\r/g, '');
   return joined.length > PROSE_BUFFER_MAX ? joined.slice(0, PROSE_BUFFER_MAX) : joined;
 }
 
@@ -1514,6 +1518,13 @@ export function useEngine(source: EventSource, confirmer: TuiConfirmer, task: st
     let toolChars = 0;
     let writing: AgentWriting | null = null;
     let agent = false;
+    // the current model turn's generator deltas: one sanitizer per turn, flushed when the turn's stream ends
+    let deltas: TerminalStreamSanitizer = createTerminalStreamSanitizer();
+    /** the turn's stream ended: what the sanitizer still held joins the buffer (an unfinished sequence is dropped) */
+    const flushDeltas = (): void => {
+      const rest = deltas.flush();
+      if (rest !== '') buffer = agent ? appendProse(buffer, rest) : appendTail(buffer, rest);
+    };
     // every flush is stamped: a flush that moved the text paints on Ink's immediate path (the cadence is the one throttle)
     const scheduler = createStreamScheduler(() => dispatch({ type: 'live', text: buffer, toolChars, ...(agent ? { output, writing } : {}), at: performance.now() }), opts.flushMs ?? STREAM_LOCAL_MS);
     const clearLive = (): void => {
@@ -1528,6 +1539,7 @@ export function useEngine(source: EventSource, confirmer: TuiConfirmer, task: st
       switch (e.type) {
         case 'run:start':
           clearLive();
+          deltas = createTerminalStreamSanitizer();
           agent = e.mode === 'agent';
           event(e);
           return;
@@ -1535,7 +1547,7 @@ export function useEngine(source: EventSource, confirmer: TuiConfirmer, task: st
         // samples ≥ 1 are counted by the reducer's `sampling` and never touch the buffer
         case 'generator:delta':
           if ((e.sample ?? 0) >= 1) return;
-          buffer = agent ? appendProse(buffer, e.text) : appendTail(buffer, e.text);
+          buffer = agent ? appendProse(buffer, deltas.push(e.text)) : appendTail(buffer, deltas.push(e.text));
           scheduler.poke();
           return;
         case 'exec:output':
@@ -1554,6 +1566,8 @@ export function useEngine(source: EventSource, confirmer: TuiConfirmer, task: st
             event(e);
             return;
           }
+          flushDeltas();
+          deltas = createTerminalStreamSanitizer();
           if (agent) {
             // a new model turn: what the last one left commits (the reducer reads it from `live`)
             event(e, buffer);
@@ -1572,11 +1586,13 @@ export function useEngine(source: EventSource, confirmer: TuiConfirmer, task: st
           }
           // AGENT-LOOP-DESIGN §9.4: commit through the buffer's last newline (all of it for the final remainder) — the
           // reducer does the same cut, so the buffer keeps exactly the partial line it keeps (not a clear)
+          if (e.final) flushDeltas();
           event(e, buffer);
           buffer = buffer.slice(commitCut(buffer, e.final));
           return;
         case 'assistant:reset':
           if (agent) buffer = '';
+          deltas = createTerminalStreamSanitizer();
           event(e);
           return;
         case 'exec:start':
@@ -1600,6 +1616,7 @@ export function useEngine(source: EventSource, confirmer: TuiConfirmer, task: st
           event(e);
           return;
         case 'run:end':
+          flushDeltas();
           if (agent) event(e, buffer);
           else event(e);
           clearLive();

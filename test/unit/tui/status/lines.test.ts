@@ -683,7 +683,7 @@ describe('centre zone (§7.4, §14.1)', () => {
     expect(centreText(s)).toBe('');
     expect(centreText({ ...s, title: 'fix parse_date tz' })).toBe('"fix parse_date tz"');
     expect(centreText({ ...s, title: '  ' })).toBe('');
-    expect(centreText({ ...s, title: 'a\nb\u001b[2J' })).toBe('"a ⏎ b[2J"');
+    expect(centreText({ ...s, title: 'a\nb\u001b[2J' })).toBe('"a ⏎ b"');
     expect(centreText({ ...s, title: 'a\nb' }, true)).toBe('"a | b"');
     expect(centreText(mk())).toBe('');
     // idle: the run id is not shown whatever the room; a title is
@@ -883,6 +883,18 @@ describe('statusSpans (TUI-DESIGN-3 §5.2 P6, D-P)', () => {
     expect(statusSpans(f, 76).text).toBe('idle exit 4  step 9/40 0m14s  run $0.03/2.00 ok  sess $0.03/10.00 ok  ? help');
     // a wizard / palette / picker over an ended run shows its own word, uncoloured
     expect(statusSpans(mk({ done: done('complete', 1, 1), overlay: 'palette' }), 80).spans).toEqual([]);
+  });
+  it('every finished stop (complete, generator_done, answered: exit 0) colours the done word `ok`, not `warn`', () => {
+    // harness verification is off by default, so most successful agent runs end generator_done
+    for (const stop of ['complete', 'generator_done', 'answered'] as const) {
+      const row = statusSpans(mk({ done: done(stop, 3, 1), spend: { run: spend(0.01, 2), session: { totalUsd: 0.01, capUsd: 10 } } }), 80);
+      expect(slice(row, 0), stop).toBe('idle exit 0');
+      expect(row.spans[0], stop).toMatchObject({ from: 0, role: 'ok', bold: true });
+    }
+    for (const stop of ['max_steps', 'spend_cap', 'human_abort'] as const) {
+      const row = statusSpans(mk({ done: done(stop, 3, 1), spend: { run: spend(0.01, 2), session: { totalUsd: 0.01, capUsd: 10 } } }), 80);
+      expect(row.spans[0], stop).toMatchObject({ role: 'warn', bold: true });
+    }
   });
   it('meter words: `high` → warn, `critical` / `over` → error, `ok` / `half` / `uncapped` plain; positions land on the word', () => {
     expect(meterWordRole('high')).toBe('warn');

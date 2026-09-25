@@ -81,8 +81,9 @@ describe('epilogueLines (§13.5)', () => {
   it('a canary in the thrown message is redacted; newlines and controls never reach the line', () => {
     const err: SerializedError = { name: 'Error', code: 'internal', message: `boom ${CANARY}\nsecond line\x1b[2J`, exitCode: 1 };
     const lines = epilogueLines(err, ctx, redact);
-    // the ESC byte is dropped (the terminal cannot interpret the rest), the printable tail stays, like plain.ts sanitizeStream
-    expect(lines[0]).toBe('jevcode: stopped — internal: boom [REDACTED:test] second line[2J (exit 1)');
+    // the escape sequence goes WHOLE (core/ansi.ts, through plain.ts sanitizeStream): no ESC and no `[2J` body
+    expect(lines[0]).toBe('jevcode: stopped — internal: boom [REDACTED:test] second line (exit 1)');
+    expect(lines.join('\n')).not.toContain('[2J');
     expect(lines.join('\n')).not.toContain(CANARY);
     expect(lines.join('\n')).not.toContain('\x1b');
   });

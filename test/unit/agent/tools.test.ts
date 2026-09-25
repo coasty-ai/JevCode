@@ -119,6 +119,20 @@ describe('grep', () => {
     expect(r.text).not.toContain('.env');
   });
 
+  it('rg: a CRLF file matches (`.` does not match its CR), and a line reaches the model cleaned then redacted', async () => {
+    // an SGR inside the key: redacting before the clean would miss it (the fake redactor masks `sk-secret-…`)
+    const stdout = 'src/a.ts\u00001:const parseX = 1;\r\nsrc/a.ts\u00002:// \u001b[31mparseX\u001b[0m warn\u0007\r\nsrc/b.ts\u00001:token = "sk-secret-\u001b[1mabc123\u001b[0m" parseX\n';
+    const ctx = createAgentContext({ files: { ...files, 'src/b.ts': 'x\n' }, sandbox: (cmd) => (cmd.startsWith('rg ') ? { exitCode: 0, stdout } : { stdout: '' }) });
+    const r = await runGrep(ctx, { pattern: 'parseX' }, withRg);
+    expect(r.text).toBe('3 matches in 2 files (showing 3)\nsrc/a.ts:1: const parseX = 1;\nsrc/a.ts:2: // parseX warn\nsrc/b.ts:1: token = "[REDACTED]" parseX');
+  });
+
+  it('the JS scan shows a CRLF line without its CR and an escape sequence without its body', async () => {
+    const ctx = createAgentContext({ files: { 'src/w.ts': 'const parseX = 1;\r\nlog("\u001b[32mparseX ok\u001b[0m");\r\n' } });
+    const r = await runGrep(ctx, { pattern: 'parseX' }, noRg);
+    expect(r.text).toBe('2 matches in 1 files (showing 2)\nsrc/w.ts:1: const parseX = 1;\nsrc/w.ts:2: log("parseX ok");');
+  });
+
   it('reports an rg regex error as an invalid regular expression', async () => {
     const ctx = createAgentContext({ files, sandbox: () => ({ exitCode: 2, stderr: 'rg: regex parse error:\n    (\n    ^\nerror: unclosed group\n' }) });
     const r = await runGrep(ctx, { pattern: '(' }, withRg);
@@ -266,6 +280,12 @@ describe('the post-write syntax check', () => {
     expect(await syntaxCheck(shared, 'a.py', 'bad(', 'bad((')).toEqual([]);
     const missing = createAgentContext({ sandbox: () => ({ exitCode: 127, stderr: 'python3: not found' }) });
     expect(await syntaxCheck(missing, 'a.py', null, 'x(')).toEqual([]);
+  });
+
+  it('a checker that colours its error reaches the model as plain text (cleaned, then redacted)', async () => {
+    const stderr = '\u001b[31m  File "a.py", line 1\u001b[0m\n\u001b[1mSyntaxError\u001b[0m: invalid syntax\r\n';
+    const ctx = createAgentContext({ sandbox: (cmd) => (cmd.includes('agent-check-') ? { exitCode: 0 } : { exitCode: 1, stderr }) });
+    expect(await syntaxCheck(ctx, 'a.py', 'x = 1\n', 'x = (\n')).toEqual(['  File "a.py", line 1', 'SyntaxError: invalid syntax']);
   });
 
   it('JavaScript: node --check for edits of existing files only', async () => {

@@ -201,7 +201,8 @@ describe('pad / fit / oneLine', () => {
     expect(fitCells('abc', 0)).toBe('');
   });
   it('oneLineCells drops controls and collapses breaks', () => {
-    expect(oneLineCells('a\r\nb\tc\u001b[2Jd\u0085e')).toBe('a b c[2Jd\u0085e'.replace('\u0085', ''));
+    // escape sequences go whole (core/ansi.ts): neither the ESC nor the `[2J` body is left
+    expect(oneLineCells('a\r\nb\tc\u001b[2Jd\u0085e')).toBe('a b cde');
     expect(oneLineCells('plain')).toBe('plain');
     expect(oneLineCells('a\u007fb\u0000c')).toBe('abc');
   });
