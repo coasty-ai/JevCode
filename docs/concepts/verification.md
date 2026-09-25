@@ -3,20 +3,50 @@
 Everything the harness believes about a patch comes from running something. This page says
 exactly what gets run, where, and what the result is allowed to decide.
 
-## In the default mode: your test command, run by the harness
+## In the default mode: the model checks its own work
 
 In `agent` mode there are no candidates and no shadow lanes: the code model edits your
 workspace through tools, with a pre-image of every file it may change, so `/undo` can restore
-it. Verification is your own test command:
+it. The model checks its work in proportion to the change, as in Codex CLI, Claude Code and
+OpenCode:
 
-- The harness detects the test command from the workspace (`detectTestCommand()`); a model never
-  chooses it. The model is told which command was detected and asked to run it after a change.
-- If the model stops after changing files without running it, the harness runs it itself (a
-  `verify` step, at most twice per run) and hands the result back for the model to act on.
-- A run stops `complete` only when the last run of the **whole, unscoped** test command parsed,
-  passed, and came after the last change. Anything else that finishes is `generator_done`, and
-  the stop line says the change is not verified. A reply that never called a tool stops
-  `answered`.
+- After a change that alters behaviour it runs the fastest check that covers it: the tests of the
+  code it touched (one test file or test name), or a typecheck, lint or build of what it touched.
+  It runs the whole suite only when you ask for it or the change is broad.
+- It runs nothing to check an answer to a question, a docs or comment edit, or a simple file
+  operation such as creating, renaming or deleting a file.
+- When a check fails because of its change, it fixes it. When a check fails for another reason
+  (it failed before the change, or needs a service, the network, credentials or a missing tool),
+  it says what failed and why, and leaves unrelated code, tests, dependencies and the environment
+  alone.
+- A run stops `complete` when the last test run the harness recognised parsed, passed, and came
+  after the last change. Anything else that finishes is `generator_done`, which exits 0 and reads
+  as an ordinary finish. A reply that never called a tool stops `answered`. A green targeted test
+  that does not cover the change also completes; the step row names the command that ran.
+
+### When the harness runs your tests itself
+
+`--agent-verify tests` (or `agent.verify` in the config file, or `JEVCODE_VERIFY=tests`) makes the
+harness also run the detected test command, the whole suite, after the model finishes with
+changes it has not tested: a `verify` step, at most twice per run. The result goes back to the
+model once; a failure it explains for another reason ends the run, and a change to docs alone
+(Markdown, text, images, `LICENSE`, `README`) is not verified. It is off by default because in a
+large repository the whole suite can take minutes after a one-line change.
+
+### The detected test command
+
+The harness detects the test command from the workspace (`detectTestCommand()`); a model never
+chooses it. Detection goes by manifest, in this order: a pytest configuration; `package.json`'s
+`test` script, run with the package manager its `packageManager` field or lockfile names; then
+`Cargo.toml`, `go.mod`, `deno.json`, a `Gemfile` or `Rakefile`, `pom.xml`, `build.gradle`, a .NET
+project file, `mix.exs`, `composer.json`, `Package.swift`, a Makefile `test` target, and finally a
+Python test layout. The model is told the command, that it runs the whole suite, and how to run one
+file with it where that is known.
+
+The common spellings of a run of that runner count as a test run, so their results are parsed and
+can make a run `complete`: another package manager (`pnpm test` for a detected `npm test`), the
+runner called directly (`node --test test/a.test.js`), a file or test name, a subdirectory, or the
+run piped through `tail`.
 
 See [The agent loop](../architecture/agent-loop.md) for the stop rules in full.
 

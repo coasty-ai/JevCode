@@ -1,9 +1,10 @@
 # The agent loop
 
 `agent` is JevCode's default mode. The code model drives: it streams its reasoning and prose, calls tools natively
-(several per reply), and reads the results. The harness runs the calls, streams everything to the terminal as it
-happens, checkpoints every step so `/undo` works, and verifies the change with your own tests. A small decision model,
-Jev, makes at most a few quick routing calls at the edges of a run and never decides anything that matters.
+(several per reply), reads the results, and checks its own work in proportion to the change. The harness runs the calls,
+streams everything to the terminal as it happens, checkpoints every step so `/undo` works, and reports a run `complete`
+only when it has seen your tests pass after the last change. A small decision model, Jev, makes at most a few quick
+routing calls at the edges of a run and never decides anything that matters.
 
 This is the shape of the open-source harnesses studied for the redesign (Codex, Gemini CLI, OpenCode, Crush,
 mini-swe-agent, the Claude Agent SDK): one model-driven loop with deterministic guards, not a side model on every step.
@@ -31,11 +32,11 @@ flowchart TD
   CALLS -- no --> STOPQ{"stop rules"}
   STOPQ -- "never called a tool" --> ANSWERED(["answered: a reply, exit 0"])
   STOPQ -- "cut off, or announced an action and stopped" --> SAMPLE
-  STOPQ -- "changed files, tests not run since" --> VERIFY["verify step: the harness runs your test command"]
+  STOPQ -- "--agent-verify tests only: changed files, tests not run since" --> VERIFY["verify step: the harness runs your test command"]
   VERIFY --> SAMPLE
-  STOPQ -- otherwise --> FINISH{"last run of the unscoped test command<br/>green and current?"}
+  STOPQ -- otherwise --> FINISH{"last recognised test run<br/>green and current?"}
   FINISH -- yes --> COMPLETE(["complete, exit 0"])
-  FINISH -- no --> DONE(["generator_done: not verified, exit 0"])
+  FINISH -- no --> DONE(["generator_done, exit 0"])
 ```
 
 The model decides what a message is by what it does with it. A greeting or a question is answered in prose with no tool
@@ -51,7 +52,7 @@ A step is the engine's unit of pause, steer, budget, checkpoint and undo. Each s
 | --- | --- | --- |
 | `observe` | at most one model turn, then one run of consecutive read-only calls, resolved in parallel inside the driver | no |
 | `act` | at most one model turn, then **one** mutating call: an edit, a write or a command | yes |
-| `verify` | the harness runs the detected test command, because the model stopped after changing files without running it | yes |
+| `verify` | only under `--agent-verify tests`: the harness runs the detected test command, because the model stopped after changing files without running it | yes |
 | `finish` | the model's final answer | no |
 
 A model turn that asks for three reads and an edit becomes an `observe` step (the three reads, concurrently) followed by
@@ -64,8 +65,8 @@ Seven tools, with flat JSON schemas that every provider accepts:
 | Tool | Read-only | Runs where |
 | --- | --- | --- |
 | `read_file` | yes | the driver, through the workspace (boundary and secret checks apply); numbered lines, paged with `offset` / `limit` |
-| `grep` | yes | `rg` in the sandbox when it is installed, else a scan of the workspace's file list; secret, ignored and binary files never appear |
-| `glob` | yes | the workspace's file list |
+| `grep` | yes | `rg` in the sandbox when it is installed, else a scan of every file in the workspace's list within 20 s, which says when it stopped early; a leading `(?i)` works either way; secret, ignored and binary files never appear |
+| `glob` | yes | the workspace's file list; binary and large files are listed with a tag, and a bare directory lists its files |
 | `todo_write` | yes | the driver; the list becomes the run's plan (`/plan`) |
 | `bash` | when the classifier proves the command read-only (`ls`, `cat`, `rg`, `git diff`, …) | read-only: the driver, in parallel; anything else: the engine, one at a time, with pre-images |
 | `edit_file` | no | the driver finds the span with a tolerant matcher; the engine applies an exact edit |
@@ -85,6 +86,10 @@ What makes the tools robust on mid-tier models:
 - **Long output is spilled, not lost.** A command's output is clipped to a head and a tail inline (30,000 characters on
   success, 10,000 on failure, where the end matters most), and the whole output is written to
   `outputs/step-N.txt` in the run directory, which the model can `read_file` or `grep`.
+- **Clean output.** The output the model sees has terminal escape sequences and progress redraws removed, and binary
+  output is replaced by a note, so colours never hide a test count or a secret from redaction.
+- **Paths and encodings.** The file tools take workspace paths and refuse one that starts with a variable such as
+  `$TMPDIR` (only `bash` expands variables), and they refuse to edit or overwrite a file that is not UTF-8.
 - **A post-write syntax check** for Python, JSON and existing JavaScript files reports only errors the edit introduced.
 
 ## Streaming
@@ -155,14 +160,24 @@ stream.
 | --- | --- |
 | answered in prose and never called a tool | stops `answered`, exit 0. It is a reply: no run header, no step rows, and it never names the session |
 | stopped mid-sentence at the output limit, or ended announcing an action (`Let me check the tests:`) | gets one "continue" note and another turn (at most twice per run) |
-| changed files and did not run your test command since | gets a `verify` step: the harness runs the detected test command and hands the result back (at most twice per run) |
-| finished after a green run of the full detected test command, with no change since | stops `complete`, exit 0 |
-| finished otherwise | stops `generator_done`, exit 0, and the stop line says the change is not verified |
+| changed files and did not run your test command since, under `--agent-verify tests` | gets a `verify` step: the harness runs the detected test command and hands the result back once (at most twice per run) |
+| finished after a green test run, with no change since | stops `complete`, exit 0 |
+| finished otherwise | stops `generator_done`, exit 0, shown as an ordinary finish |
 | repeated the same call with the same result (3 in a row, or more than 5 times in the last 10 calls) | gets a nudge to change approach; the sixth trip stops the run `stuck`, exit 4, resumable |
 
-The test command is never chosen by a model: it is `detectTestCommand()` over the workspace. Only a run of the whole,
-unscoped command can make a run `complete`. Pending todo items do not block completion; the finish row lists them.
-Budgets (spend, tokens, wall time, steps) stop a run exactly as in every other mode.
+**Who checks the work.** By default the model does, in proportion to the change, as in Codex CLI, Claude Code and
+OpenCode: after a change that alters behaviour it runs the fastest check that covers it (the tests of the code it touched,
+or a typecheck, lint or build of it), the whole suite only when you ask or the change is broad, and nothing for a
+question, a docs edit or a simple file operation. When a check fails for a reason that is not its change, it says so
+instead of repairing the environment. The harness runs no test command of its own unless you pass `--agent-verify tests`
+(or set `agent.verify` / `JEVCODE_VERIFY` to `tests`): then, after changes other than docs, it runs the detected test
+command before the run may finish, and hands the result back once. See [Verification](../concepts/verification.md).
+
+The test command is detected, never chosen by a model: `detectTestCommand()` over the workspace. Any test run the
+harness recognises counts toward `complete`: the detected command, a run of one file or test, a run in a subdirectory, the
+runner called directly or piped through `tail`. The step row names the command, because a green targeted test that does
+not cover the change also completes. Pending todo items do not block completion; the finish row lists them. Budgets
+(spend, tokens, wall time, steps) stop a run exactly as in every other mode.
 
 ## Safety and autonomy
 
@@ -205,8 +220,8 @@ Jev is a calibrated decision model: it answers code-built questions with probabi
 | RA2 | after 30 model turns, every 10 turns | whether to add one "step back" hint | 400 ms | no hint |
 
 None of them can allow or block a command, stop or extend a run, or decide completion. A normal run makes at most one
-Jev request (RA0), and on the default provider none: every provider but Anthropic already runs each turn at low effort, so
-RA0 would change nothing and is not asked. A Jev key is optional in agent mode; with none, the three placements take their
+Jev request (RA0), and on the default provider none: a GLM model already runs each turn at low effort, so RA0 would
+change nothing and is not asked. With any other model it is asked once, before the first turn. A Jev key is optional in agent mode; with none, the three placements take their
 fallbacks with no wait. Each placement carries a four-clause block that `npm run jev-contract` checks
 ([The Jev contract](jev-contract.md)).
 
@@ -217,14 +232,16 @@ wire body byte for byte for the older modes.
 
 | Provider | Default model | Reasoning | Notes |
 | --- | --- | --- | --- |
-| `openrouter` (the default) | `z-ai/glm-5.3-flash` | effort `low`; the reasoning details are replayed on every turn | no provider pinning, so OpenRouter can route tool requests to accurate endpoints |
+| `openrouter` (the default) | `z-ai/glm-5.3-flash` | effort `low` for a GLM model, the model's default otherwise; the reasoning details are replayed on every turn | no provider pinning, so OpenRouter can route tool requests to accurate endpoints |
 | `anthropic` | `claude-sonnet-5` | adaptive thinking, summarised, effort `high`; the signed thinking is replayed | server-side context editing instead of client masking |
-| `openai` | `gpt-5.6-luna` | effort `low`; encrypted reasoning replayed | Responses API |
-| `xai` | `grok-4.7` | effort `low` | |
-| `gemini` | `gemini-3.8-flash` | `thinkingLevel: low`; thought signatures replayed | |
-| `fireworks` | `glm-5p3-flash` | effort `low`; `reasoning_content` replayed | |
-| `meta` | `muse-spark-1.3` | effort `low` | a JSON transport: each turn arrives whole rather than streamed |
+| `openai` | `gpt-5.6-luna` | the model's default effort; encrypted reasoning replayed | Responses API |
+| `xai` | `grok-4.7` | the model's default effort | |
+| `gemini` | `gemini-3.8-flash` | the model's default thinking level; thought signatures replayed | |
+| `fireworks` | `glm-5p3-flash` | effort `low` for a GLM model, the model's default otherwise; `reasoning_content` replayed | |
+| `meta` | `muse-spark-1.3` | the model's default effort | a JSON transport: each turn arrives whole rather than streamed |
 
+Reasoning effort is set only where it has to be: `high` on Anthropic, and `low` for a GLM model on any provider (its
+reasoning cannot be turned off, and low keeps the default model fast). Every other model runs at its provider's default.
 Tool results go back as native tool messages paired by id, parallel calls are allowed, and the session id is the cache
 key where the provider has one. If a provider rejects the replayed reasoning, the turn is retried once without it and
 replay stays off for the run.
@@ -250,7 +267,7 @@ replay stays off for the run.
 | `src/agent/tools/*` | the seven tools, the edit matcher, result formatting and spilling, the syntax check |
 | `src/agent/safety*.ts`, `shlex.ts` | the command classifier |
 | `src/agent/loop.ts`, `jev.ts` | the loop detector and the three Jev placements |
-| `src/loop/stages/agent.ts` | the engine seam: the per-step change set, the destructive note, the completion test |
+| `src/loop/stages/agent.ts` | the engine seam: the per-step change set, the destructive note, the command a test run is recorded under |
 
 ## Related pages
 

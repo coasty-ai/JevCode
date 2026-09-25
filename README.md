@@ -127,9 +127,10 @@ per reply. Reads run in parallel; edits and commands run one at a time.
 leaves one row (`Read …`, `Edit calc/core.py (+1 −1)`, `Bash python -m pytest -q · 7 passed`).
 
 **The harness keeps it honest.** Every command runs in a sandbox with a pre-image of what it may
-change, so `/undo` works per step. The run is `complete` only when the harness has seen your own
-test command pass after the last change; if the model stops without running it, the harness runs
-it.
+change, so `/undo` works per step. The model checks its own work in proportion to the change (a
+targeted test, a typecheck) and runs nothing for questions or simple file operations. The run is
+`complete` only when the harness has seen a test run of your project pass after the last change;
+`--agent-verify tests` makes the harness also run your whole test command after changes.
 
 **Jev makes a few quick routing calls.** Jev, a calibrated decision model, is asked at most one
 quick question in a normal run, never decides what runs or whether you are done, and is optional.

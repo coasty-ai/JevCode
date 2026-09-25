@@ -46,6 +46,7 @@ The decider's four variables do not carry the `JEVCODE_` prefix: `JEV_PROVIDER`,
 | --- | --- | --- | --- |
 | `JEVCODE_MODE` | `mode` | `agent` | which engine mode a run uses: `agent` or `jev-only`; the legacy `llm-jev`, `jev-on` and `jev-off` are still accepted |
 | `JEVCODE_AUTONOMY` | `autonomy` | `full` | `full`: nothing asks and nothing is refused — in agent mode a destructive command runs sandboxed and pre-imaged with a note on its step; in the legacy modes a review-level risk verdict proceeds and is logged. `review`: destructive and unknown commands (agent mode) or review-level verdicts (legacy modes) wait for the approval card |
+| `JEVCODE_VERIFY` | `agent.verify` | `off` | who checks an agent run before it finishes. `off`: the model runs the checks the change calls for, and nothing for questions, docs or simple file operations. `tests`: the harness also runs the detected test command, the whole suite, after changes other than docs |
 | `JEVCODE_SPEND_CAP_USD` | `limits.spendCapUsd` | `10`, or `1` in the decider-only mode | the hard cap for one run |
 | `JEVCODE_SESSION_SPEND_CAP_USD` | `session.spendCapUsd` | 5 × the run cap | the cap across a whole session; `none` removes it |
 | `JEVCODE_MAX_STEPS` | `limits.maxSteps` | `250` in agent mode, `40` in the others | steps before the run stops |
@@ -256,12 +257,9 @@ JEVCODE_TRACE=/tmp/jevcode-launch.log jevcode
 
 ## The environment a command sees
 
-None of the above is visible to a command JevCode runs on your behalf. A command's environment
-is built from an allow-list of exactly four variables — `PATH`, `LANG`, `LC_ALL`, `TERM` —
-plus `HOME` and `TMPDIR` remapped into the run directory, plus `VIRTUAL_ENV` and an adjusted
-`PATH` when the workspace has a Python virtual environment. No API key is ever in it.
-
-<!-- src/sandbox/run.ts:31, :112-127 -->
+None of the JEVCODE_ or JEV_ variables above reaches a command JevCode runs on your behalf, and
+neither does any variable whose name marks it as a secret; [Sandbox and security
+guarantees](sandbox-and-security.md) lists exactly what a command's environment holds.
 
 ## Related pages
 

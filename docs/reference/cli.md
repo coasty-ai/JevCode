@@ -123,6 +123,7 @@ the output to JSON.
 | `--no-history` | | do not persist composer history |
 | `--no-input` | | no interactive renderer; every prompt takes its safe default. `run` only, and it needs a task |
 | `--autonomy` | `full\|review` | who approves an action. `full`, the default: nothing asks — in agent mode nothing is refused either, and a destructive command runs with a note on its step. `review`: destructive and unknown commands (agent mode) or review-level risk verdicts (legacy modes) wait for a y/n card. See [Sandbox and security](../operations/sandbox-and-security.md#who-approves-a-command-autonomy) |
+| `--agent-verify` | `off\|tests` | who checks an agent run before it finishes. `off`, the default: the model runs the checks the change calls for (a targeted test, a typecheck) and nothing for questions, docs or simple file operations. `tests`: the harness also runs the detected test command, the whole suite, after changes other than docs, and hands the result back once. See [Verification](../concepts/verification.md) |
 | `--trust-workspace` | | trust the workspace's instruction files, `./.env` and `jevcode.json` without the prompt |
 | `--no-budget-warnings` | | mute budget toasts and the bell; items and JSON events stay |
 | `--allow-secret-mention` | | allow mentions of denylisted secret files after a per-mention confirmation |

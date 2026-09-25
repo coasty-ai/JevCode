@@ -4,6 +4,51 @@ All notable changes to `jevcode`. The format follows [Keep a Changelog](https://
 the project uses semantic versioning. `package.json` is the single source of truth for the version and is bumped
 by the release procedure in `docs/RELEASE.md` — the entries below describe the tree at 2026-09-22 (`package.json` reads 0.6.0); nothing has been pushed to the npm registry or the Homebrew tap.
 
+## [Unreleased]
+
+### Changed — the model checks its own work; the harness runs your test suite only when asked (2026-09-25)
+
+A session asked for `create temp.py` inside a large repository: the file was written in three seconds, and then the harness
+ran the repository's whole test suite, about 11,500 tests, for minutes. The decision is in `docs/DECISIONS.md` (2026-09-25);
+the rules are in `docs/concepts/verification.md`.
+
+- **Verification is the model's, in proportion to the change.** By default the harness runs no test command of its own.
+  The system prompt asks the model, as Codex CLI, Claude Code and OpenCode do, for the fastest check that covers a change
+  in behaviour (one test file or test name, or a typecheck, lint or build of what it touched), for the whole suite only
+  when you ask or the change is broad, and for nothing after a question, a docs edit or a simple file operation. A check
+  that fails for a reason other than the change is reported, not repaired. The workspace facts say that the detected test
+  command is the whole suite and how to run one file with it. The harness's own run of the detected test command is now
+  opt-in: `--agent-verify tests`, `agentVerify` in the config file, or `JEVCODE_VERIFY=tests` (`off|tests`, default `off`).
+- **`complete` means a test run passed after the last change.** Any test run the harness recognises counts: one file or
+  test, a subdirectory, another package manager, the runner called directly, a run piped through `tail`. Before, only the
+  unscoped detected command counted, so the targeted check the model is now asked for could never complete a run. A run
+  that finishes without one ends `generator_done` (exit 0), which now renders as an ordinary finish, not a warning.
+- **`--agent-verify tests` reports a failed run once.** The harness hands the result back once. A reply that explains the
+  failure has another cause ends the run instead of drawing a second nudge, and the note no longer says "verify again". A
+  failure no parser could read is reported by its exit code, not as "0 passed, 0 failed, 0 errors". A change to docs alone
+  (Markdown, text, images, `LICENSE`, `README`) is not verified.
+- **Reasoning effort per model.** Only Anthropic (`high`) and GLM models on any provider (`low`) get an explicit effort.
+  gpt-5.x, Gemini, Grok, DeepSeek and every other model now run at their provider's default instead of being forced to
+  `low`, which was tuning for the default model. The first-turn effort hint is asked wherever `low` differs from that
+  default. Every model family without its own prompt paragraph gets the one that asks for native tool calls rather than
+  calls written as text.
+
+### Fixed — command output, test detection and the tools (2026-09-25)
+
+- **Command output is cleaned whole.** Terminal escape sequences are removed as whole sequences, never leaving `[33m` behind,
+  in the live output, the plain renderer, the transcript log, the step records and the output the model sees. A sequence
+  split across two chunks is held until the next chunk completes it. Progress redraws collapse to their last state, and
+  binary output is replaced by a note. Colours no longer hide a key from redaction or a test count from the parser.
+- **Test detection and recognition across ecosystems.** The test command is detected by manifest, with the package
+  manager a JavaScript project names (its `packageManager` field or lockfile), across Python, JavaScript, Rust, Go, Deno,
+  Ruby, Java, .NET, Elixir, PHP, Swift and Makefile projects. The common spellings of a run of that runner are recognised
+  as test runs.
+- **The tools without ripgrep, and the command environment.** `grep` without `rg` searches every listed file within its
+  20-second budget and says when it stopped early, and it accepts a leading `(?i)`. `glob` lists binary and large files
+  with a tag, and a bare directory lists its files. A command inherits your environment minus every variable whose name
+  marks it as a secret, so proxy and CA settings, `JAVA_HOME` and toolchain shims work in the sandbox. The file tools refuse `$TMPDIR`-style paths, which only `bash` expands, and refuse to edit or
+  overwrite a file that is not UTF-8.
+
 ## [0.7.0] — 2026-09-24
 
 ### Changed — the agent loop is the default (2026-09-23)

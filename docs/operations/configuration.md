@@ -129,6 +129,7 @@ means the setting is unset unless you set it.
 | --- | --- | --- | --- | --- |
 | `mode` | `--mode` | `JEVCODE_MODE` | `mode` | `agent` |
 | `autonomy` | `--autonomy` | `JEVCODE_AUTONOMY` | `autonomy` | `full` |
+| `agent.verify` | `--agent-verify` | `JEVCODE_VERIFY` | `agentVerify` | `off` |
 | `limits.spendCapUsd` | `--spend-cap` | `JEVCODE_SPEND_CAP_USD` | `spendCapUsd` | `10` (`1` under `jev-only`) |
 | `session.spendCapUsd` | `--session-spend-cap` | `JEVCODE_SESSION_SPEND_CAP_USD` | `sessionSpendCapUsd` | derived |
 | `limits.maxSteps` | `--max-steps` | `JEVCODE_MAX_STEPS` | `maxSteps` | `250` in agent mode, `40` otherwise |

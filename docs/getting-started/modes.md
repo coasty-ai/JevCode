@@ -43,9 +43,10 @@ message that mentions it reads that constant, so the two can never disagree. A s
 ### `agent` — the default
 
 The code model drives. It streams its prose, calls tools natively — `read_file`, `grep`, `glob`,
-`edit_file`, `write_file`, `bash`, `todo_write`, several per reply, reads in parallel — and the
-harness runs each call in the sandbox, checkpoints every step for `/undo`, and verifies the change
-by running your test command. Every chat message is a turn of one conversation: a greeting gets
+`edit_file`, `write_file`, `bash`, `todo_write`, several per reply, reads in parallel — checks its
+own work in proportion to the change, and the harness runs each call in the sandbox and checkpoints
+every step for `/undo`. `--agent-verify tests` makes the harness also run your test command after
+changes. Every chat message is a turn of one conversation: a greeting gets
 a streamed reply, a task gets tool calls, and a follow-up sees everything that came before.
 
 Jev is asked at most one quick question in a normal run, and none on the default provider. A Jev
@@ -105,7 +106,7 @@ flowchart TD
   subgraph sg_ag["agent"]
     AG1["the agent driver samples the code model"]
     AG2["read-only calls in parallel · one edit or command per step"]
-    AG3["the harness runs the test command; complete needs a green, current run"]
+    AG3["the model checks its work; complete needs a green, current test run"]
     AG1 --> AG2 --> AG3
   end
   subgraph sg_jo["jev-only"]
