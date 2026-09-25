@@ -126,6 +126,35 @@ describe('createTerminalStreamSanitizer: a sequence split across chunks is held,
     for (let i = 0; i <= whole.length; i++) expect(streamed([whole.slice(0, i), whole.slice(i)])).toBe(want);
   });
 
+  it('a C1 introducer inside an open 8-bit OSC body is held with the OSC, not cut out of it', () => {
+    const whole = '\u009d  \u0090[[\u0007after';
+    expect(stripTerminalControls(whole)).toBe('after');
+    for (let i = 0; i <= whole.length; i++) expect(streamed([whole.slice(0, i), whole.slice(i)])).toBe('after');
+    // and one inside a FINISHED sequence starts nothing: the SOS after it is the open one
+    const s = createTerminalStreamSanitizer();
+    expect(s.push('\u009d a \u0098 b\u0007 x \u0098 y')).toBe(' x ');
+    expect(s.push(' z\u009c!')).toBe('!');
+  });
+
+  it('property: random 7-bit and 8-bit (C1) texts, random 1–4-way splits, equal the whole-text strip', () => {
+    // mulberry32, seeded: a failure names its seed
+    let a = 20260925;
+    const r = (): number => {
+      a = (a + 0x6d2b79f5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    const pool = ['\u001b', '[', ']', 'P', '\\', '\u0007', '\n', '\r', 'a', ' ', '0', '3', ';', 'm', '(', 'N', '?', '_', '\u009b', '\u009c', '\u009d', '\u0090', '\u0098', '\u009e', '\u009f'];
+    for (let n = 0; n < 5000; n++) {
+      let whole = '';
+      for (let k = 1 + Math.floor(r() * 40); k > 0; k--) whole += pool[Math.floor(r() * pool.length)];
+      const cuts = [...new Set(Array.from({ length: Math.floor(r() * 4) }, () => Math.floor(r() * (whole.length + 1))))].sort((x, y) => x - y);
+      const parts = [0, ...cuts].map((c, i, all) => whole.slice(c, all[i + 1] ?? whole.length));
+      expect(streamed(parts), JSON.stringify(parts)).toBe(stripTerminalControls(whole));
+    }
+  });
+
   it('the real chunk boundaries the sandbox delivered', () => {
     expect(streamed(FX.vitestColored.chunks)).toBe(stripTerminalControls(FX.vitestColored.chunks.join('')));
   });

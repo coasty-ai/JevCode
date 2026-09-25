@@ -143,10 +143,43 @@ export function cleanCommandStreams(exec: { stdout: string; stderr: string; byte
 /** Longest sequence ever held back across chunks; a longer open control string is discarded up to its end. */
 export const STREAM_HOLD_MAX = 4096;
 
-// a sequence that has started but not finished; tested on the text from the LAST introducer on, so no body holds ESC
-const OPEN_RE = /^(?:\u001b(?:\[[0-?]*[ -/]*|\][^\u0007\u009c\n]*|[PX^_][^\u009c\n]*|[NO]|[ -/]*)|\u009b[0-?]*[ -/]*|\u009d[^\u0007\u009c\n]*|[\u0090\u0098\u009e\u009f][^\u009c\n]*)$/;
+// A sequence whose match could still change with more text, tested (sticky, through to the end of the text) at an
+// introducer the whole-text scan reaches. ESC_SEQ_RE's alternatives, each with what is still to come:
+//   ESC [ params intermediates    the final byte          ESC ] body [ESC]           a BEL, U+009C, or the `\` of ST
+//   ESC P|X|^|_ body [ESC]        U+009C or the `\` of ST  ESC N|O                    SS2/SS3's byte
+//   ESC intermediates*            a lone ESC, nF's final  U+009B [params+ inter*]    8-bit CSI's parameter and final
+//   U+009D body                   its BEL / U+009C        U+0090 U+0098 U+009E U+009F body   its U+009C
+// An ESC or a line break inside a body ends it, so an OSC/DCS body is open only while it holds neither.
+const OPEN_Y = /(?:\u001b(?:\[[0-?]*[ -/]*|\][^\u0007\u001b\u009c\n]*\u001b?|[PX^_][^\u001b\u009c\n]*\u001b?|[NO]|[ -/]*)|\u009b(?:[0-?]+[ -/]*)?|\u009d[^\u0007\u001b\u009c\n]*|[\u0090\u0098\u009e\u009f][^\u001b\u009c\n]*)$/y;
+/** ESC_SEQ_RE, sticky: the finished sequence (if any) at one introducer, so an introducer inside its body is skipped */
+const SEQ_Y = new RegExp(ESC_SEQ_RE.source, 'y');
 const INTRODUCER_RE = /[\u001b\u009b\u009d\u0090\u0098\u009e\u009f]/g;
 const OPEN_STRING_RE = /^\u001b[\]PX^_]/;
+
+/**
+ * Where the text's open sequence starts: the EARLIEST open introducer the whole-text scan reaches, walking them in
+ * order and skipping each finished sequence whole (an introducer inside its body starts nothing). Holding from the
+ * last introducer instead cut a C1 introducer out of an open 8-bit OSC's body (`U+009D … U+0090 [[`), and the OSC's
+ * body then showed as text once its BEL arrived. `discard`: an open OSC/DCS longer than STREAM_HOLD_MAX. Pure.
+ */
+function openSequenceStart(text: string): { at: number; discard: boolean } | null {
+  INTRODUCER_RE.lastIndex = 0;
+  for (let m = INTRODUCER_RE.exec(text); m !== null; m = INTRODUCER_RE.exec(text)) {
+    const i = m.index;
+    OPEN_Y.lastIndex = i;
+    if (OPEN_Y.test(text)) {
+      if (text.length - i <= STREAM_HOLD_MAX) return { at: i, discard: false };
+      // an OSC / DCS longer than the hold (an OSC 52 clipboard payload): dropped, and the rest of it as it arrives
+      if (OPEN_STRING_RE.test(text.slice(i, i + 2))) return { at: i, discard: true };
+      // anything else that long is not a sequence a terminal would still be waiting on: it is sanitised as text
+      continue;
+    }
+    SEQ_Y.lastIndex = i;
+    const seq = SEQ_Y.exec(text);
+    if (seq !== null) INTRODUCER_RE.lastIndex = i + Math.max(1, seq[0].length);
+  }
+  return null;
+}
 
 export interface TerminalStreamSanitizer {
   /** the display-safe text of `chunk`, minus a trailing sequence that is still open (held for the next chunk) */
@@ -157,8 +190,9 @@ export interface TerminalStreamSanitizer {
 
 /**
  * `stripTerminalControls` for a stream that arrives in chunks: `push(a) + push(b) + flush()` equals
- * `stripTerminalControls(a + b)` for every split, because a sequence cut by a chunk boundary (`ESC[3` | `3m✓`) is
- * held instead of being half-stripped. Memory is bounded by STREAM_HOLD_MAX: an open OSC/DCS string longer than that
+ * `stripTerminalControls(a + b)` for every split, 7-bit and 8-bit (C1) forms alike, because a sequence cut by a chunk
+ * boundary (`ESC[3` | `3m✓`) is held — from its introducer, with any introducer inside its body — instead of being
+ * half-stripped. Memory is bounded by STREAM_HOLD_MAX, and so is the equality: an open OSC/DCS string longer than that
  * is discarded and the rest of it is dropped as it arrives, up to its terminator or the end of its line.
  * One instance per stream (stdout and stderr each), reset per command.
  */
@@ -178,19 +212,11 @@ export function createTerminalStreamSanitizer(): TerminalStreamSanitizer {
       }
       text = held + text;
       held = '';
-      let last = -1;
-      for (const m of text.matchAll(INTRODUCER_RE)) last = m.index;
-      if (last >= 0 && OPEN_RE.test(text.slice(last))) {
-        const tail = text.slice(last);
-        if (tail.length <= STREAM_HOLD_MAX) {
-          held = tail;
-          text = text.slice(0, last);
-        } else if (OPEN_STRING_RE.test(tail)) {
-          // an OSC / DCS longer than the hold (an OSC 52 clipboard payload): drop it and the rest of it as it arrives
-          discarding = true;
-          text = text.slice(0, last);
-        }
-        // anything else that long is not a sequence a terminal would still be waiting on: it is sanitised as text
+      const open = openSequenceStart(text);
+      if (open !== null) {
+        if (open.discard) discarding = true;
+        else held = text.slice(open.at);
+        text = text.slice(0, open.at);
       }
       return stripTerminalControls(text);
     },
