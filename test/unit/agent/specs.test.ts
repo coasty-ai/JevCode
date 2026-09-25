@@ -16,7 +16,12 @@ describe('tool specs', () => {
 
   it('carries the exact descriptions and bounds of §4.2', () => {
     expect(TOOL_SPECS.write_file.description).toBe('Create a file or replace its whole content. Prefer edit_file for changes to an existing file.');
-    expect(TOOL_SPECS.glob.description).toBe('List workspace files whose path matches a glob pattern (`**`, `*`, `?`, `{a,b}`).');
+    expect(TOOL_SPECS.glob.description).toBe('List workspace files whose path matches a glob pattern (`**`, `*`, `?`, `{a,b}`); a directory name lists the files under it. Binary files and files over 1 MiB are listed with a tag.');
+    // the JS fallback (no rg on the sandbox PATH) is not ripgrep, and says so; file tools do not expand $TMPDIR
+    expect(TOOL_SPECS.grep.description).toBe(
+      'Search file contents with a regular expression (ripgrep syntax when rg is installed, otherwise JavaScript; a leading (?i) is honoured). Returns `path:line: text` lines. Searches only files the workspace lists (no secrets, no ignored or binary files; files over 1 MiB are named, not searched).',
+    );
+    expect(TOOL_SPECS.bash.description.endsWith('Use $TMPDIR for scratch files (from bash; file tools take workspace paths).')).toBe(true);
     const bash = TOOL_SPECS.bash.inputSchema['properties'] as Record<string, JsonObject>;
     expect(bash['timeout_ms']).toEqual({ type: 'integer', minimum: 1000, maximum: 600000, description: 'Timeout in milliseconds. Default 120000.' });
     expect(bash['description']!['maxLength']).toBe(80);

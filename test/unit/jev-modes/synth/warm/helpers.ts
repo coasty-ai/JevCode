@@ -19,10 +19,11 @@ export const havePython = spawnSync('python3', ['-c', 'import sys; raise SystemE
 export const havePytest = havePython && spawnSync('python3', ['-c', 'import pytest'], { encoding: 'utf8', timeout: 20_000 }).status === 0;
 
 /**
- * The sandbox scrubs the environment down to PATH/LANG/LC_ALL/TERM and remaps HOME, so a
- * `pip install --user` pytest is not importable inside it. A real workspace carries a `.venv`
+ * The sandbox passes the user's environment minus secrets but remaps HOME, so a `pip install --user`
+ * pytest is importable inside it only through the PYTHONUSERBASE pass-through (`resolvePythonUserBase`
+ * in `src/sandbox/run.ts`), which needs a python3 that answers. A real workspace carries a `.venv`
  * (which `src/sandbox/run.ts` puts on PATH) or a system pytest; here the site directory is handed
- * to both paths through PYTHONPATH so warm and cold are compared under the same environment.
+ * to both paths through PYTHONPATH as well, so warm and cold are compared under the same environment.
  */
 const userSite = havePytest ? (spawnSync('python3', ['-c', 'import os, pytest; print(os.path.dirname(os.path.dirname(pytest.__file__)))'], { encoding: 'utf8', timeout: 20_000 }).stdout ?? '').trim() : '';
 export const PY_ENV: Readonly<Record<string, string>> = userSite === '' ? { PYTHONDONTWRITEBYTECODE: '1' } : { PYTHONDONTWRITEBYTECODE: '1', PYTHONPATH: userSite };

@@ -1,20 +1,58 @@
 /** The read-only tools and their result formats (docs/AGENT-LOOP-DESIGN.md §4.3, §4.6-§4.8, §7.2). */
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+import type { AgentContext } from '../../../src/core/types.js';
 import { syntaxCheck } from '../../../src/agent/tools/check.js';
 import { bashStatusLine, renderBash } from '../../../src/agent/tools/format.js';
-import { parseAgentOutputRef, runReadFile, type ReadHashes } from '../../../src/agent/tools/read.js';
-import { createRgProbe, globMatches, globToRegExp, runGlob, runGrep } from '../../../src/agent/tools/search.js';
+import { NOT_UTF8_NOTE, parseAgentOutputRef, runReadFile, type ReadHashes } from '../../../src/agent/tools/read.js';
+import { RG_OUTPUT_CAP_LINE, SEARCH_VARIABLE_PATH_ERROR, WALK_CAP_LINE, compileGrepPattern, createRgProbe, globMatches, globToRegExp, runGlob, runGrep } from '../../../src/agent/tools/search.js';
 import { runReadonlyBash } from '../../../src/agent/tools/shell.js';
-import { rootNameHint } from '../../../src/agent/tools/result.js';
+import { VARIABLE_PATH_ERROR, rootNameHint } from '../../../src/agent/tools/result.js';
 import { planOf, todoWrite } from '../../../src/agent/tools/todo.js';
+import { AGENT_GREP_PARALLEL_READS } from '../../../src/agent/limits.js';
+import { MAX_CANDIDATE_BYTES } from '../../../src/workspace/candidates.js';
+import { createWorkspace, listSkipped } from '../../../src/workspace/files.js';
+import { WALK_SKIP_DIRS } from '../../../src/workspace/skip-dirs.js';
+import { tempWs, write, type TempWs } from '../workspace/helpers.js';
 import { createAgentContext, execResult } from './helpers.js';
 
 const hashes = (): ReadHashes => new Map();
 const noRg = async (): Promise<boolean> => false;
 const withRg = async (): Promise<boolean> => true;
+
+let temps: TempWs[] = [];
+afterEach(() => {
+  for (const t of temps) t.cleanup();
+  temps = [];
+});
+
+/** A context over a REAL workspace (createWorkspace on a temp dir, no git), for what only the real listing knows: skipped files, the walk cap. */
+async function realContext(files: Record<string, string | Buffer>, o: { maxListEntries?: number } = {}): Promise<AgentContext> {
+  const t = tempWs('jev-tools-');
+  temps.push(t);
+  for (const [rel, content] of Object.entries(files)) {
+    if (typeof content === 'string') write(t.ws, rel, content);
+    else {
+      mkdirSync(join(t.ws, rel, '..'), { recursive: true });
+      writeFileSync(join(t.ws, rel), content);
+    }
+  }
+  const workspace = await createWorkspace(t.ws, t.runDir, { sandbox: t.sandbox, secretPaths: [], redact: (s) => s, ...o });
+  return { ...createAgentContext({ root: t.ws }), workspace, sandbox: t.sandbox };
+}
+
+/** A fake-workspace context whose root is a real directory holding `bytes` on disk (the raw-encoding checks read it). */
+function onDisk(bytes: Record<string, Buffer>): ReturnType<typeof createAgentContext> {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'jevcode-enc-')));
+  const files: Record<string, string> = {};
+  for (const [rel, b] of Object.entries(bytes)) {
+    writeFileSync(join(root, rel), b);
+    files[rel] = b.toString('utf8');
+  }
+  return createAgentContext({ root, files });
+}
 
 describe('read_file', () => {
   const lines = Array.from({ length: 30 }, (_v, i) => `line ${i + 1}`).join('\n');
@@ -87,6 +125,33 @@ describe('read_file', () => {
     expect(r.readPaths).toEqual(['a.txt', 'b.txt']);
     expect([...h.keys()]).toEqual(['a.txt', 'b.txt']);
   });
+
+  it('refuses a path that asks for variable expansion: only bash expands $TMPDIR (a live run left a literal `$TMPDIR/` in the repo)', async () => {
+    const ctx = createAgentContext({ files: { 'routes/$slug.tsx': 'x\n' } });
+    for (const path of ['$TMPDIR/x', '${HOME}/a.txt', 'src/${name}.ts']) {
+      const r = await runReadFile(ctx, { path }, undefined, hashes());
+      expect(r).toMatchObject({ ok: false, text: VARIABLE_PATH_ERROR });
+    }
+    expect(VARIABLE_PATH_ERROR).toBe(`ERROR: file tools take workspace paths and do not expand variables such as $TMPDIR; create scratch files with bash (e.g. cat > "$TMPDIR/x" <<'EOF')`);
+    // a `$` inside an ordinary name (a Remix / TanStack route) is a file name like any other
+    expect((await runReadFile(ctx, { path: 'routes/$slug.tsx' }, undefined, hashes())).ok).toBe(true);
+    expect(ctx.fs.reads).toEqual(['routes/$slug.tsx']);
+  });
+
+  it('labels a page of a file that is not UTF-8, and names a UTF-16 file instead of calling it binary', async () => {
+    const latin1 = Buffer.from('caf\xe9 = 1\nna\xefve = 2\n', 'latin1');
+    const utf16 = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from('hello\n', 'utf16le')]);
+    const ctx = onDisk({ 'legacy.py': latin1, 'wide.txt': utf16, 'ok.txt': Buffer.from('café � literal\n', 'utf8'), 'bin.dat': Buffer.from([0x41, 0, 0x42]) });
+    const page = await runReadFile(ctx, { path: 'legacy.py' }, undefined, hashes());
+    expect(page.ok).toBe(true);
+    expect(page.text.split('\n')[0]).toBe(`legacy.py (lines 1-2 of 2) ${NOT_UTF8_NOTE}`);
+    expect(NOT_UTF8_NOTE).toBe('(not UTF-8: bytes that are not valid UTF-8 show as �; edit_file and write_file refuse this file)');
+    expect(page.text).toContain('     1\tcaf� = 1');
+    expect(await runReadFile(ctx, { path: 'wide.txt' }, undefined, hashes())).toMatchObject({ ok: false, text: 'ERROR: wide.txt is UTF-16 text; not shown — convert it with bash (iconv -f UTF-16 -t UTF-8)', summary: 'read_file wide.txt (UTF-16)' });
+    // valid UTF-8 that happens to hold U+FFFD reads plainly; a binary stays binary
+    expect((await runReadFile(ctx, { path: 'ok.txt' }, undefined, hashes())).text.split('\n')[0]).toBe('ok.txt (lines 1-1 of 1)');
+    expect((await runReadFile(ctx, { path: 'bin.dat' }, undefined, hashes())).text).toBe('ERROR: bin.dat is binary');
+  });
 });
 
 describe('grep', () => {
@@ -114,7 +179,12 @@ describe('grep', () => {
       sandbox: (cmd) => (cmd.startsWith('rg ') ? { exitCode: 0, stdout: 'src/a.ts\u00001:const parseX = 1;\n.env\u00001:TOKEN=parseX\n./docs/x.md\u00001:parseX in docs\n--\nsrc/a.ts\u00002-context line\n' } : { stdout: '' }),
     });
     const r = await runGrep(ctx, { pattern: "it's", glob: '*.ts', case_insensitive: true, context: 1 }, withRg);
-    expect(ctx.sb.commands[0]).toBe("rg --null --line-number --no-heading --color never -i -C 1 --glob '*.ts' -e 'it'\\''s'");
+    // --no-config: a user's RIPGREP_CONFIG_PATH cannot change the answer; --hidden with .git and the skipped directories
+    // excluded LAST (a later glob wins in rg): the listing offers .github/ and .eslintrc.js; a 500-column preview keeps a
+    // minified line from filling the cap
+    const skipGlobs = [...WALK_SKIP_DIRS].filter((n) => n !== '.git').map((n) => `--glob '!${n}/'`).join(' ');
+    expect(ctx.sb.commands[0]).toBe(`rg --no-config --null --line-number --no-heading --color never --hidden --max-columns 500 --max-columns-preview -i -C 1 --glob '*.ts' --glob '!.git' ${skipGlobs} --glob '!*.egg-info/' -e 'it'\\''s'`);
+    expect(ctx.sb.commands[0]).toContain("--glob '!.git' --glob '!node_modules/' --glob '!.venv/'");
     expect(r.text).toBe('2 matches in 2 files (showing 2)\nsrc/a.ts:1: const parseX = 1;\ndocs/x.md:1: parseX in docs\nsrc/a.ts-2- context line');
     expect(r.text).not.toContain('.env');
   });
@@ -163,6 +233,117 @@ describe('grep', () => {
     expect(await probe(resumed)).toBe(true);
     expect(resumed.sb.commands).toEqual(['rg --version']);
   });
+
+  it('without rg, scans every listed file: a symbol in file 2,501 of 2,502 is found (the 2,000-file cap answered `0 matches`)', async () => {
+    const files: Record<string, string> = {};
+    for (let i = 0; i < 2502; i += 1) files[`pkg/m${String(i).padStart(4, '0')}.py`] = `x_${i} = ${i}\n`;
+    files['pkg/m2500.py'] = 'def needleFunction():\n    return 1\n';
+    const ctx = createAgentContext({ files });
+    let inFlight = 0;
+    let peak = 0;
+    const read = ctx.fs.read.bind(ctx.fs);
+    ctx.fs.read = async (path, max) => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await Promise.resolve();
+      try {
+        return await read(path, max);
+      } finally {
+        inFlight -= 1;
+      }
+    };
+    const r = await runGrep(ctx, { pattern: 'def needleFunction' }, noRg);
+    expect(r.text).toBe('1 matches in 1 files (showing 1)\npkg/m2500.py:1: def needleFunction():');
+    expect(ctx.fs.reads).toHaveLength(2502);
+    expect(peak).toBe(AGENT_GREP_PARALLEL_READS);
+  });
+
+  it('a scan stopped by its 20 s budget says how far it got — also at 0 matches, which must never read as "absent"', async () => {
+    const ctx = createAgentContext({ files: { 'a.txt': 'nothing\n', 'b.txt': 'nothing\n', 'c.txt': 'nothing\n' } });
+    // the first reading fixes the deadline (15 s + 20 s); the first file is taken at 30 s, and every later check is past it
+    let t = 0;
+    ctx.now = () => (t += 15_000);
+    const r = await runGrep(ctx, { pattern: 'needle' }, noRg);
+    expect(r).toMatchObject({ ok: true, text: '0 matches\n[searched 1 of 3 files in 20 s; narrow with path or glob]' });
+    // the run's own stop ends the scan the same way
+    const stopped = createAgentContext({ files: { 'a.txt': 'needle\n', 'b.txt': 'needle\n' } });
+    stopped.abort(new Error('human_pause'));
+    expect((await runGrep(stopped, { pattern: 'needle' }, noRg)).text).toBe('0 matches\n[searched 0 of 2 files in 20 s; narrow with path or glob]');
+  });
+
+  it('without rg, a leading (?i) is the i flag and a pattern the u flag rejects is tried without it', async () => {
+    const ctx = createAgentContext({ files: { 'a.ts': 'const NEEDLE = 1;\nreturn "x";\n' } });
+    expect((await runGrep(ctx, { pattern: '(?i)needle' }, noRg)).text).toBe('1 matches in 1 files (showing 1)\na.ts:1: const NEEDLE = 1;');
+    // `\"` is an identity escape: 'Invalid escape' under the u flag, a plain quote without it
+    expect((await runGrep(ctx, { pattern: 'return \\"x\\"' }, noRg)).text).toBe('1 matches in 1 files (showing 1)\na.ts:2: return "x";');
+    expect(compileGrepPattern('(?is)a.b', false)).toEqual(/a.b/isu);
+    expect(compileGrepPattern('(', false)).toMatchObject({ error: expect.stringMatching(/Unterminated group/) });
+    // a CRLF file: `$` anchors at the end of the line, and the shown text carries no \r
+    const crlf = createAgentContext({ files: { 'w.bat': 'echo one\r\necho two\r\n' } });
+    expect((await runGrep(crlf, { pattern: 'two$' }, noRg)).text).toBe('1 matches in 1 files (showing 1)\nw.bat:2: echo two');
+  });
+
+  it('names the files over 1 MiB it did not search, under the searched path and glob (both executors)', async () => {
+    const big = `${'// filler line\n'.repeat(Math.ceil((MAX_CANDIDATE_BYTES + 1024) / 15))}export function needleFunction() {}\n`;
+    const ctx = await realContext({ 'src/small.ts': 'const a = 1;\n', 'src/bundle.js': big, 'vendor/other.js': big, 'assets/logo.png': Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 1]) });
+    const skipped = await listSkipped(ctx.workspace);
+    expect(skipped).toEqual({ walkCapped: false, files: [{ path: 'assets/logo.png', bytes: 6, reason: 'binary' }, { path: 'src/bundle.js', bytes: Buffer.byteLength(big), reason: 'large' }, { path: 'vendor/other.js', bytes: Buffer.byteLength(big), reason: 'large' }] });
+    const js = await runGrep(ctx, { pattern: 'needleFunction' }, noRg);
+    expect(js.text).toBe('0 matches\n[2 files over 1 MiB were not searched: src/bundle.js, vendor/other.js; search them with bash, e.g. grep -n]');
+    expect((await runGrep(ctx, { pattern: 'needleFunction', path: 'src' }, noRg)).text).toBe('0 matches\n[1 file over 1 MiB was not searched: src/bundle.js; search it with bash, e.g. grep -n]');
+    // a glob that excludes them, and a path that holds none, say nothing about them
+    expect((await runGrep(ctx, { pattern: 'const', glob: '*.ts' }, noRg)).text).toBe('1 matches in 1 files (showing 1)\nsrc/small.ts:1: const a = 1;');
+    const rg = { ...ctx, sandbox: { ...ctx.sandbox, run: async () => execResult({ exitCode: 1 }) } };
+    expect((await runGrep(rg, { pattern: 'needleFunction', glob: '*.js' }, withRg)).text).toBe('0 matches\n[2 files over 1 MiB were not searched: src/bundle.js, vendor/other.js; search them with bash, e.g. grep -n]');
+  });
+
+  it('an rg that fails without a regex error and finds nothing (an older rg that rejects a flag) falls back to the JavaScript scan', async () => {
+    const ctx = createAgentContext({ files, sandbox: () => ({ exitCode: 2, stderr: "error: Found argument '--max-columns-preview' which wasn't expected\n" }) });
+    expect((await runGrep(ctx, { pattern: 'parseX', path: 'docs' }, withRg)).text).toBe('1 matches in 1 files (showing 1)\ndocs/x.md:1: parseX in docs');
+  });
+
+  it('rg skips the dependency and cache dirs no listed file is under, and keeps a tracked dist/ or egg-info searchable', async () => {
+    const tracked = { 'src/a.ts': 'x\n', 'dist/bundle.js': 'x\n', 'lib/pkg.egg-info/PKG-INFO': 'x\n', 'scripts/build': 'x\n' };
+    const ctx = createAgentContext({ files: tracked, sandbox: () => ({ exitCode: 1 }) });
+    await runGrep(ctx, { pattern: 'x' }, withRg);
+    const cmd = ctx.sb.commands[0]!;
+    for (const g of ['!.venv/', '!node_modules/', '!.tox/', '!.next/', '!.cache/', '!build/']) expect(cmd).toContain(`--glob '${g}'`);
+    // a directory a listed file passes through is searched; `!build/` (trailing slash) never hides the file scripts/build
+    expect(cmd).not.toContain("'!dist/'");
+    expect(cmd).not.toContain("'!*.egg-info/'");
+  });
+
+  it('an rg output cap filled by unlisted files (a .venv outside git) never answers a bare `0 matches`', async () => {
+    const venv = Array.from({ length: 50 }, (_v, i) => `.venv/lib/pkg${i}/main.py\u00001:def main():`).join('\n');
+    const ctx = createAgentContext({ files, sandbox: () => ({ exitCode: 0, stdout: `${venv}\n`, truncated: true }) });
+    const r = await runGrep(ctx, { pattern: 'def main' }, withRg);
+    expect(r.text).toBe(`0 matches\n${RG_OUTPUT_CAP_LINE}`);
+  });
+
+  it('rg exit 2 from files it could not open (the macOS read-deny on .env) is an answer, not a reason to re-scan in JS', async () => {
+    const ctx = createAgentContext({ files, sandbox: () => ({ exitCode: 2, stdout: '', stderr: 'rg: .env: Operation not permitted (os error 1)\n' }) });
+    expect((await runGrep(ctx, { pattern: 'nowhere' }, withRg)).text).toBe('0 matches');
+    expect(ctx.fs.reads).toEqual([]);
+    // a LISTED file it could not open is named, never silently absent
+    const listed = createAgentContext({ files, sandbox: () => ({ exitCode: 2, stderr: 'rg: .env: Operation not permitted (os error 1)\nrg: ./src/b.ts: Permission denied (os error 13)\n' }) });
+    expect((await runGrep(listed, { pattern: 'nowhere' }, withRg)).text).toBe('0 matches\n[rg could not read 1 listed file: src/b.ts]');
+    expect(listed.fs.reads).toEqual([]);
+    // a usage error mixed in still falls back
+    const usage = createAgentContext({ files, sandbox: () => ({ exitCode: 2, stderr: "rg: .env: Operation not permitted (os error 1)\nerror: unexpected argument '--max-columns-preview' found\n" }) });
+    expect((await runGrep(usage, { pattern: 'parseX', path: 'docs' }, withRg)).text).toBe('1 matches in 1 files (showing 1)\ndocs/x.md:1: parseX in docs');
+  });
+
+  it('refuses a path a shell would expand ($TMPDIR) instead of answering a silent `0 matches` or `0 files`', async () => {
+    const ctx = createAgentContext({ files });
+    expect(await runGrep(ctx, { pattern: 'parseX', path: '$TMPDIR' }, noRg)).toMatchObject({ ok: false, text: SEARCH_VARIABLE_PATH_ERROR });
+    expect(await runGlob(ctx, { pattern: '*.ts', path: '${HOME}/src' })).toMatchObject({ ok: false, text: SEARCH_VARIABLE_PATH_ERROR });
+    expect(ctx.sb.commands).toEqual([]);
+  });
+
+  it('rg stopped by its timeout says the results are partial, also at 0 matches', async () => {
+    const ctx = createAgentContext({ files, sandbox: () => ({ exitCode: null, killedBy: 'timeout' }) });
+    expect((await runGrep(ctx, { pattern: 'x' }, withRg)).text).toBe('0 matches\n[rg stopped after 20 s, so the results are partial; narrow with path or glob]');
+  });
 });
 
 describe('glob', () => {
@@ -196,6 +377,36 @@ describe('glob', () => {
     // a real directory with the root's name is searched as itself
     const nested = createAgentContext({ root: '/work/pkg', files: { 'pkg/x.ts': '', 'y.ts': '' } });
     expect((await runGlob(nested, { pattern: '*.ts', path: 'pkg' })).text).toBe('1 files\npkg/x.ts');
+  });
+
+  it('lists binary and large files with a tag instead of answering `0 files` (assets/logo.png, a 2.7 MB file)', async () => {
+    const ctx = await realContext({ 'src/a.ts': 'a\n', 'assets/logo.png': Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 1]), 'data/dump.sql': Buffer.alloc(Math.round(2.7 * 1024 * 1024), 0x61) });
+    expect((await runGlob(ctx, { pattern: '**/*.png' })).text).toBe('1 files\nassets/logo.png (binary)');
+    expect((await runGlob(ctx, { pattern: 'dump.sql' })).text).toBe('1 files\ndata/dump.sql (2.7 MB)');
+    expect((await runGlob(ctx, { pattern: '**/*' })).text).toBe('3 files\nassets/logo.png (binary)\ndata/dump.sql (2.7 MB)\nsrc/a.ts');
+  });
+
+  it('a pattern without glob characters that names a directory lists the files under it, and says so', async () => {
+    const ctx = createAgentContext({ files: { 'assets/icons/a.svg': '', 'assets/b.css': '', 'src/assets.ts': '', 'pkg/core/tests/t.py': '', 'pkg/web/tests/u.py': '' } });
+    expect((await runGlob(ctx, { pattern: 'assets' })).text).toBe('assets is a directory; listing assets/**\n2 files\nassets/b.css\nassets/icons/a.svg');
+    expect((await runGlob(ctx, { pattern: './assets/' })).text.split('\n')[0]).toBe('assets is a directory; listing assets/**');
+    expect((await runGlob(ctx, { pattern: 'icons', path: 'assets' })).text).toBe('icons is a directory; listing icons/**\n1 files\nassets/icons/a.svg');
+    expect((await runGlob(ctx, { pattern: 'tests' })).text).toBe('tests names directories below the top; listing **/tests/**\n2 files\npkg/core/tests/t.py\npkg/web/tests/u.py');
+    // a name that matches a file is the file; a glob stays a glob; nothing of that name stays `0 files`
+    expect((await runGlob(ctx, { pattern: 'assets.ts' })).text).toBe('1 files\nsrc/assets.ts');
+    expect((await runGlob(ctx, { pattern: 'asset*' })).text).toBe('1 files\nsrc/assets.ts');
+    expect((await runGlob(ctx, { pattern: 'nowhere' })).text).toBe('0 files');
+  });
+
+  it('both tools say when the workspace listing stopped at its cap', async () => {
+    const files: Record<string, string> = {};
+    for (let i = 0; i < 12; i += 1) files[`f${String(i).padStart(2, '0')}.txt`] = 'needle\n';
+    const ctx = await realContext(files, { maxListEntries: 5 });
+    expect((await listSkipped(ctx.workspace)).walkCapped).toBe(true);
+    expect((await runGlob(ctx, { pattern: '*.txt' })).text.split('\n').at(-1)).toBe(WALK_CAP_LINE);
+    expect((await runGrep(ctx, { pattern: 'needle' }, noRg)).text.split('\n').at(-1)).toBe(WALK_CAP_LINE);
+    // a fake workspace (not made by createWorkspace) has nothing skipped
+    expect(await listSkipped(createAgentContext().workspace)).toEqual({ files: [], walkCapped: false });
   });
 });
 

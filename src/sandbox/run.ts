@@ -6,12 +6,18 @@
  * abort whose reason is an AbortError. Output is bounded by a shared byte counter: a head of
  * at most `maxOutputBytes` plus a rolling 16 KB tail per stream, so the final lines (test
  * summaries) survive a flood. Kills always go through the three-pass tree kill.
+ *
+ * The environment is the user's own minus secrets (`buildEnv`), the way the leading coding agents run commands: a
+ * toolchain shim, a proxy or CA setting, `JAVA_HOME` or a `DATABASE_URL` works inside the sandbox as it does in the
+ * user's shell. `HOME` and `TMPDIR` point into the run directory; the user's git identity is copied into that HOME
+ * (`writeGitIdentity`) so a commit a command makes carries the user's name.
  */
 import { createHash } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { mkdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 
@@ -29,7 +35,143 @@ export const DEFAULT_MAX_OUTPUT_BYTES = 200 * 1024;
 const PIPE_DRAIN_GRACE_MS = 1_000;
 /** After SIGKILL, how long to wait for the root's exit before giving up on it. */
 const EXIT_AFTER_KILL_GRACE_MS = 5_000;
-const ENV_ALLOWLIST = ['PATH', 'LANG', 'LC_ALL', 'TERM'] as const;
+
+/** A name that marks its value as a credential (Codex CLI's default policy drops *KEY*, *SECRET*, *TOKEN* the same way). */
+const SECRET_NAME = /KEY|TOKEN|SECRET|PASSW|PASSPHRASE|CREDENTIAL|COOKIE/i;
+/** an `AUTH` name segment (`NODE_AUTH_TOKEN`, `SSH_AUTH_SOCK`, `BASIC_AUTH`); `GIT_AUTHOR_NAME` has none */
+const AUTH_SEGMENT = /(^|_)AUTH(_|$)/i;
+/**
+ * JevCode's own switches, npm's per-script context (`npm_*`, and `INIT_CWD`, the directory jevcode was launched from),
+ * and every `GIT_*`: an inherited `GIT_DIR`, `GIT_WORK_TREE` or `GIT_INDEX_FILE` would point the harness's own sandboxed
+ * git (which sets only GIT_CONFIG_NOSYSTEM / GIT_CONFIG_GLOBAL through `extra`) and the model's commands at another tree.
+ */
+const DROPPED_PREFIX = /^(JEVCODE_|JEV_|npm_|GIT_)/i;
+/** set by the sandbox itself (HOME, TMPDIR, VIRTUAL_ENV), the shell's own bookkeeping, and the per-user XDG dirs HOME's remap moves */
+const DROPPED_NAMES: ReadonlySet<string> = new Set([
+  'INIT_CWD',
+  'VIRTUAL_ENV',
+  'HOME',
+  'TMPDIR',
+  'TMP',
+  'TEMP',
+  'PWD',
+  'OLDPWD',
+  'SHLVL',
+  '_',
+  'XDG_CACHE_HOME',
+  'XDG_DATA_HOME',
+  'XDG_STATE_HOME',
+  'XDG_CONFIG_HOME',
+  'XDG_RUNTIME_DIR',
+]);
+
+/** Does a variable of the harness's environment reach a command? Its name alone decides (see `buildEnv` for the value rule). */
+export function inheritsEnvName(name: string): boolean {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return false;
+  if (SECRET_NAME.test(name) || AUTH_SEGMENT.test(name)) return false;
+  if (DROPPED_PREFIX.test(name) || DROPPED_NAMES.has(name)) return false;
+  return true;
+}
+
+/**
+ * Version-manager homes that live under the real HOME and are read, not written, on an ordinary command: with HOME
+ * remapped (and XDG_* dropped), a rustup / pyenv / rbenv / asdf / mise / volta / nvm / sdkman shim would look for its
+ * home in the run directory and find no toolchain. Each is set only when the user has not set it and the directory
+ * exists. Caches a build WRITES (CARGO_HOME, GOPATH / GOMODCACHE, GRADLE_USER_HOME, ~/.m2, ~/.npm) are never pointed at
+ * the real home: the macOS profile denies writes there, and a fresh cache in the run's HOME works everywhere.
+ */
+const TOOLCHAIN_HOMES: readonly (readonly [string, string])[] = [
+  ['RUSTUP_HOME', '.rustup'],
+  ['PYENV_ROOT', '.pyenv'],
+  ['RBENV_ROOT', '.rbenv'],
+  ['ASDF_DATA_DIR', '.asdf'],
+  ['MISE_DATA_DIR', '.local/share/mise'],
+  ['MISE_CONFIG_DIR', '.config/mise'],
+  ['VOLTA_HOME', '.volta'],
+  ['NVM_DIR', '.nvm'],
+  ['SDKMAN_DIR', '.sdkman'],
+];
+
+function isDirectory(p: string): boolean {
+  try {
+    return statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/** The toolchain homes that exist under `home`, as `[name, path]` (see TOOLCHAIN_HOMES). */
+export function existingToolchainHomes(home: string, exists: (p: string) => boolean = isDirectory): [string, string][] {
+  return TOOLCHAIN_HOMES.map(([name, dir]) => [name, join(home, dir)] as [string, string]).filter(([, p]) => exists(p));
+}
+
+/** The user's git identity from their global config. */
+export interface GitIdentity {
+  name: string | null;
+  email: string | null;
+}
+
+/**
+ * The user's `user.name` / `user.email`, asked of `git config --global` once per process, OUTSIDE the sandbox (3 s
+ * timeout); null when neither is set or git is missing. `probe` is the test seam, as in resolvePythonUserBase.
+ */
+export function resolveGitIdentity(opts: { probe?: () => GitIdentity | null } = {}): GitIdentity | null {
+  const id = (opts.probe ?? defaultGitIdentityProbe)();
+  return id !== null && (id.name !== null || id.email !== null) ? id : null;
+}
+
+/**
+ * `git config --get-regexp` output (`user.name Ada Lovelace` / `user.email ada@example.com`, one per line) as an
+ * identity. A key set twice (an include repeating it) takes its last value, as git itself does.
+ */
+export function parseGitIdentity(stdout: string): GitIdentity {
+  const id: GitIdentity = { name: null, email: null };
+  for (const line of stdout.split('\n')) {
+    const m = /^user\.(name|email)[ \t]+(.*)$/i.exec(line.replace(/\r$/, ''));
+    const v = m?.[2]?.trim() ?? '';
+    if (m === null || v === '') continue;
+    if (m[1]!.toLowerCase() === 'name') id.name = v;
+    else id.email = v;
+  }
+  return id;
+}
+
+let probedGitIdentity: GitIdentity | null | undefined;
+function defaultGitIdentityProbe(): GitIdentity | null {
+  if (probedGitIdentity !== undefined) return probedGitIdentity;
+  try {
+    // ONE git call (it runs on the event loop before the first command, so a slow git costs at most one 3 s timeout);
+    // --includes: with --global git skips include/includeIf by default, and an identity kept in an included file is common
+    const r = spawnSync('git', ['config', '--global', '--includes', '--get-regexp', '^user\\.(name|email)$'], { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] });
+    probedGitIdentity = r.status === 0 && typeof r.stdout === 'string' ? parseGitIdentity(r.stdout) : null;
+  } catch {
+    probedGitIdentity = null;
+  }
+  return probedGitIdentity;
+}
+
+/** A git-config value, quoted so `#`, `;` and surrounding spaces survive. */
+function gitConfigValue(v: string): string {
+  return `"${v.replace(/[\r\n]/g, ' ').replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+/**
+ * `<runHome>/.gitconfig` with the user's identity and nothing else — no aliases, hooks, credential helpers or signing
+ * setup — so `git commit` in a command does not stop at "Author identity unknown". Not the GIT_AUTHOR_* variables: those
+ * would override the `-c user.name=` identity the harness's own commits pass (src/orchestrate/commit.ts). The harness's
+ * git calls run with GIT_CONFIG_GLOBAL=/dev/null and never read this file. A file already there (the run's own `git
+ * config --global` from an earlier sandbox of this run dir) is kept.
+ */
+export function writeGitIdentity(runHome: string, id: GitIdentity): void {
+  const lines = ['# written by jevcode: your git identity, so a commit made by a command carries your name', '[user]'];
+  if (id.name !== null) lines.push(`\tname = ${gitConfigValue(id.name)}`);
+  if (id.email !== null) lines.push(`\temail = ${gitConfigValue(id.email)}`);
+  try {
+    writeFileSync(join(runHome, '.gitconfig'), `${lines.join('\n')}\n`, { flag: 'wx', mode: 0o600 });
+  } catch {
+    /* already there, or the run's HOME is not writable: a command simply has no identity, as before */
+  }
+}
 
 /**
  * Python derives its user site-packages (`pip install --user pytest`) from HOME, and the sandbox remaps HOME, so a
@@ -71,6 +213,10 @@ export interface SandboxInternals {
   killTreeImpl?: typeof killTree;
   ttyPath?: string | null;
   platform?: NodeJS.Platform;
+  /** the git identity copied into the run's HOME (default: `resolveGitIdentity()`, the user's global config) */
+  gitIdentity?: () => GitIdentity | null;
+  /** the real home the toolchain homes are looked up under (default `os.homedir()`) */
+  homeDir?: string;
 }
 
 interface SharedCounter {
@@ -121,12 +267,16 @@ class StreamCollector {
   finish(): string {
     this.head += this.decoder.end();
     if (this.tail.length === 0) return this.head;
-    // Drop a leading partial UTF-8 sequence so the tail decodes cleanly.
+    // The kept tail starts after its first newline, so it never begins mid-line — nor inside an escape sequence whose ESC
+    // was cut off, which no stripper can recognise any more (a 600 KB SGR flood's tail began `m\u001b[39m test 19600
+    // passes`). One long line with no newline to cut at keeps its tail whole, minus a leading partial UTF-8 sequence.
     let start = 0;
-    while (start < this.tail.length && start < 4 && (this.tail[start]! & 0xc0) === 0x80) start++;
-    const tailText = this.tail.subarray(start).toString('utf8');
-    const dropped = this.seen - this.headBytes - this.tail.length;
-    return `${this.head}\n…[output truncated: ${dropped} bytes omitted]…\n${tailText}`;
+    const nl = this.tail.indexOf(0x0a);
+    if (nl >= 0 && nl < this.tail.length - 1) start = nl + 1;
+    else while (start < this.tail.length && start < 4 && (this.tail[start]! & 0xc0) === 0x80) start++;
+    const kept = this.tail.subarray(start);
+    const dropped = this.seen - this.headBytes - kept.length;
+    return `${this.head}\n…[output truncated: ${dropped} bytes omitted]…\n${kept.toString('utf8')}`;
   }
 }
 
@@ -140,11 +290,27 @@ function repoVenv(workspaceRoot: string): string | null {
   }
 }
 
-function buildEnv(runTmp: string, runHome: string, extra: Record<string, string> | undefined, venv: string | null): NodeJS.ProcessEnv {
+/** Would the redactor mask this value? A throwing redactor counts as yes: the variable is dropped, not the command. */
+function masked(redact: (s: string) => string, v: string): boolean {
+  try {
+    return redact(v) !== v;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * A command's environment: the harness's own, minus every variable whose name marks it as a secret or as JevCode's,
+ * npm's or git's context (`inheritsEnvName`) and minus any value the redactor would mask (a key under an unusual
+ * name); then HOME and TMPDIR in the run directory, the PATH fallback, the workspace venv, the Python user base, the
+ * toolchain homes the user has not set, and `extra` last. Values are passed by name, so a password inside a
+ * URL-valued variable such as DATABASE_URL is passed; that is the user's own configuration, as in their shell.
+ */
+function buildEnv(runTmp: string, runHome: string, extra: Record<string, string> | undefined, venv: string | null, redact: (s: string) => string, toolchainHomes: readonly (readonly [string, string])[]): NodeJS.ProcessEnv {
   const env: Record<string, string> = {};
-  for (const k of ENV_ALLOWLIST) {
-    const v = process.env[k];
-    if (typeof v === 'string') env[k] = v;
+  for (const [k, v] of Object.entries(process.env)) {
+    if (typeof v !== 'string' || !inheritsEnvName(k) || masked(redact, v)) continue;
+    env[k] = v;
   }
   if (!env['PATH']) env['PATH'] = DEFAULT_PATH;
   if (venv !== null) {
@@ -157,6 +323,7 @@ function buildEnv(runTmp: string, runHome: string, extra: Record<string, string>
   // a user-site pytest stays importable although HOME is remapped (see resolvePythonUserBase)
   const userBase = resolvePythonUserBase();
   if (userBase !== null) env['PYTHONUSERBASE'] = userBase;
+  for (const [name, path] of toolchainHomes) if (env[name] === undefined) env[name] = path;
   if (extra) for (const [k, v] of Object.entries(extra)) if (typeof v === 'string' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(k)) env[k] = v;
   return env;
 }
@@ -208,6 +375,18 @@ export function createSandbox(opts: SandboxCreateOptions, internals: SandboxInte
   }
   const runTmp = join(runDir, 'tmp');
   const runHome = join(runDir, 'home');
+  /**
+   * The run's HOME gets the user's git identity and the toolchain homes are looked up once, before the first command of
+   * this sandbox — not in the constructor, so building an engine that never runs a command spawns no `git config`.
+   */
+  let toolchainHomes: [string, string][] | null = null;
+  const homeFor = (): [string, string][] => {
+    if (toolchainHomes !== null) return toolchainHomes;
+    const identity = (internals.gitIdentity ?? resolveGitIdentity)();
+    if (identity !== null) writeGitIdentity(runHome, identity);
+    toolchainHomes = existingToolchainHomes(internals.homeDir ?? homedir());
+    return toolchainHomes;
+  };
 
   const level = detectSandboxLevel(opts.profile, internals.platform ?? process.platform);
   // TUI-DESIGN §12.7 / §15 item 18: the probe's git dirs and the resolved jevcode config dirs, forwarded
@@ -291,7 +470,7 @@ export function createSandbox(opts: SandboxCreateOptions, internals: SandboxInte
       return finish(killedByFor(o.signal.reason, o.abortKilledBy), null, null, '', '', { bytesSeen: 0, headBytes: 0, truncated: false }, [], started);
     }
 
-    const env = buildEnv(runTmp, runHome, o.env, repoVenv(workspaceRoot));
+    const env = buildEnv(runTmp, runHome, o.env, repoVenv(workspaceRoot), redact, homeFor());
     const [file, args] = profilePath ? [SANDBOX_EXEC, ['-f', profilePath, '/bin/sh', '-c', command]] : ['/bin/sh', ['-c', command]];
 
     return new Promise<ExecResult>((resolvePromise, rejectPromise) => {

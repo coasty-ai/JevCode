@@ -73,6 +73,39 @@ describe('applyEditFile', () => {
     expect(readdirSync(t.ws)).toEqual(['a.txt']);
   });
 
+  it('a Latin-1 file is refused, and its bytes stay exactly as they were (a one-line edit used to turn every accented byte into EF BF BD)', async () => {
+    const t = tempWs();
+    temps.push(t);
+    const abs = join(t.ws, 'legacy.py');
+    const bytes = Buffer.from('# caf\xe9 cr\xe8me\nx = 1\nname = "na\xefve \xfcber"\n', 'latin1');
+    writeFileSync(abs, bytes);
+    const err = await applyEditFile(abs, { path: 'legacy.py', old: 'x = 1', new: 'x = 2' }).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(JevCodeError);
+    expect(err).toMatchObject({ code: 'edit', message: 'EditError: legacy.py is not UTF-8 text (probably Latin-1/Windows-1252); editing it would corrupt it — use a byte-safe command (e.g. iconv to convert it first)' });
+    expect(readFileSync(abs).equals(bytes)).toBe(true);
+    expect(readdirSync(t.ws)).toEqual(['legacy.py']);
+  });
+
+  it('a UTF-16 or binary file is refused untouched; a UTF-8 file with accents and a BOM is edited byte-exactly elsewhere', async () => {
+    const t = tempWs();
+    temps.push(t);
+    const wide = join(t.ws, 'wide.txt');
+    const wideBytes = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from('x = 1\n', 'utf16le')]);
+    writeFileSync(wide, wideBytes);
+    await expect(applyEditFile(wide, { path: 'wide.txt', old: 'x', new: 'y' })).rejects.toThrow(/^EditError: wide\.txt is UTF-16 text/);
+    expect(readFileSync(wide).equals(wideBytes)).toBe(true);
+    const bin = join(t.ws, 'blob.bin');
+    writeFileSync(bin, Buffer.from([0x61, 0x00, 0x62]));
+    await expect(applyEditFile(bin, { path: 'blob.bin', old: 'a', new: 'c' })).rejects.toThrow('EditError: blob.bin is binary');
+    const utf8 = join(t.ws, 'ok.py');
+    writeFileSync(utf8, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('# café\nx = 1\n', 'utf8')]));
+    await applyEditFile(utf8, { path: 'ok.py', old: 'x = 1', new: 'x = 2' });
+    expect(readFileSync(utf8).equals(Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('# café\nx = 2\n', 'utf8')]))).toBe(true);
+  });
+
   it('missing file -> typed edit error, not an fs exception', async () => {
     const t = tempWs();
     temps.push(t);

@@ -61,7 +61,7 @@ export const TOOL_SPECS: Readonly<Record<AgentToolName, ToolSpec>> = {
   bash: {
     name: 'bash',
     description:
-      'Run a non-interactive shell command (sh -c, a fresh shell each time; use workdir instead of cd). Default timeout 120 s, maximum 600 s. No editors, pagers, prompts or servers that never exit. Use $TMPDIR for scratch files.',
+      'Run a non-interactive shell command (sh -c, a fresh shell each time; use workdir instead of cd). Default timeout 120 s, maximum 600 s. No editors, pagers, prompts or servers that never exit. Use $TMPDIR for scratch files (from bash; file tools take workspace paths).',
     inputSchema: object(['command'], {
       command: str('The shell command.'),
       workdir: str('Workspace-relative directory to run in. Default: the workspace root.'),
@@ -72,7 +72,7 @@ export const TOOL_SPECS: Readonly<Record<AgentToolName, ToolSpec>> = {
   grep: {
     name: 'grep',
     description:
-      'Search file contents with a regular expression (ripgrep syntax). Returns `path:line: text` lines. Searches only files the workspace lists (no secrets, no ignored or binary files).',
+      'Search file contents with a regular expression (ripgrep syntax when rg is installed, otherwise JavaScript; a leading (?i) is honoured). Returns `path:line: text` lines. Searches only files the workspace lists (no secrets, no ignored or binary files; files over 1 MiB are named, not searched).',
     inputSchema: object(['pattern'], {
       pattern: str('Regular expression.'),
       path: str('Directory or file to search. Default: the workspace root.'),
@@ -84,7 +84,7 @@ export const TOOL_SPECS: Readonly<Record<AgentToolName, ToolSpec>> = {
   },
   glob: {
     name: 'glob',
-    description: 'List workspace files whose path matches a glob pattern (`**`, `*`, `?`, `{a,b}`).',
+    description: 'List workspace files whose path matches a glob pattern (`**`, `*`, `?`, `{a,b}`); a directory name lists the files under it. Binary files and files over 1 MiB are listed with a tag.',
     inputSchema: object(['pattern'], {
       pattern: str('Glob, e.g. "src/**/*.test.ts".'),
       path: str('Directory to search in. Default: the workspace root.'),

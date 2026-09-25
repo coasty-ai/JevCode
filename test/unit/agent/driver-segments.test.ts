@@ -3,6 +3,9 @@
  * steps (in batches of 8), one mutating call per act step, the queue re-derived from the transcript (so a discarded
  * step's call is simply issued again), steers, and the act mappings of edit_file, write_file and bash.
  */
+import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { AgentNext, ExecResult, SandboxRunOptions } from '../../../src/core/types.js';
 import { createAgentDriver } from '../../../src/agent/index.js';
@@ -245,6 +248,46 @@ describe('act mappings', () => {
       'ERROR: content contains a placeholder ("// ... rest of the file unchanged"); write the complete file',
       'ERROR: gone.py: no such file (use write_file to create it)',
     ]);
+  });
+
+  it('a $TMPDIR path, and an edit or overwrite of a file that is not UTF-8, are rejected before anything runs', async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'jevcode-seg-enc-')));
+    const latin1 = Buffer.from('# caf\xe9\nx = 1\nname = "na\xefve"\n', 'latin1');
+    const utf16 = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from('x = 1\n', 'utf16le')]);
+    writeFileSync(join(root, 'legacy.py'), latin1);
+    writeFileSync(join(root, 'wide.txt'), utf16);
+    const ctx = createAgentContext({
+      root,
+      files: { 'legacy.py': latin1.toString('utf8'), 'wide.txt': utf16.toString('utf8') },
+      turns: [
+        {
+          toolCalls: [
+            call('write_file', { path: '$TMPDIR/probe.test.tsx', content: 'x\n' }),
+            call('edit_file', { path: '${TMPDIR}/a.txt', old_string: 'a', new_string: 'b' }),
+            call('edit_file', { path: 'legacy.py', old_string: 'x = 1', new_string: 'x = 2' }),
+            call('write_file', { path: 'legacy.py', content: 'x = 2\n' }),
+            call('edit_file', { path: 'wide.txt', old_string: 'x = 1', new_string: 'x = 2' }),
+          ],
+        },
+        { text: 'ok' },
+      ],
+      testCommand: null,
+    });
+    const d = createAgentDriver();
+    expect((await step(d, ctx)).next.kind).toBe('observe');
+    await step(d, ctx);
+    const results = messagesOf(ctx, 1).at(-1)!.content.map((b) => (b.type === 'tool_result' ? b.content : ''));
+    const variable = `ERROR: file tools take workspace paths and do not expand variables such as $TMPDIR; create scratch files with bash (e.g. cat > "$TMPDIR/x" <<'EOF')`;
+    const notUtf8 = 'ERROR: legacy.py is not UTF-8 text (probably Latin-1/Windows-1252); editing it would corrupt it — use a byte-safe command (e.g. iconv to convert it first)';
+    expect(results).toEqual([variable, variable, notUtf8, notUtf8, 'ERROR: wide.txt is UTF-16 text; editing it as UTF-8 would corrupt it — use a byte-safe command (e.g. iconv -f UTF-16 -t UTF-8 to convert it first)']);
+    // nothing was written: the fake's files are what they were, and the bytes on disk are untouched
+    expect([...ctx.fs.files.keys()].sort()).toEqual(['legacy.py', 'wide.txt']);
+    expect(readFileSync(join(root, 'legacy.py')).equals(latin1)).toBe(true);
+    // a NEW file needs no encoding check, and a UTF-8 file is edited as ever
+    const fresh = createAgentContext({ root, files: { 'ok.py': 'x = 1\n' }, turns: [{ toolCalls: [call('write_file', { path: 'new.py', content: 'y\n' }), call('edit_file', { path: 'ok.py', old_string: 'x = 1', new_string: 'x = 2' })] }, { text: 'ok' }], testCommand: null });
+    const f = createAgentDriver();
+    expect([(await step(f, fresh)).next.kind, (await step(f, fresh)).next.kind]).toEqual(['act', 'act']);
+    expect(fresh.fs.files.get('ok.py')).toBe('x = 2\n');
   });
 
   it('notes a stale read, and appends new syntax errors to an edit result', async () => {

@@ -4,14 +4,16 @@
  * Listed once at run start; edit/write/patch outcomes update entries from their changed
  * paths; only a `run` outcome forces a re-list, and even then only paths not already cached
  * are stat'ed and sniffed. Symlinks, binaries (NUL in the first 8 KB), files over 1 MB and
- * secret paths never become candidates.
+ * secret paths never become candidates. Binaries and files over 1 MB stay in the cache as excluded entries with
+ * their `skip` reason, so the agent's `glob` and `grep` can name them (files.ts `listSkipped`) instead of answering
+ * as though they did not exist.
  */
 import { lstat, open, readdir } from 'node:fs/promises';
 import { join, posix, relative, sep } from 'node:path';
 
 import type { Candidate } from '../core/types.js';
 import { stepTimeline } from '../perf/timeline.js';
-import { WALK_SKIP_DIRS } from './skip-dirs.js';
+import { isSkippedDirName } from './skip-dirs.js';
 
 export const MAX_CANDIDATE_BYTES = 1024 * 1024;
 export const MAX_LIST_ENTRIES = 20_000;
@@ -19,7 +21,7 @@ export const SNIFF_BYTES = 8 * 1024;
 const STAT_CONCURRENCY = 32;
 
 // the skip list and its predicate live in the zero-import skip-dirs.ts so git.ts can share them; re-exported for the existing importers
-export { WALK_SKIP_DIRS, underSkippedDir } from './skip-dirs.js';
+export { WALK_SKIP_DIRS, isSkippedDirName, underSkippedDir } from './skip-dirs.js';
 
 export interface CandidateEntry {
   bytes: number;
@@ -27,6 +29,11 @@ export interface CandidateEntry {
   touchedThisRun: boolean;
   /** dropped for size, type or content; kept so invalidation does not re-stat it */
   excluded: boolean;
+  /**
+   * Why a regular file was excluded: `binary` (a NUL in its first 8 KB) or `large` (over `MAX_CANDIDATE_BYTES`, and
+   * text as far as the sniff sees). Absent on a candidate and on an excluded non-file.
+   */
+  skip?: 'large' | 'binary';
   /**
    * HARNESS-NEXT-DESIGN §3 M7 (wave S0): the `mtime` and `ctime` the entry's `binary` verdict was sniffed at.
    * `noteChanged` skips the 8 KB sniff only when `bytes`, `mtimeMs` **and** `ctimeMs` are all unchanged.
@@ -54,6 +61,8 @@ export interface CandidateDeps {
   resolveRead: (relPath: string) => Promise<string | null>;
   isSecret: (relPath: string, canonical: string) => boolean;
   warn?: ((message: string) => void) | undefined;
+  /** the readdir walk's entry cap (default MAX_LIST_ENTRIES; injectable for tests) */
+  maxEntries?: number;
 }
 
 export interface CandidateCache {
@@ -62,6 +71,8 @@ export interface CandidateCache {
   noteChanged(paths: readonly string[]): Promise<void>;
   /** the raw cache, for target() and touched bookkeeping */
   entries(): ReadonlyMap<string, CandidateEntry>;
+  /** true when the last listing stopped at the readdir walk's entry cap, so files beyond it are neither listed nor excluded */
+  walkCapped(): boolean;
 }
 
 function toPosix(rel: string): string {
@@ -82,6 +93,11 @@ export async function sniffBinary(absPath: string): Promise<boolean> {
 
 /** Depth-first readdir walk with the ignore list and the entry cap (`maxEntries` is injectable for tests). */
 export async function walkTree(root: string, warn?: (message: string) => void, maxEntries: number = MAX_LIST_ENTRIES): Promise<string[]> {
+  return (await walkTreeCapped(root, warn, maxEntries)).paths;
+}
+
+/** `walkTree`, and whether it stopped at the entry cap. */
+export async function walkTreeCapped(root: string, warn?: (message: string) => void, maxEntries: number = MAX_LIST_ENTRIES): Promise<{ paths: string[]; capped: boolean }> {
   const out: string[] = [];
   const stack: string[] = [''];
   let entries = 0;
@@ -103,14 +119,14 @@ export async function walkTree(root: string, warn?: (message: string) => void, m
       const childRel = rel ? join(rel, d.name) : d.name;
       if (d.isSymbolicLink()) continue;
       if (d.isDirectory()) {
-        if (!WALK_SKIP_DIRS.has(d.name)) stack.push(childRel);
+        if (!isSkippedDirName(d.name)) stack.push(childRel);
       } else if (d.isFile()) {
         out.push(toPosix(childRel));
       }
     }
   }
   if (capped) warn?.(`candidate listing stopped at ${maxEntries} entries (MAX_LIST_ENTRIES); files beyond the cap are not offered as context`);
-  return out;
+  return { paths: out, capped };
 }
 
 async function mapBounded<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
@@ -144,6 +160,7 @@ export function statGateHit(prev: CandidateEntry | undefined, st: { size: number
 export function createCandidateCache(deps: CandidateDeps): CandidateCache {
   let cache: Map<string, CandidateEntry> | null = null;
   let building: Promise<Map<string, CandidateEntry>> | null = null;
+  let capped = false;
 
   async function inspect(rel: string, touched: boolean, prev?: CandidateEntry): Promise<CandidateEntry | null> {
     // The entry itself must not be a symlink: git lists untracked symlinks as bare paths
@@ -162,26 +179,33 @@ export function createCandidateCache(deps: CandidateDeps): CandidateCache {
     } catch {
       return null;
     }
-    if (!st.isFile()) return { bytes: st.size, binary: false, touchedThisRun: touched, excluded: true, mtimeMs: st.mtimeMs, ctimeMs: st.ctimeMs };
-    if (st.size > MAX_CANDIDATE_BYTES) return { bytes: st.size, binary: false, touchedThisRun: touched, excluded: true, mtimeMs: st.mtimeMs, ctimeMs: st.ctimeMs };
-    if (statGateHit(prev, st)) {
-      return { bytes: st.size, binary: prev.binary, touchedThisRun: touched, excluded: prev.binary, mtimeMs: st.mtimeMs, ctimeMs: st.ctimeMs };
+    const stamp = { bytes: st.size, touchedThisRun: touched, mtimeMs: st.mtimeMs, ctimeMs: st.ctimeMs };
+    if (!st.isFile()) return { ...stamp, binary: false, excluded: true };
+    let binary: boolean;
+    if (statGateHit(prev, st)) binary = prev.binary;
+    else {
+      try {
+        binary = st.size > 0 && (await sniffBinary(canonical));
+      } catch {
+        return null;
+      }
     }
-    let binary = false;
-    try {
-      binary = st.size > 0 && (await sniffBinary(canonical));
-    } catch {
-      return null;
-    }
-    return { bytes: st.size, binary, touchedThisRun: touched, excluded: binary, mtimeMs: st.mtimeMs, ctimeMs: st.ctimeMs };
+    // a file over the cap is sniffed too, so `glob` can tag a 3 MB PNG `(binary)` and `grep` names only the large TEXT files it skipped
+    const skip = binary ? ('binary' as const) : st.size > MAX_CANDIDATE_BYTES ? ('large' as const) : null;
+    return skip === null ? { ...stamp, binary, excluded: false } : { ...stamp, binary, excluded: true, skip };
   }
 
   async function names(): Promise<string[]> {
     if (deps.gitList) {
       const fromGit = await deps.gitList();
-      if (fromGit !== null) return fromGit.filter((p) => p.length > 0 && !p.includes('\0')).map(toPosix);
+      if (fromGit !== null) {
+        capped = false;
+        return fromGit.filter((p) => p.length > 0 && !p.includes('\0')).map(toPosix);
+      }
     }
-    return walkTree(deps.root, deps.warn);
+    const walked = await walkTreeCapped(deps.root, deps.warn, deps.maxEntries ?? MAX_LIST_ENTRIES);
+    capped = walked.capped;
+    return walked.paths;
   }
 
   async function fill(target: Map<string, CandidateEntry>, rels: readonly string[]): Promise<void> {
@@ -251,6 +275,9 @@ export function createCandidateCache(deps: CandidateDeps): CandidateCache {
     },
     entries() {
       return cache ?? new Map<string, CandidateEntry>();
+    },
+    walkCapped() {
+      return capped;
     },
   };
 }
