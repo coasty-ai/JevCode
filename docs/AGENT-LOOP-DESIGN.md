@@ -48,7 +48,7 @@ says where each one lives. The code cites them as §A1-§A6.
 - <a id="a6"></a>**A6. Verification is the model's, in proportion to the change (2026-09-25).** *"Why is it taking so much
   time to test make sure it is generic and generlized and all these tools work for the majority of population and is not
   finetuned."* The session behind it asked for `create temp.py` inside this repository: the file was written in 3 s, then
-  the harness's own verify step ran the whole ~11,500-test suite for minutes. By default the harness now runs no test command
+  the harness's own verify step started the whole ~11,500-test suite, which ran until the user pressed Esc 134 s later. By default the harness now runs no test command
   of its own. The system prompt asks the model for the fastest check that covers a behaviour change (one test file or test
   name, a typecheck, lint or build of what it touched), the whole suite only when the user asks or the change is broad, and
   nothing for questions, docs or simple file operations, as Codex CLI, Claude Code and OpenCode do (§5.1). The harness's
@@ -414,7 +414,7 @@ The rules are evaluated in order. Their counters live in `AgentStateV1` and surv
      The verify step always runs the unscoped command, the one check that needs no judgement of what the change touched.
 
    **Why it is off by default.** In a large repository the whole suite runs for minutes after a one-line change: the session
-   behind §A6 ran about 11,500 tests after `create temp.py`. A failed verify also pulled the model into repairing the
+   behind §A6 started all ~11,500 tests after `create temp.py`, and the user stopped it after 134 s. A failed verify also pulled the model into repairing the
    environment: a probe of the same task at 0.7.0 took 13 steps and 654 s after the suite failed with `EPERM` under the
    seatbelt (a temp vitest config, a temp runner script, a 603 s suite run killed at the timeout), and in another probe the
    model rewrote a test marked as a known issue. With the harness verify off, the same task took 2 steps and 7 s. Every

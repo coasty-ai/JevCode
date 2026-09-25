@@ -9,7 +9,7 @@ by the release procedure in `docs/RELEASE.md` — the entries below describe the
 ### Changed — the model checks its own work; the harness runs your test suite only when asked (2026-09-25)
 
 A session asked for `create temp.py` inside a large repository: the file was written in three seconds, and then the harness
-ran the repository's whole test suite, about 11,500 tests, for minutes. The decision is in `docs/DECISIONS.md` (2026-09-25);
+started the repository's whole test suite, about 11,500 tests, which ran until the user stopped it after two minutes. The decision is in `docs/DECISIONS.md` (2026-09-25);
 the rules are in `docs/concepts/verification.md`.
 
 - **Verification is the model's, in proportion to the change.** By default the harness runs no test command of its own.
