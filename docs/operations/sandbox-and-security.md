@@ -4,27 +4,71 @@ A coding agent runs commands you did not type. This page states exactly what a c
 cannot do, what a file action can and cannot touch, and what JevCode's own git calls are
 protected against.
 
-Two things are worth reading even if you skip the rest: **no API key is ever in a command's
-environment**, and **no configured secret reaches any file JevCode writes**.
+Two things are worth reading even if you skip the rest: **no JevCode key, and no variable whose
+name marks it as a secret, is in a command's environment**, and **no configured secret reaches any
+file JevCode writes**.
 
 ## Every command, on every platform
 
 A command runs through `/bin/sh -c`, in a **detached process group**, with:
 
 - **the working directory fixed** to the workspace;
-- **a scrubbed environment**: exactly four variables are carried over from your shell — `PATH`,
-  `LANG`, `LC_ALL`, `TERM` — and `PATH` falls back to a standard list if it was unset. `HOME`
-  and `TMPDIR` are remapped into the run directory. When the workspace has a Python virtual
-  environment, `VIRTUAL_ENV` is set and its `bin` is prepended to `PATH`, which is the same
-  effect as activating it. Nothing else is inherited, and no key is in it;
+- **your environment minus secrets** (below), with `HOME` and `TMPDIR` remapped into the run
+  directory;
 - **a timeout**: 120 s by default, 600 s at most, and always clamped to the remaining wall-time
   budget;
 - **an output cap**: a 200 KB head shared across both streams plus a rolling 16 KB tail per
-  stream, so the final lines — which is where a test summary lives — survive a flood.
-  Exceeding the cap never kills the command; the result records that it was truncated;
+  stream, so the final lines — which is where a test summary lives — survive a flood. The kept
+  tail starts at a line boundary, so it never begins in the middle of a line or of a colour
+  code. Exceeding the cap never kills the command; the result records that it was truncated;
 - **a three-pass tree kill** on timeout, cancellation, interrupt or termination.
 
-<!-- src/sandbox/run.ts:1-9, :24-35, :112-127, :257, :277 -->
+<!-- src/sandbox/run.ts: buildEnv, inheritsEnvName, StreamCollector.finish -->
+
+### The environment a command sees
+
+A command inherits the environment you started JevCode with, the way it would in your own shell,
+so a toolchain shim, a proxy or certificate setting, `JAVA_HOME` or a service URL works inside the
+sandbox too. These are dropped:
+
+- **anything whose name marks it as a secret**: a name containing `KEY`, `TOKEN`, `SECRET`,
+  `PASSW`, `PASSPHRASE`, `CREDENTIAL` or `COOKIE` (any case), or with an `AUTH` segment such as
+  `NODE_AUTH_TOKEN` or `SSH_AUTH_SOCK`. Every provider key JevCode reads has such a name;
+- **any value the redactor would mask**, whatever its name — a recognised key format or a
+  configured secret under a name that marks nothing;
+- **JevCode's own switches**: `JEVCODE_*` and `JEV_*`;
+- **the npm context JevCode was launched from**: every `npm_*` variable and `INIT_CWD`;
+- **every `GIT_*` variable**: an inherited `GIT_DIR`, `GIT_WORK_TREE` or `GIT_INDEX_FILE` would
+  point both your commands and JevCode's own git calls at another tree;
+- **what the sandbox sets itself, and shell bookkeeping**: `HOME`, `TMPDIR`, `TMP`, `TEMP`,
+  `VIRTUAL_ENV`, `PWD`, `OLDPWD`, `SHLVL`, `_`, and the per-user directories `XDG_CACHE_HOME`,
+  `XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CONFIG_HOME` and `XDG_RUNTIME_DIR`.
+
+Values are passed by name, not inspected for passwords: a password inside a URL-valued variable
+such as `DATABASE_URL` is passed, as it is in your shell. Keep such a value out of the environment
+you start JevCode with if a command must not see it.
+
+Then the sandbox sets its own values:
+
+- `HOME` and `TMPDIR` point into the run directory, and `PATH` falls back to a standard list if
+  it was unset;
+- when the workspace has a Python virtual environment, `VIRTUAL_ENV` is set and its `bin` is
+  prepended to `PATH`, which is the same effect as activating it; your Python user base is
+  passed as `PYTHONUSERBASE`, so a `pip install --user` tool stays importable;
+- **toolchain homes**: the version managers that keep their toolchains under your real home —
+  `RUSTUP_HOME` (`~/.rustup`), `PYENV_ROOT` (`~/.pyenv`), `RBENV_ROOT` (`~/.rbenv`),
+  `ASDF_DATA_DIR` (`~/.asdf`), `VOLTA_HOME` (`~/.volta`), `NVM_DIR` (`~/.nvm`) and `SDKMAN_DIR`
+  (`~/.sdkman`) — are pointed there when you have not set them and the directory exists, so their
+  shims find your toolchains although `HOME` moved. Caches a build writes (`CARGO_HOME`, the Go
+  module cache, Gradle's and Maven's caches, npm's cache) are not: they start fresh in the run's
+  home, where writes are allowed;
+- **your git identity**: when your global git configuration has `user.name` or `user.email`, the
+  run's home gets a `.gitconfig` with only that `[user]` block — no aliases, hooks, credential
+  helpers or signing setup — so a commit a command makes carries your name instead of failing
+  with "Author identity unknown". It is read once per process, outside the sandbox. JevCode's own
+  git calls ignore it (they run with `GIT_CONFIG_GLOBAL=/dev/null`, below).
+
+<!-- src/sandbox/run.ts: buildEnv, existingToolchainHomes, resolveGitIdentity, writeGitIdentity -->
 
 ### The tree kill, in detail
 
@@ -85,11 +129,20 @@ other coding agents use. Its limits are known, named, and not worked around:
 4. **A process that double-forks before the snapshot can escape the tree kill.**
 
 Where the tool is unavailable the level degrades to `none` — working directory, environment
-scrubbing, timeout, output cap and tree kill only, with the repository's config and hooks
+filtering, timeout, output cap and tree kill only, with the repository's config and hooks
 writable by commands — and `jevcode config` says so in its footer rather than leaving you to
 infer it.
 
 <!-- src/sandbox/seatbelt.ts:275-278 detectSandboxLevel; src/cli/config-table.ts:53-56 SANDBOX_FOOTER -->
+
+### Two consequences you may meet
+
+- **A `node_modules` symlinked from outside the workspace is read-only** inside the profile,
+  because writes are allowed only under the workspace's real path. A tool that writes into its
+  own package directory fails with `EPERM` — vite's `node_modules/.vite-temp` is the common case.
+  Install the dependencies inside the workspace, or run that command outside JevCode.
+- **A nested `sandbox-exec` is not permitted.** A command that starts its own sandbox — another
+  agent, a test harness that sandboxes its children — fails inside the profile.
 
 ## File actions never touch the sandbox
 
@@ -100,13 +153,18 @@ sandbox at all. They go through a path resolver instead:
 - `..` traversal and absolute escapes are rejected;
 - nothing under the git directory is ever written;
 - files recognised as secret stores are never read;
+- a path is a workspace path, never expanded: `$TMPDIR/x` or `${HOME}/x` is refused with a
+  pointer to bash, which is where scratch files belong;
 - an edit must match its target text **exactly once**, or it fails rather than guessing;
+- only UTF-8 text is edited: a Latin-1, Windows-1252 or UTF-16 file is refused untouched, with a
+  pointer to a byte-safe conversion such as `iconv`, because rewriting it as UTF-8 would replace
+  every accented byte in it — not only the edited line;
 - writes are atomic;
 - a unified diff goes through a validation pass before it is applied — and never with the flags
   that would let it write outside the tree, merge with three-way fallback, or leave partial
   results.
 
-<!-- src/workspace/edit.ts:24-28; src/workspace/patch.ts:14, :169-196; src/workspace/git.ts:211 -->
+<!-- src/workspace/edit.ts applyEditFile; src/workspace/encoding.ts; src/agent/tools/result.ts isVariablePath; src/workspace/patch.ts:14, :169-196; src/workspace/git.ts:211 -->
 
 ## JevCode's own git calls
 
@@ -224,13 +282,16 @@ approved and logged as `[review] auto-approved`, and a block verdict stops the a
   denied set above. Do not run JevCode as a user who can read something you would not want a
   command to read.
 - **The degraded level is real.** On a system without the sandbox tool, only the working
-  directory, environment scrubbing, timeout, cap and tree kill apply. Check the footer of
+  directory, environment filtering, timeout, cap and tree kill apply. Check the footer of
   `jevcode config`.
 - **Network is allowed unless you deny it.** Pass `--no-network` when the task does not need it.
+- **Your environment reaches commands.** Only names that mark a secret, and values the redactor
+  recognises, are dropped. Start JevCode from a shell without a credential you keep under an
+  ordinary name, or inside a URL.
 
 ## Related pages
 
 - [Configuration](configuration.md) — the `sandbox` and `noNetwork` settings.
-- [Every JEVCODE_* switch](environment.md) — the four-variable environment a command sees.
+- [Every JEVCODE_* switch](environment.md) — the switches, none of which reaches a command.
 - [Import](../architecture/import.md) — the same redaction rule applied to other tools' files.
 - [What a run writes](records.md) — every artefact the redactor covers.

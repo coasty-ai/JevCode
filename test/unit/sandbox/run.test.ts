@@ -1,12 +1,12 @@
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { AbortError, BudgetError, SandboxError } from '../../../src/errors.js';
 import { parseTestOutput } from '../../../src/workspace/tests.js';
-import { createSandbox } from '../../../src/sandbox/run.js';
-import { FAST_KILL, makeSandbox, never, pidAlive } from './helpers.js';
+import { createSandbox, existingToolchainHomes, inheritsEnvName, resolveGitIdentity } from '../../../src/sandbox/run.js';
+import { FAST_KILL, makeSandbox, makeTemp, never, pidAlive } from './helpers.js';
 import type { TempSandbox } from './helpers.js';
 
 function makeSandboxWithRedact(t: TempSandbox, redact: (s: string) => string): ReturnType<typeof createSandbox> {
@@ -48,22 +48,105 @@ describe('sandbox.run basics', () => {
     expect(r.killedBy).toBeNull();
   });
 
-  it('scrubs the environment: only the allowlist plus TMPDIR/HOME reach the child', async () => {
+  it("scrubs the environment: the user's own variables pass, secrets and JevCode/npm/git context do not, HOME and TMPDIR are remapped", async () => {
     const t = sb();
     const key = 'sk-or-v1-' + 'a'.repeat(40);
-    process.env['OPENROUTER_API_KEY'] = key;
-    process.env['JEV_TEST_LEAK'] = 'leak';
+    const set: Record<string, string> = {
+      OPENROUTER_API_KEY: key,
+      GITHUB_TOKEN: 'ghs_notreallyatoken',
+      MY_SERVICE_PASSWORD: 'hunter2',
+      NODE_AUTH_TOKEN: 'npm-token',
+      SSH_AUTH_SOCK: '/tmp/agent.sock',
+      JEV_TEST_LEAK: 'leak',
+      JEVCODE_SOMETHING: 'x',
+      GIT_DIR: '/elsewhere/.git',
+      GIT_INDEX_FILE: '/elsewhere/index',
+      npm_config_x: 'y',
+      INIT_CWD: '/launched/from',
+      VIRTUAL_ENV: '/some/outer/venv',
+      XDG_CONFIG_HOME: '/real/config',
+      // a key under a name that marks nothing: the redactor recognises its value
+      MY_LLM: 'sk-ant-api03-' + 'b'.repeat(40),
+      // the user's ordinary configuration reaches the command as in their shell
+      SANDBOX_BENIGN_PROBE: 'ok',
+      JAVA_HOME: '/opt/jdk',
+      HTTPS_PROXY: 'http://proxy.local:3128',
+      DATABASE_URL: 'postgres://app@db.local/app',
+    };
+    const redact = (s: string): string => s.replace(/sk-or-v1-[a-z0-9]+|sk-ant-api03-[a-z0-9]+/g, '[REDACTED]');
+    const sandbox = createSandbox({ workspaceRoot: t.ws, runDir: t.runDir, profile: 'none', noNetwork: false, secretReadDenies: [], redact }, { ...FAST_KILL, gitIdentity: () => null });
+    for (const [k, v] of Object.entries(set)) process.env[k] = v;
     try {
-      const r = await t.sandbox.run('env', { timeoutMs: 5_000, maxOutputBytes: CAP, signal: never() });
-      expect(r.stdout).not.toContain('OPENROUTER_API_KEY');
+      const r = await sandbox.run('env', { timeoutMs: 5_000, maxOutputBytes: CAP, signal: never() });
+      const names = new Set(r.stdout.split('\n').map((l) => l.slice(0, l.indexOf('='))));
+      for (const gone of ['OPENROUTER_API_KEY', 'GITHUB_TOKEN', 'MY_SERVICE_PASSWORD', 'NODE_AUTH_TOKEN', 'SSH_AUTH_SOCK', 'JEV_TEST_LEAK', 'JEVCODE_SOMETHING', 'GIT_DIR', 'GIT_INDEX_FILE', 'npm_config_x', 'INIT_CWD', 'VIRTUAL_ENV', 'XDG_CONFIG_HOME', 'MY_LLM']) expect(names.has(gone), gone).toBe(false);
       expect(r.stdout).not.toContain(key);
-      expect(r.stdout).not.toContain('JEV_TEST_LEAK');
+      expect(r.stdout).toMatch(/^SANDBOX_BENIGN_PROBE=ok$/m);
+      expect(r.stdout).toMatch(/^JAVA_HOME=\/opt\/jdk$/m);
+      expect(r.stdout).toMatch(/^HTTPS_PROXY=http:\/\/proxy\.local:3128$/m);
+      expect(r.stdout).toMatch(/^DATABASE_URL=postgres:\/\/app@db\.local\/app$/m);
       expect(r.stdout).toMatch(new RegExp(`^TMPDIR=${t.runDir}/tmp$`, 'm'));
       expect(r.stdout).toMatch(new RegExp(`^HOME=${t.runDir}/home$`, 'm'));
       expect(r.stdout).toMatch(/^PATH=/m);
+      // `extra` still wins, and is the only way a GIT_* reaches a command (the harness's own git)
+      const own = await sandbox.run('echo "$GIT_CONFIG_GLOBAL"', { timeoutMs: 5_000, maxOutputBytes: CAP, signal: never(), env: { GIT_CONFIG_GLOBAL: '/dev/null' } });
+      expect(own.stdout.trim()).toBe('/dev/null');
     } finally {
-      delete process.env['OPENROUTER_API_KEY'];
-      delete process.env['JEV_TEST_LEAK'];
+      for (const k of Object.keys(set)) delete process.env[k];
+    }
+    expect(inheritsEnvName('GIT_AUTHOR_NAME')).toBe(false); // every GIT_* is dropped, though AUTHOR is no AUTH segment
+    expect(inheritsEnvName('AUTHOR')).toBe(true);
+    expect(inheritsEnvName('LANG')).toBe(true);
+    expect(inheritsEnvName('AWS_SESSION_TOKEN')).toBe(false);
+    expect(inheritsEnvName('PGPASSWORD')).toBe(false);
+  });
+
+  it("copies the user's git identity (and only it) into the run's HOME, so a command's commit has an author", async () => {
+    const t = sb();
+    let probes = 0;
+    const sandbox = createSandbox({ workspaceRoot: t.ws, runDir: t.runDir, profile: 'none', noNetwork: false, secretReadDenies: [], redact: (s) => s }, { ...FAST_KILL, gitIdentity: () => { probes++; return { name: 'Ada "The" Lovelace; #1', email: 'ada@example.com' }; } });
+    // nothing is probed or written until a command runs
+    expect(existsSync(join(t.runDir, 'home', '.gitconfig'))).toBe(false);
+    const opts = { timeoutMs: 10_000, maxOutputBytes: CAP, signal: never() };
+    const r = await sandbox.run('git config --global --get user.name; git config --global --get user.email; git config --global --list | wc -l', opts);
+    expect(r.stdout.trim().split('\n').map((l) => l.trim())).toEqual(['Ada "The" Lovelace; #1', 'ada@example.com', '2']);
+    await sandbox.run('true', opts);
+    expect(probes).toBe(1);
+    // a file the run already has (its own `git config --global`) is kept
+    writeFileSync(join(t.runDir, 'home', '.gitconfig'), '[user]\n\tname = Changed\n');
+    createSandbox({ workspaceRoot: t.ws, runDir: t.runDir, profile: 'none', noNetwork: false, secretReadDenies: [], redact: (s) => s }, { ...FAST_KILL, gitIdentity: () => ({ name: 'Other', email: null }) });
+    expect(readFileSync(join(t.runDir, 'home', '.gitconfig'), 'utf8')).toBe('[user]\n\tname = Changed\n');
+    // no identity: no file
+    const bare = makeTemp('jev-noid-');
+    try {
+      const s2 = createSandbox({ workspaceRoot: bare.dir, runDir: join(bare.dir, 'run'), profile: 'none', noNetwork: false, secretReadDenies: [], redact: (s) => s }, { ...FAST_KILL, gitIdentity: () => null });
+      await s2.run('true', opts);
+      expect(existsSync(join(bare.dir, 'run', 'home', '.gitconfig'))).toBe(false);
+    } finally {
+      bare.cleanup();
+    }
+    expect(resolveGitIdentity({ probe: () => ({ name: null, email: null }) })).toBeNull();
+    expect(resolveGitIdentity({ probe: () => ({ name: 'A', email: null }) })).toEqual({ name: 'A', email: null });
+  });
+
+  it('points the toolchain homes the user has not set at the real ones under their home, never a cache a build writes', async () => {
+    const t = sb();
+    const home = makeTemp('jev-home-');
+    try {
+      mkdirSync(join(home.dir, '.pyenv'));
+      mkdirSync(join(home.dir, '.rustup'));
+      mkdirSync(join(home.dir, '.cargo'));
+      const sandbox = createSandbox({ workspaceRoot: t.ws, runDir: t.runDir, profile: 'none', noNetwork: false, secretReadDenies: [], redact: (s) => s }, { ...FAST_KILL, gitIdentity: () => null, homeDir: home.dir });
+      process.env['RUSTUP_HOME'] = '/users/own/rustup';
+      try {
+        const r = await sandbox.run('echo "pyenv=$PYENV_ROOT rustup=$RUSTUP_HOME cargo=${CARGO_HOME-unset} rbenv=${RBENV_ROOT-unset}"', { timeoutMs: 5_000, maxOutputBytes: CAP, signal: never() });
+        expect(r.stdout.trim()).toBe(`pyenv=${home.dir}/.pyenv rustup=/users/own/rustup cargo=unset rbenv=unset`);
+      } finally {
+        delete process.env['RUSTUP_HOME'];
+      }
+      expect(existingToolchainHomes(home.dir)).toEqual([['RUSTUP_HOME', join(home.dir, '.rustup')], ['PYENV_ROOT', join(home.dir, '.pyenv')]]);
+    } finally {
+      home.cleanup();
     }
   });
 
@@ -186,6 +269,30 @@ describe('output cap', () => {
     // live chunks are bounded by the head cap
     const live = chunks.reduce((n, c) => n + Buffer.byteLength(c), 0);
     expect(live).toBeLessThanOrEqual(CAP);
+  });
+
+  it('the kept tail starts on a line boundary, never inside an escape sequence whose ESC was cut off', async () => {
+    const t = sb();
+    // a coloured test reporter's flood: the old tail began `m\u001b[39m test 19600 passes`
+    const r = await t.sandbox.run(`awk 'BEGIN { for (i = 0; i < 20000; i++) printf "\\033[33m\\033[2m✓\\033[22m\\033[39m test %d passes\\n", i }'`, { timeoutMs: 10_000, maxOutputBytes: CAP, signal: never() });
+    expect(r.truncated).toBe(true);
+    const marker = /\n…\[output truncated: (\d+) bytes omitted\]…\n/.exec(r.stdout)!;
+    expect(marker).not.toBeNull();
+    const tail = r.stdout.slice(marker.index + marker[0].length);
+    expect(tail.startsWith('\u001b[33m\u001b[2m✓\u001b[22m\u001b[39m test ')).toBe(true);
+    for (const line of tail.trimEnd().split('\n')) expect(line).toMatch(/^\u001b\[33m\u001b\[2m✓\u001b\[22m\u001b\[39m test \d+ passes$/);
+    expect(tail.endsWith(' test 19999 passes\n')).toBe(true);
+    // the omitted count covers the partial line the seam dropped: head + omitted + tail is every byte the stream carried
+    expect(CAP + Number(marker[1]) + Buffer.byteLength(tail)).toBe(r.bytesSeen);
+  });
+
+  it('a tail with no newline to cut at (one long line) is kept whole, minus a leading partial UTF-8 sequence', async () => {
+    const t = sb();
+    const r = await t.sandbox.run(`awk 'BEGIN { for (i = 0; i < 40000; i++) printf "é"; printf "END" }'`, { timeoutMs: 10_000, maxOutputBytes: CAP, signal: never() });
+    const tail = r.stdout.slice(r.stdout.indexOf(']…\n') + 3);
+    expect(tail.endsWith('END')).toBe(true);
+    expect(tail).not.toContain('�');
+    expect(Buffer.byteLength(tail)).toBeGreaterThan(16 * 1024 - 4);
   });
 
   it('cap and timeout together are consistent', async () => {
