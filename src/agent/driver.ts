@@ -235,9 +235,10 @@ class Driver implements AgentDriver {
       }
     }
     ctx.reportContext(contextUsage({ tokens: this.estimate.tokens(chars), budget: this.budget, promptChars: chars, turns: this.state.turns, state: this.state, writer, buildMs: ctx.now() - t0 }));
-    // §A4 RA0: the first turn of a run may go at low effort — asked only when that could change the request
+    // §A4 RA0: the first turn of a run may go at low effort — asked only when that could change the request (not for a
+    // GLM model, whose default is already low)
     const low = lowEffortReasoning(ctx.provider.name);
-    const lowEffort = this.state.turns === 0 && low !== null && !sameReasoning(agentReasoning(ctx.provider.name), low) ? await effortHint(ctx, this.state) : false;
+    const lowEffort = this.state.turns === 0 && low !== null && !sameReasoning(agentReasoning(ctx.provider.name, ctx.provider.model), low) ? await effortHint(ctx, this.state) : false;
     const sampled = await sampleTurn(setup(lowEffort));
     this.live = new Map(sampled.calls.map((c) => [c.id, c]));
     return sampled;

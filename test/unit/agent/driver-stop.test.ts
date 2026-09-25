@@ -264,6 +264,20 @@ describe('the request', () => {
     expect(ctx.sent[0]).toMatchObject({ temperature: null, reasoning: { effort: 'high' }, agent: { clearToolResults: { triggerTokens: 100_000, keep: 6, clearAtLeastTokens: 5_000 } } });
   });
 
+  it('reasoning effort per model (§6.3): GLM low on any provider, the others their provider\'s default (no reasoning member)', async () => {
+    const sent = async (provider: { name: 'openai' | 'openrouter' | 'fireworks' | 'gemini' | 'xai'; model: string }): Promise<unknown> => {
+      const ctx = createAgentContext({ provider, turns: [{ text: 'ok' }] });
+      await step(createAgentDriver(), ctx);
+      return ctx.sent[0]!;
+    };
+    expect(await sent({ name: 'openai', model: 'gpt-5.6-luna' })).not.toHaveProperty('reasoning');
+    expect(await sent({ name: 'openrouter', model: 'openai/gpt-5.6-luna' })).not.toHaveProperty('reasoning');
+    expect(await sent({ name: 'gemini', model: 'gemini-3.8-flash' })).not.toHaveProperty('reasoning');
+    expect(await sent({ name: 'xai', model: 'grok-4.7' })).not.toHaveProperty('reasoning');
+    expect(await sent({ name: 'openrouter', model: 'z-ai/glm-5.3-flash' })).toMatchObject({ reasoning: { effort: 'low' } });
+    expect(await sent({ name: 'fireworks', model: 'accounts/fireworks/models/glm-5p3-flash' })).toMatchObject({ reasoning: { effort: 'low' } });
+  });
+
   it('a 400 naming the thinking signature is retried once without reasoning state, and replay stays off', async () => {
     const ctx = createAgentContext({
       provider: { name: 'anthropic', model: 'claude-sonnet-5' },
@@ -369,7 +383,15 @@ describe('the RA0 effort hint (§A4)', () => {
     expect(ctx.asks).toHaveLength(1);
   });
 
-  it('is not asked where low effort is already the default (OpenRouter)', async () => {
+  it('is asked wherever low effort differs from the default: gpt-5.x goes at low on a conversational first turn, then at its default', async () => {
+    const ctx = createAgentContext({ provider: { name: 'openai', model: 'gpt-5.6-luna' }, jevAvailable: true, ask: conversational(0.9), turns: [{ toolCalls: [call('glob', { pattern: '*' })] }, { text: 'ok' }], testCommand: null });
+    await runUntilFinish(createAgentDriver(), ctx);
+    expect(ctx.asks).toHaveLength(1);
+    expect(ctx.sent[0]!.reasoning).toEqual({ effort: 'low' });
+    expect(ctx.sent[1]).not.toHaveProperty('reasoning');
+  });
+
+  it('is not asked where low effort is already the default (GLM on OpenRouter)', async () => {
     const ctx = createAgentContext({ jevAvailable: true, ask: conversational(0.9), turns: [{ text: 'hello' }] });
     await step(createAgentDriver(), ctx);
     expect(ctx.asks).toHaveLength(0);

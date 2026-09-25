@@ -98,10 +98,13 @@ describe('the system prompt', () => {
     expect(familyAddendum(model)).toContain(text);
   });
 
-  it('Grok, Muse and others get no addendum', () => {
-    expect(familyAddendum('grok-4.7')).toBeNull();
-    expect(familyAddendum('muse-spark-1.3')).toBeNull();
-  });
+  it.each(['grok-4.7', 'muse-spark-1.3', 'qwen/qwen3-coder', 'deepseek/deepseek-v4', 'moonshotai/kimi-k3', 'meta-llama/llama-5-70b', 'mistralai/devstral-2'])(
+    'every other family gets the native-tool-call sentence (open-weight models leak text tool calls): %s',
+    (model) => {
+      expect(familyAddendum(model)).toBe('Call tools only through the native function-calling interface. Never write tool calls as XML or JSON in your reply text.');
+      expect(buildAgentSystemPrompt({ ...facts, model }).endsWith('Never write tool calls as XML or JSON in your reply text.')).toBe(true);
+    },
+  );
 });
 
 describe('harness texts', () => {

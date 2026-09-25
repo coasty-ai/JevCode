@@ -408,11 +408,12 @@ describe('§6.1: the provider contract additions', () => {
   });
 
   it("ReasoningEffort spells §6.3's Anthropic effort 'high'; the adapters pass it through unrewritten", () => {
-    // §6.3: the Anthropic agent constant is {effort:'high'} → output_config.effort; every other provider row is {effort:'low'}.
+    // §6.3: the Anthropic agent constant is {effort:'high'} → output_config.effort; a GLM model on any provider is {effort:'low'};
+    // every other model sends no reasoning member (its provider's default).
     const anthropic: GenerateReasoning = { effort: 'high' };
-    const others: GenerateReasoning = { effort: 'low' };
+    const glm: GenerateReasoning = { effort: 'low' };
     expect(effortOf(anthropic)).toBe('high');
-    expect(effortOf(others)).toBe('low');
+    expect(effortOf(glm)).toBe('low');
     expect(openAiReasoningEffort(anthropic, 'gpt-5.6-terra')).toBe('high');
     const req: GenerateRequest = { system: 's', messages: [], maxTokens: 16_384, temperature: null, reasoning: anthropic };
     expect(req.reasoning).toEqual({ effort: 'high' });

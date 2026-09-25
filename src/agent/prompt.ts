@@ -59,15 +59,21 @@ function safetyLines(autonomy: 'full' | 'review'): string[] {
   ];
 }
 
-/** §5.2: one short paragraph chosen by the model id. */
-export function familyAddendum(model: string): string | null {
+/** The native-tool-call sentence: GLM, and every open-weight family without its own addendum (§5.2). */
+const NATIVE_TOOL_CALLS = 'Call tools only through the native function-calling interface. Never write tool calls as XML or JSON in your reply text.';
+
+/**
+ * §5.2: one short paragraph chosen by the model id. Claude, GPT / o-series and Gemini have their own; every other family
+ * (GLM, Qwen, DeepSeek, Kimi, Llama, Mistral, Grok, …) gets the native-tool-call sentence: the open-weight families are
+ * known to write tool calls as text in their reply when the chat template is not the one they were trained on.
+ */
+export function familyAddendum(model: string): string {
   const id = model.toLowerCase();
   const base = id.slice(id.lastIndexOf('/') + 1);
-  if (base.startsWith('glm')) return 'Call tools only through the native function-calling interface. Never write tool calls as XML or JSON in your reply text.';
   if (base.startsWith('gpt') || /^o\d/.test(base)) return 'Prefer edit_file over rewriting files. Keep preambles to one sentence.';
   if (base.startsWith('claude') || id.startsWith('anthropic/')) return 'Use parallel tool calls for independent reads.';
   if (base.startsWith('gemini')) return 'Send tool arguments as plain JSON values; do not wrap numbers or booleans in quotes.';
-  return null;
+  return NATIVE_TOOL_CALLS;
 }
 
 /** The memory index with the legacy prompt's header and clips (`## Memory (index)`, 200 lines, 8 KiB). */
@@ -145,8 +151,7 @@ export function buildAgentSystemPrompt(f: SystemPromptFacts): string {
   if (instructions.length > 0) sections.push(`## Project instructions\n${clip(instructions, INSTRUCTIONS_MAX_CHARS)}`);
   const memory = memoryIndexBlock(f.memoryIndex);
   if (memory !== null) sections.push(memory);
-  const addendum = familyAddendum(f.model);
-  if (addendum !== null) sections.push(addendum);
+  sections.push(familyAddendum(f.model));
   return sections.join('\n\n');
 }
 
