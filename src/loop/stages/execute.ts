@@ -8,6 +8,7 @@ import type { ActionOutcome, ExecResult, KilledBy, Proposal, TestCounts } from '
 import { isBudgetError } from '../../errors.js';
 import { clampCommandTimeout } from '../budget.js';
 import { headTail } from '../../core/text.js';
+import { cleanCommandStreams, createTerminalStreamSanitizer } from '../../core/ansi.js';
 import { joinOutput } from '../window.js';
 import type { StageContext } from '../engine.js';
 import { parseOutputRef } from '../context/history.js';
@@ -122,18 +123,31 @@ export async function runExecuteStage(ctx: StageContext, proposal: Proposal): Pr
     }
     case 'run': {
       const timeoutMs = clampCommandTimeout(a.timeoutMs, ctx.limits, ctx.wallRemainingMs());
+      // core/ansi.ts: escape sequences go WHOLE, per stream (a sequence split between two chunks is held for the next),
+      // BEFORE the redactor — so a key an SGR touches is still recognised, and every listener (the TUI, --json) gets
+      // display-safe text
+      const live = { stdout: createTerminalStreamSanitizer(), stderr: createTerminalStreamSanitizer() };
+      const emitLive = (stream: 'stdout' | 'stderr', clean: string): void => {
+        if (clean.length > 0) ctx.emit({ type: 'exec:output', step: ctx.step, stream, chunk: ctx.redact(clean) });
+      };
       const exec = await ctx.sandbox.run(a.command, {
         timeoutMs,
         maxOutputBytes: ctx.limits.maxOutputBytes,
         signal: ctx.signal,
-        onOutput: (stream, chunk) => ctx.emit({ type: 'exec:output', step: ctx.step, stream, chunk: ctx.redact(chunk) }),
+        onOutput: (stream, chunk) => emitLive(stream, live[stream].push(chunk)),
         // docs/AGENT-LOOP-DESIGN.md §3.2: an agent `bash` call's validated `workdir` (workspace-relative; the sandbox resolves and
         // contains it). Absent for the root and on every legacy action, so their sandbox options are unchanged.
         ...(a.cwd !== undefined ? { cwd: a.cwd } : {}),
       });
+      emitLive('stdout', live.stdout.flush());
+      emitLive('stderr', live.stderr.flush());
       // The sandbox cannot know which abort fired; a wall-time abort is recorded as such (§6).
       const killedBy: KilledBy = exec.killedBy === 'abort' && isBudgetError(ctx.signal.reason) ? 'wall_time' : exec.killedBy;
-      const fixed: ExecResult = { ...exec, killedBy, stdout: ctx.redact(exec.stdout), stderr: ctx.redact(exec.stderr), timedOut: killedBy === 'timeout' };
+      // what the model, the test-count parser, the verify note, steps.jsonl and the outputs/step-N.txt spill read: escape
+      // sequences gone, progress redraws collapsed to their last state, a binary stream replaced by a note — cleaned
+      // BEFORE the redactor (docs/operations/records.md)
+      const clean = cleanCommandStreams(exec);
+      const fixed: ExecResult = { ...exec, killedBy, stdout: ctx.redact(clean.stdout), stderr: ctx.redact(clean.stderr), timedOut: killedBy === 'timeout' };
       const output = joinOutput(fixed.stdout, fixed.stderr);
       if (ctx.signal.aborted) {
         return done({ outcome: { status: 'interrupted', exec: fixed }, output, changedFiles: [], tests: null, created: [] });

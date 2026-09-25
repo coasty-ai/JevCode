@@ -6,6 +6,7 @@
 import type { AgentContext } from '../../core/types.js';
 import { isAbortError } from '../../errors.js';
 import { normaliseForSignature } from '../../core/text.js';
+import { cleanCommandStreams } from '../../core/ansi.js';
 import { DEFAULT_COMMAND_TIMEOUT_MS, MAX_COMMAND_TIMEOUT_MS } from '../limits.js';
 import { oneLine, renderBash } from './format.js';
 import { errorResult, type ToolResult } from './result.js';
@@ -49,8 +50,10 @@ export async function runReadonlyBash(ctx: AgentContext, a: BashArgs, part: numb
     if (isAbortError(e) || ctx.signal.aborted) throw e;
     return errorResult(`ERROR: ${ctx.redact(e instanceof Error ? e.message : String(e))}`, `${label} (error)`);
   }
-  const stdout = ctx.redact(exec.stdout);
-  const stderr = ctx.redact(exec.stderr);
+  // core/ansi.ts, as the execute stage does: escape sequences whole, CR redraws collapsed, binary as a note — then redact
+  const clean = cleanCommandStreams(exec);
+  const stdout = ctx.redact(clean.stdout);
+  const stderr = ctx.redact(clean.stderr);
   const output = joinStreams(stdout, stderr);
   const r = await renderBash({ ...exec, stdout, stderr }, output, { workdir: a.workdir ?? null, tests: null, spill: (text) => ctx.writeOutput(text, part) });
   const tail = exec.killedBy === 'timeout' ? 'timed out' : exec.killedBy !== null ? 'killed' : `exit ${exec.exitCode ?? 'null'}`;
