@@ -7,7 +7,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { binaryOutputNote, cleanCommandOutput, cleanCommandStreams, createTerminalStreamSanitizer, ESC_SEQ_RE, looksBinary, resolveOverwrites, stripAnsi, stripTerminalControls, STREAM_HOLD_MAX } from '../../../src/core/ansi.js';
+import { binaryOutputNote, cleanCommandOutput, cleanCommandStreams, createTerminalStreamSanitizer, ESC_SEQ_RE, looksBinary, redrawNote, resolveOverwrites, stripAnsi, stripTerminalControls, STREAM_HOLD_MAX } from '../../../src/core/ansi.js';
 import { patternRedact } from '../../../src/core/redact.js';
 import { budgetMs } from '../helpers/perf-budget.js';
 
@@ -64,7 +64,7 @@ describe('stripTerminalControls / stripAnsi: whole sequences, never their bodies
     expect(out).toContain('\nlink text and title end\n');
     expect(out).toContain('\nbefore' + 'after\n');
     expect(out).toContain('\nC1 red\n');
-    expect(out).toContain('\nnul::bin:��:end\n');
+    expect(out).toContain('\nnul:\n:bin:��:end\n');
   });
 
   it('keeps what is text: tabs, wide and combining characters, emoji, a 5000-char line', () => {
@@ -86,15 +86,44 @@ describe('stripTerminalControls / stripAnsi: whole sequences, never their bodies
 });
 
 describe('resolveOverwrites / cleanCommandOutput: what a terminal leaves on the line', () => {
-  it("curl's progress meter (CR redraws on stderr, in a pipe) keeps its final state only", () => {
+  it("curl's progress meter (CR redraws on stderr, in a pipe) keeps its final state, and a note says so", () => {
     const lines = cleanCommandOutput(FX.curlProgress).split('\n');
-    expect(lines).toHaveLength(4);
+    expect(lines).toHaveLength(5);
     expect(lines[2]).toMatch(/^100 {2}150k {2}100 {2}150k/);
+    expect(lines[3]).toBe(redrawNote(1));
   });
 
-  it('a tqdm-style bar of 21 redraws is one line', () => {
-    expect(cleanCommandOutput(FX.tqdmProgress.stderr)).toBe('100%|####################| 100/100 [00:00<00:00, 999.0it/s]\n');
+  it('a tqdm-style bar of 21 redraws is one line and the note', () => {
+    expect(cleanCommandOutput(FX.tqdmProgress.stderr)).toBe(`100%|####################| 100/100 [00:00<00:00, 999.0it/s]\n${redrawNote(20)}\n`);
     expect(FX.tqdmProgress.stderr.length).toBeGreaterThan(1000);
+    expect(redrawNote(20)).toBe('(20 carriage-return redraws collapsed to the final state; pipe through cat -v to see each one)');
+  });
+
+  it('text after a CR that is not a redraw is kept, one part per line: CR line endings, a stray CR', () => {
+    expect(cleanCommandOutput('id,name,qty\r1,apple,3\r2,pear,5\r')).toBe('id,name,qty\n1,apple,3\n2,pear,5');
+    // a git diff of a CR-only file: the model sees every record, not the last one without its `+`
+    const diff = '@@ -0,0 +1 @@\n+id,name\r1,foo\r2,bar\n\\ No newline at end of file\n';
+    expect(cleanCommandOutput(diff)).toBe('@@ -0,0 +1 @@\n+id,name\n1,foo\n2,bar\n\\ No newline at end of file\n');
+    expect(cleanCommandOutput('foo\rbar baz\n')).toBe('foo\nbar baz\n');
+    // records with no words are indistinguishable from a counter: collapsed, but the note says so
+    expect(cleanCommandOutput('1,2,3\r4,5,6\r7,8,9\n')).toBe(`7,8,9\n${redrawNote(2)}\n`);
+  });
+
+  it('a redraw is what the program erased, or the same words with other numbers', () => {
+    // `\r ESC[K` (cargo, ninja) and `ESC[2K ESC[1G` (yarn, npm, docker): an explicit erase, whatever the words
+    expect(cleanCommandOutput('\u001b[K  Building [==> ] 5/9: bar\r\u001b[K  Building [=====>] 9/9: baz\r\u001b[K  Finished\n')).toBe(`  Finished\n${redrawNote(2)}\n`);
+    expect(cleanCommandOutput('\u001b[2K\u001b[1G[1/4] Resolving packages...\u001b[2K\u001b[1G[2/4] Fetching packages...\n')).toBe(`[2/4] Fetching packages...\n${redrawNote(1)}\n`);
+    // units glued to a number (`kB`, `it/s`, `?it/s`) are not words: a meter whose unit changes is still one line
+    expect(cleanCommandOutput('  32,768   0%    0.00kB/s\r1,234,567  45%    1.23MB/s\n')).toBe(`1,234,567  45%    1.23MB/s\n${redrawNote(1)}\n`);
+    expect(cleanCommandOutput('\r0it [00:00, ?it/s]\r10it [00:00, 50.2it/s]\n')).toBe(`10it [00:00, 50.2it/s]\n${redrawNote(1)}\n`);
+    // a redraw that only blanks the line hides nothing, and a CRLF is one line break, not a redraw
+    expect(cleanCommandOutput('100% done\r         \r\n')).toBe('100% done\n');
+    expect(cleanCommandOutput('a\r\nb\r\n')).toBe('a\nb\n');
+  });
+
+  it('a NUL reads as a line break: `find -print0`, `git status -z` keep their separators', () => {
+    expect(cleanCommandOutput('./src/a.ts\u0000./src/b.ts\u0000')).toBe('./src/a.ts\n./src/b.ts\n');
+    expect(cleanCommandOutput(' M src/app.ts\u0000?? notes.txt\u0000')).toBe(' M src/app.ts\n?? notes.txt\n');
   });
 
   it('cargo-style `\\r ESC[K` redraws, backspace spinners and CRLF', () => {

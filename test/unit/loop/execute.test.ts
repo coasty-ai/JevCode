@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { EngineEvent, ExecResult, Proposal, SandboxRunOptions, TestCommand } from '../../../src/core/types.js';
 import { patternRedact } from '../../../src/core/redact.js';
+import { redrawNote } from '../../../src/core/ansi.js';
 import type { StageContext } from '../../../src/loop/engine.js';
 import { runExecuteStage, type ExecuteStageResult } from '../../../src/loop/stages/execute.js';
 import { isTestCommand, parseTestOutput } from '../../../src/workspace/tests.js';
@@ -126,7 +127,7 @@ describe('runExecuteStage run: command output is cleaned (core/ansi.ts) before t
   it('CR progress redraws collapse to their final state; binary output becomes a note with its size', async () => {
     const bar = Array.from({ length: 21 }, (_, i) => `\r${String(i * 5).padStart(3)}%|${'#'.repeat(i)}`).join('');
     const { result } = await runWith('train', [{ stream: 'stderr', text: `${bar}\n` }, { stream: 'stdout', text: 'done\n' }]);
-    expect(result.output).toBe(`done\n\n[stderr]\n100%|${'#'.repeat(20)}\n`);
+    expect(result.output).toBe(`done\n\n[stderr]\n100%|${'#'.repeat(20)}\n${redrawNote(20)}\n`);
     const elf = `\u007fELF\u0002\u0001\u0001${'\u0000'.repeat(4000)}\u0003\u0000>\u0000${'�'.repeat(200)}`;
     const bin = await runWith('cat /bin/ls | head -c 4212', [{ stream: 'stdout', text: elf }]);
     expect(bin.result.output).toBe(`(binary output: ${Buffer.byteLength(elf)} bytes, not shown — write it to a file, or pipe it through xxd | head or file)`);

@@ -120,9 +120,13 @@ text the model reads:
 
 - escape sequences are removed whole, so coloured test output reads as its plain form and its
   counts parse;
-- a carriage-return progress redraw keeps only its final state;
-- backspaces are applied, and every other control character is dropped (tabs and line breaks
-  stay);
+- a carriage-return progress redraw keeps only its final state, and one closing line says how
+  many redraws were collapsed. A segment counts as a redraw only when the program erased the line
+  or the segment repeats the same words with other numbers. Text after a carriage return that is
+  neither, such as a file with old Mac line endings, is kept with one part per line;
+- backspaces are applied, a NUL byte reads as a line break (so `find -print0` and
+  `git status -z` keep their separators), and every other control character is dropped (tabs
+  and line breaks stay);
 - a stream that looks binary is replaced by one line that names its size and suggests
   `xxd | head` or `file`.
 

@@ -53,6 +53,17 @@ export function stripTerminalControls(s: string): string {
   return s.replace(ESC_SEQ_RE, '').replace(CONTROL_KEEP_TNR_RE, '');
 }
 
+/** A backspace erases the character before it (spinners `|\b/\b-`, man-page overstrike `_\bX`). */
+function applyBackspaces(l: string): string {
+  if (!l.includes('\b')) return l;
+  const out: string[] = [];
+  for (const ch of l) {
+    if (ch === '\b') out.pop();
+    else out.push(ch);
+  }
+  return out.join('');
+}
+
 function resolveLine(line: string): string {
   let l = line;
   if (l.includes('\r')) {
@@ -68,31 +79,93 @@ function resolveLine(line: string): string {
     }
     l = last;
   }
-  if (l.includes('\b')) {
-    // a backspace erases the character before it (spinners `|\b/\b-`, man-page overstrike `_\bX`)
-    const out: string[] = [];
-    for (const ch of l) {
-      if (ch === '\b') out.pop();
-      else out.push(ch);
-    }
-    l = out.join('');
-  }
-  return l;
+  return applyBackspaces(l);
 }
 
-/** What a terminal leaves on each line: CRLF → LF, a bare CR keeps the last redraw, a backspace erases. Pure. */
+/**
+ * What a TERMINAL leaves on each line: CRLF → LF, a bare CR keeps the last non-blank redraw, a backspace erases. The
+ * TUI's live tail draws this; the model reads `cleanCommandOutput`, which keeps what only looks overwritten. Pure.
+ */
 export function resolveOverwrites(s: string): string {
   if (!s.includes('\r') && !s.includes('\b')) return s;
   return s.replace(/\r+\n/g, '\n').split('\n').map(resolveLine).join('\n');
 }
 
+/** Cursor to column 1 (`ESC[G`, `ESC[1G`): a carriage return in all but name (how yarn, npm and docker redraw). */
+const COLUMN_ONE_RE = /\u001b\[[01]?G/g;
+/** Erase in line at the start of a segment (`\r ESC[K`, cargo / ninja): the program erased what it returned over. */
+const ERASE_AT_START_RE = /^\u001b\[[02]?K/;
+/** Erase the whole line at the end of a segment (`ESC[2K \r`): the same, the other way round. */
+const ERASE_ALL_AT_END_RE = /\u001b\[2K$/;
+/** A word: 2+ letters not glued to a number — `kB` of `552kB` and `it` of `9.8it/s` or `?it/s` are units, not words. */
+const WORD_RE = /(?<![\p{L}\d?])\p{L}{2,}/gu;
+
+function wordsOf(s: string): string {
+  return (s.match(WORD_RE) ?? []).join(' ');
+}
+
+/**
+ * One raw line (no `\n`) as the model should read it. A bare CR (or a cursor-to-column-1) starts a new segment; a
+ * segment is a REDRAW of the next non-blank one — dropped, counted — when the program erased the line between them
+ * (`\r ESC[K`, `ESC[2K \r`) or when both have the same words and differ only in numbers, bars and punctuation (a
+ * progress bar, a download meter, a spinner's status). Anything else is kept on its own line: a file with CR line
+ * endings (`cat old-mac.csv`, a `git diff` of one) or a stray CR between two records is never reduced to its last part.
+ * A blank segment (`\r` + spaces) hides nothing. Backspaces apply within each segment.
+ */
+function collapseLine(raw: string): { text: string; collapsed: number } {
+  const parts = raw.replace(COLUMN_ONE_RE, '\r').split('\r');
+  if (parts.length === 1) return { text: applyBackspaces(stripAnsi(raw)), collapsed: 0 };
+  const kept: string[] = [];
+  let collapsed = 0;
+  let pending: { text: string; words: string } | null = null;
+  let erased = false;
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i] ?? '';
+    const text = applyBackspaces(stripAnsi(part));
+    if (text.trim() !== '') {
+      const words = wordsOf(text);
+      if (pending !== null) {
+        if (erased || words === pending.words) collapsed++;
+        else kept.push(pending.text);
+      }
+      pending = { text, words };
+      erased = false;
+    }
+    if (i + 1 < parts.length && (ERASE_ALL_AT_END_RE.test(part) || ERASE_AT_START_RE.test(parts[i + 1] ?? ''))) erased = true;
+  }
+  if (pending !== null) kept.push(pending.text);
+  return { text: kept.join('\n'), collapsed };
+}
+
+/** The line that tells the model redraws were collapsed, and how to see every one. Pure. */
+export function redrawNote(n: number): string {
+  return `(${n} carriage-return redraw${n === 1 ? '' : 's'} collapsed to the final state; pipe through cat -v to see each one)`;
+}
+
 /**
  * A command's output as the model (and the spill file, and the test-count parser) should read it: escape sequences
- * gone, progress redraws collapsed to their last state, backspaces applied, NUL and every other control byte gone
- * (\t and \n kept). Run it BEFORE the redactor, so a secret an SGR split in two is whole when the redactor looks. Pure.
+ * gone, progress redraws collapsed to their final state (`collapseLine`: only what the program erased or what repeats
+ * the same words — CR-separated records are kept, one per line) with a closing `redrawNote` naming how many, backspaces
+ * applied, a NUL read as a line break (`find -print0`, `git ls-files -z`, `git status -z` keep their separators), and
+ * every other control byte gone (\t and \n kept). Run it BEFORE the redactor, so a secret an SGR split in two is
+ * whole when the redactor looks. Pure.
  */
 export function cleanCommandOutput(s: string): string {
-  return resolveOverwrites(stripAnsi(s)).replace(CONTROL_KEEP_TN_RE, '');
+  if (!/[\r\b\u0000]|\u001b\[[01]?G/.test(s)) return stripAnsi(s).replace(CONTROL_KEEP_TN_RE, '');
+  let collapsed = 0;
+  const lines = s
+    .replace(/\u0000/g, '\n')
+    .replace(/\r+\n/g, '\n')
+    .split('\n')
+    .map((line) => {
+      const r = collapseLine(line);
+      collapsed += r.collapsed;
+      return r.text;
+    });
+  const out = lines.join('\n').replace(CONTROL_KEEP_TN_RE, '');
+  if (collapsed === 0) return out;
+  // the note closes the stream on its own line; the stream's own final line break stays last
+  return out.endsWith('\n') ? `${out}${redrawNote(collapsed)}\n` : `${out}${out === '' ? '' : '\n'}${redrawNote(collapsed)}`;
 }
 
 /**

@@ -5,6 +5,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { runReadonlyBash } from '../../../src/agent/tools/shell.js';
+import { redrawNote } from '../../../src/core/ansi.js';
 import { createAgentContext } from './helpers.js';
 
 const REMNANT_RE = /\u001b|\u009b|\[[0-9;]+[A-Za-z]/;
@@ -22,7 +23,7 @@ describe('read-only bash: cleaned command output (core/ansi.ts)', () => {
     const stderr = `${Array.from({ length: 11 }, (_, i) => `\r${i * 10}%`).join('')}\nspin |\b/\b-\bdone\r\n`;
     const ctx = createAgentContext({ sandbox: () => ({ exitCode: 0, stdout: 'ok\n', stderr }) });
     const r = await runReadonlyBash(ctx, { command: 'curl -o /dev/null https://example.test' }, undefined);
-    expect(r.text).toBe('exit 0 · 0s\nok\n\n[stderr]\n100%\nspin done\n');
+    expect(r.text).toBe(`exit 0 · 0s\nok\n\n[stderr]\n100%\nspin done\n${redrawNote(10)}\n`);
   });
 
   it('a secret right after an SGR is redacted: the strip runs BEFORE the redactor', async () => {
@@ -38,8 +39,8 @@ describe('read-only bash: cleaned command output (core/ansi.ts)', () => {
     const r = await runReadonlyBash(ctx, { command: 'cat /bin/ls | head -c 3108' }, undefined);
     expect(r.text).toBe(`exit 0 · 0s\n(binary output: ${stdout.length} bytes, not shown — write it to a file, or pipe it through xxd | head or file)`);
     expect(r.text).not.toContain('\u0000');
-    // a stray NUL in ordinary text is not binary
+    // a stray NUL in ordinary text is not binary: it reads as the separator it usually is (`-print0`, `-z`)
     const text = createAgentContext({ sandbox: () => ({ exitCode: 0, stdout: `a\u0000b ${'text '.repeat(40)}\n` }) });
-    expect((await runReadonlyBash(text, { command: 'printf x' }, undefined)).text).toBe(`exit 0 · 0s\nab ${'text '.repeat(40)}\n`);
+    expect((await runReadonlyBash(text, { command: 'printf x' }, undefined)).text).toBe(`exit 0 · 0s\na\nb ${'text '.repeat(40)}\n`);
   });
 });
