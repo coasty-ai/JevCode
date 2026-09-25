@@ -118,5 +118,9 @@ describe('listCandidates standalone (§5.4)', () => {
     write(root, '.git/objects/ab/cd', 'x');
     write(root, '__pycache__/a.pyc', 'x');
     expect(await listCandidates(root, { secretPaths: [], redact: id })).toEqual([]);
+    // the frameworks' build and cache directories, and setuptools' <pkg>.egg-info, the same
+    for (const d of ['.next', '.svelte-kit', '.turbo', 'coverage', '.gradle', '.dart_tool', '.terraform', 'DerivedData', 'mypkg.egg-info']) write(root, `${d}/x.js`, 'x');
+    write(root, 'src/app.ts', 'x');
+    expect((await listCandidates(root, { secretPaths: [], redact: id })).map((c) => c.path)).toEqual(['src/app.ts']);
   });
 });

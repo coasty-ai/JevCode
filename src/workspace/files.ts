@@ -17,6 +17,7 @@ import type { Action, Candidate, FileView, GitState, Sandbox, TargetInfo, TestCo
 import { ConfigError, FileNotFoundError, JevCodeError } from '../errors.js';
 import { assertNotSecret, canonicalPath, isMentionDenied, isSecretPath, resolveInside } from '../sandbox/paths.js';
 import { MAX_LIST_ENTRIES, createCandidateCache, underSkippedDir, walkTree } from './candidates.js';
+import type { CandidateCache } from './candidates.js';
 import { applyEditFile } from './edit.js';
 import { gitDir, isRepo, lsFiles, lsFilesTracked, showPrefix, statusPorcelain, statusV1ToDirty } from './git.js';
 import type { StatusEntry } from './git.js';
@@ -34,6 +35,8 @@ export interface WorkspaceDeps {
   warn?: ((message: string) => void) | undefined;
   /** TUI-DESIGN §12.1 / §15 item 8: the run-start probe; when given, createWorkspace performs zero spawns */
   gitState?: GitState;
+  /** the readdir walk's entry cap of a non-git workspace (default MAX_LIST_ENTRIES; a test seam) */
+  maxListEntries?: number;
 }
 
 /** TUI-DESIGN §5.4: options of the standalone pre-run walker. */
@@ -45,6 +48,46 @@ export interface ListCandidatesOptions {
   /** walk cap (default MAX_LIST_ENTRIES); files beyond it are not offered */
   max?: number;
   warn?: ((message: string) => void) | undefined;
+}
+
+/** A listed file the candidate rules keep out of `listCandidates()`: a binary, or a text file over 1 MiB. */
+export interface SkippedFile {
+  path: string;
+  bytes: number;
+  reason: 'large' | 'binary';
+}
+
+/** What `listCandidates()` leaves out that a search should still name (see `listSkipped`). */
+export interface SkippedListing {
+  /** sorted by path; never a secret path, an ignored file or anything under a skipped directory */
+  files: SkippedFile[];
+  /** the listing stopped at its entry cap (the readdir walk's 20,000, or a `git ls-files` whose output was capped) */
+  walkCapped: boolean;
+}
+
+/**
+ * The skipped-file view of every Workspace `createWorkspace` built. A module-level WeakMap keeps the `Workspace`
+ * interface (src/core/types.ts) unchanged: a Workspace made elsewhere — the unit fakes — simply has no entry.
+ */
+const SKIPPED = new WeakMap<Workspace, () => Promise<SkippedListing>>();
+
+/**
+ * The binaries and the files over 1 MiB the workspace listing found but does not offer as candidates, and whether
+ * the listing stopped at its cap. The agent's `glob` lists them with a tag and `grep` names the large text files it did
+ * not search, instead of answering `0 files` / `0 matches` as though they did not exist (a 2.7 MB file's symbol, an
+ * `assets/logo.png`). Secret and ignored files never appear: they are not in the cache at all. A Workspace not made by
+ * `createWorkspace` gives `{ files: [], walkCapped: false }`.
+ */
+export async function listSkipped(ws: Workspace): Promise<SkippedListing> {
+  const get = SKIPPED.get(ws);
+  return get === undefined ? { files: [], walkCapped: false } : get();
+}
+
+function skippedOf(cache: CandidateCache, listCapped: boolean): SkippedListing {
+  const files: SkippedFile[] = [];
+  for (const [path, e] of cache.entries()) if (e.excluded && e.skip !== undefined) files.push({ path, bytes: e.bytes, reason: e.skip });
+  files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  return { files, walkCapped: cache.walkCapped() || listCapped };
 }
 
 const MANIFEST_MAX_BYTES = 256 * 1024;
@@ -266,12 +309,15 @@ export async function createWorkspace(root: string, runDir: string, deps: Worksp
     return out;
   };
 
+  /** the last `git ls-files` listing was cut at the output cap: files beyond it are neither candidates nor skipped */
+  let listCapped = false;
   const candidates = createCandidateCache({
     root: realRoot,
     gitList: git
       ? async () => {
           const r = await lsFiles(deps.sandbox, realRoot);
           const paths = r.paths.filter((p) => !inGitDir(p));
+          listCapped = r.truncated && paths.length > 0;
           return paths.length > 0 || !r.truncated ? paths : null;
         }
       : null,
@@ -284,6 +330,7 @@ export async function createWorkspace(root: string, runDir: string, deps: Worksp
     },
     isSecret,
     warn: deps.warn,
+    ...(deps.maxListEntries !== undefined ? { maxEntries: deps.maxListEntries } : {}),
   });
 
   const manifests: ManifestReader = {
@@ -462,5 +509,9 @@ export async function createWorkspace(root: string, runDir: string, deps: Worksp
       }
     },
   };
+  SKIPPED.set(workspace, async () => {
+    await candidates.list();
+    return skippedOf(candidates, listCapped);
+  });
   return workspace;
 }

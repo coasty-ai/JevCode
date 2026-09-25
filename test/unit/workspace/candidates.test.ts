@@ -2,7 +2,7 @@ import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { MAX_LIST_ENTRIES, createCandidateCache, sniffBinary, underSkippedDir, walkTree } from '../../../src/workspace/candidates.js';
+import { MAX_CANDIDATE_BYTES, MAX_LIST_ENTRIES, WALK_SKIP_DIRS, createCandidateCache, isSkippedDirName, sniffBinary, underSkippedDir, walkTree, walkTreeCapped } from '../../../src/workspace/candidates.js';
 import { git, initRepo, makeWorkspace, tempWs, write } from './helpers.js';
 import type { TempWs } from './helpers.js';
 
@@ -70,6 +70,20 @@ describe('candidates in a git repo', () => {
     expect(underSkippedDir('src/__pycache__/a.pyc')).toBe(true);
     expect(underSkippedDir('build')).toBe(false); // a file named like a skipped directory is a file
     expect(underSkippedDir('src/build.py')).toBe(false);
+  });
+
+  it('the common toolchains\' dependency, build and cache directories — and any `*.egg-info` — are skipped when untracked, kept when tracked', async () => {
+    const t = ws();
+    initRepo(t.ws, { 'src/a.py': 'a\n', 'coverage/tracked.txt': 'kept: tracked\n', 'mypkg.egg-info/PKG-INFO': 'kept: tracked\n' });
+    const untracked = ['.next/server/page.js', '.nuxt/app.js', '.svelte-kit/out.js', '.turbo/log.txt', '.parcel-cache/x', '.angular/cache/x', '.expo/x.json', '.cache/x', 'coverage/lcov.info', '.gradle/x', '.dart_tool/x', '.terraform/x', '.stack-work/x', 'elm-stuff/x', 'bower_components/x/index.js', '.eggs/x', '.ruff_cache/x', '.nox/x', '.direnv/x', 'ios/DerivedData/x', 'other.egg-info/PKG-INFO'];
+    for (const p of untracked) write(t.ws, p, 'x\n');
+    write(t.ws, 'notes.egg-info.txt', 'a file, not a directory\n');
+    const w = await makeWorkspace(t);
+    expect((await w.listCandidates()).map((c) => c.path)).toEqual(['coverage/tracked.txt', 'mypkg.egg-info/PKG-INFO', 'notes.egg-info.txt', 'src/a.py']);
+    for (const p of untracked) expect(underSkippedDir(p), p).toBe(true);
+    expect(isSkippedDirName('.egg-info')).toBe(false); // the bare suffix names no package
+    expect(isSkippedDirName('coverage')).toBe(true);
+    expect(WALK_SKIP_DIRS.has('DerivedData')).toBe(true);
   });
 
   it('invalidation picks up a file created by a command; noteChanged updates bytes and removes deleted files', async () => {
@@ -150,5 +164,28 @@ describe('candidates without git (readdir walk)', () => {
     await cache.invalidate();
     expect(lists).toBe(2);
     expect(cache.entries().get('bin.dat')?.excluded).toBe(true);
+    expect(cache.entries().get('bin.dat')?.skip).toBe('binary');
+    expect(cache.entries().get('text.txt')?.skip).toBeUndefined();
+  });
+
+  it('keeps the skip reason of a binary and of a large text file (sniffed too), and reports a walk that stopped at its cap', async () => {
+    const t = ws();
+    write(t.ws, 'a.txt', 'a\n');
+    writeFileSync(join(t.ws, 'big.log'), Buffer.alloc(MAX_CANDIDATE_BYTES + 1, 0x61));
+    const bigBinary = Buffer.alloc(MAX_CANDIDATE_BYTES + 1, 0x61);
+    bigBinary[10] = 0;
+    writeFileSync(join(t.ws, 'movie.mp4'), bigBinary);
+    mkdirSync(join(t.ws, 'node_modules', 'x'), { recursive: true });
+    const cacheOf = (maxEntries?: number): ReturnType<typeof createCandidateCache> =>
+      createCandidateCache({ root: t.ws, gitList: null, resolveRead: async (rel) => join(t.ws, rel), isSecret: () => false, ...(maxEntries !== undefined ? { maxEntries } : {}) });
+    const cache = cacheOf();
+    expect((await cache.list()).map((c) => c.path)).toEqual(['a.txt']);
+    expect(cache.entries().get('big.log')).toMatchObject({ excluded: true, skip: 'large', binary: false });
+    expect(cache.entries().get('movie.mp4')).toMatchObject({ excluded: true, skip: 'binary', binary: true });
+    expect(cache.walkCapped()).toBe(false);
+    const capped = cacheOf(2);
+    await capped.list();
+    expect(capped.walkCapped()).toBe(true);
+    expect((await walkTreeCapped(t.ws, undefined, 2)).capped).toBe(true);
   });
 });
