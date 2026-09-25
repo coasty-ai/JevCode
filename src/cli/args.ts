@@ -13,7 +13,7 @@ import { parseDuration } from '../core/time.js';
 import { RUN_ID_RE } from '../checkpoint/run-id.js';
 import { RENDER_MODES, parseFps } from '../config/launch.js';
 import { RENDERERS } from '../config/ui.js';
-import { AUTONOMY_SETTING_VALUES, DEFAULT_AUTONOMY, DEFAULT_MODE, DEFAULT_SPEND_CAP_USD, MAX_FPS, MIN_FPS, MODE_BADGE_WORD } from '../config/defaults.js';
+import { AGENT_VERIFY_SETTING_VALUES, AUTONOMY_SETTING_VALUES, DEFAULT_AGENT_VERIFY, DEFAULT_AUTONOMY, DEFAULT_MODE, DEFAULT_SPEND_CAP_USD, MAX_FPS, MIN_FPS, MODE_BADGE_WORD } from '../config/defaults.js';
 import { THEMES } from '../tui/commands/registry.js';
 // TUI-DESIGN-5 §6.3 row 6 / §6.1 (D-AP): the seven ids, from the ZERO-IMPORT module the argv path is allowed to
 // read (`src/provider/ids.ts`'s own docblock). Never `models/providers.ts`, which would pull the whole catalogue
@@ -58,6 +58,8 @@ export const STRING_FLAGS = [
   'condition',
   // complete autonomy by default: `--autonomy full|review` — who approves a `review` risk verdict
   'autonomy',
+  // `--agent-verify off|tests` — who checks an agent run before it finishes (not `--verify`: that is login's boolean)
+  'agentVerify',
   'suite',
   'tasks',
   'taskId',
@@ -326,6 +328,8 @@ export const FLAGS: readonly FlagSpec[] = [
   { key: 'condition', name: 'condition', type: 'string', commands: SESSION, arg: 'jev-only|jev-on|jev-off|llm-jev', help: 'alias of --mode (Harbor adapter)', hidden: true },
   // complete autonomy by default (`config` prints the row, so it takes the flag too); the default is named through DEFAULT_AUTONOMY, never a literal
   { key: 'autonomy', name: 'autonomy', type: 'string', commands: UI, arg: AUTONOMY_SETTING_VALUES.join('|'), help: `who approves risky commands (default ${DEFAULT_AUTONOMY}): full never asks (a destructive command runs in the sandbox and leaves a note), review asks y/n before destructive and unrecognised ones` },
+  // the model checks its own work by default (`config` prints the row, so it takes the flag too); the default is named through DEFAULT_AGENT_VERIFY, never a literal
+  { key: 'agentVerify', name: 'agent-verify', type: 'string', commands: UI, arg: AGENT_VERIFY_SETTING_VALUES.join('|'), help: `who checks an agent run before it finishes (default ${DEFAULT_AGENT_VERIFY}): off = the model runs the checks the change calls for; tests = the harness also runs the detected test command after changes` },
   { key: 'source', name: 'source', type: 'string', commands: SESSION, arg: CLI_SOURCES.join('|'), help: 'RunMeta.source for the perf drivers (perf never writes the session index or history)', hidden: true },
   // Hidden run flags used by the wiring code and perf/*: mocked provider+decider, no network.
   { key: 'mock', name: 'mock', type: 'boolean', commands: SESSION, help: 'mocked generator and decider (perf, smoke)', hidden: true },

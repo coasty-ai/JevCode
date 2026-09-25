@@ -92,6 +92,7 @@ _jevcode() {
             '--list-sessions[print the sessions of this workspace and exit]' \
             '--mode[engine mode (default agent): agent (the code model works through tools, tests verify), jev-only (Jev alone, no generating LLM); legacy, accepted for saved configs, resume and the bench: llm-jev, jev-on, jev-off]:mode:(agent jev-only)' \
             '--autonomy[who approves risky commands (default full): full never asks (a destructive command runs in the sandbox and leaves a note), review asks y/n before destructive and unrecognised ones]:autonomy:(full review)' \
+            '--agent-verify[who checks an agent run before it finishes (default off): off = the model runs the checks the change calls for; tests = the harness also runs the detected test command after changes]:agent-verify:(off tests)' \
             '--json[chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/models/import/agents/why/calibration: JSON output]' \
             '--force-takeback[with --resume: re-take a run a peer claimed (bumps the claim epoch); an ordinary resume never does]' \
             '--split[split the task across agents (default off; orchestrate.split)]:split:(off auto ask)' \
@@ -161,6 +162,7 @@ _jevcode() {
             '--task-file[read the task text from a file]:<path>:_files' \
             '--mode[engine mode (default agent): agent (the code model works through tools, tests verify), jev-only (Jev alone, no generating LLM); legacy, accepted for saved configs, resume and the bench: llm-jev, jev-on, jev-off]:mode:(agent jev-only)' \
             '--autonomy[who approves risky commands (default full): full never asks (a destructive command runs in the sandbox and leaves a note), review asks y/n before destructive and unrecognised ones]:autonomy:(full review)' \
+            '--agent-verify[who checks an agent run before it finishes (default off): off = the model runs the checks the change calls for; tests = the harness also runs the detected test command after changes]:agent-verify:(off tests)' \
             '--json[chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/models/import/agents/why/calibration: JSON output]' \
             '--force-takeback[with --resume: re-take a run a peer claimed (bumps the claim epoch); an ordinary resume never does]' \
             '--split[split the task across agents (default off; orchestrate.split)]:split:(off auto ask)' \
@@ -225,6 +227,7 @@ _jevcode() {
             '--max-generator-tokens[generator token cap under --allow-unpriced (default spend cap / 15 × 1e6)]:n:' \
             '--update-notify[post-run update check through a detached jevcode upgrade --check]' \
             '--autonomy[who approves risky commands (default full): full never asks (a destructive command runs in the sandbox and leaves a note), review asks y/n before destructive and unrecognised ones]:autonomy:(full review)' \
+            '--agent-verify[who checks an agent run before it finishes (default off): off = the model runs the checks the change calls for; tests = the harness also runs the detected test command after changes]:agent-verify:(off tests)' \
             '--json[chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/models/import/agents/why/calibration: JSON output]' \
             '--all[config: include the hidden bookkeeping rows (seen.*); sessions who: include sessions gone more than 10 minutes and ignored devices]' \
             '--no-memory[do not read the project and user memory files into the run]' \

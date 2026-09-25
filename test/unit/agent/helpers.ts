@@ -63,6 +63,8 @@ export interface FakeAgentOptions {
   turns?: TurnScript;
   provider?: { name: AgentContext['provider']['name']; model: string };
   autonomy?: 'full' | 'review';
+  /** the `agent.verify` setting (default off, the product's default) */
+  verify?: 'off' | 'tests';
   jevAvailable?: boolean;
   /** answer (or throw from) a quick Jev ask */
   ask?: (call: AskCall, signal: AbortSignal) => Promise<Record<string, Answer>>;
@@ -161,6 +163,7 @@ export function createAgentContext(o: FakeAgentOptions = {}): FakeAgentContext {
     signal: controller.signal,
     redact: (s) => s.replace(/sk-secret-[a-z0-9]+/g, '[REDACTED]'),
     autonomy: o.autonomy ?? 'full',
+    verify: o.verify ?? 'off',
     provider: o.provider ?? { name: 'openrouter', model: 'z-ai/glm-5.3-flash' },
     generation: { temperature: 0.2, maxTokens: o.maxTokens ?? 4096 },
     windowTokens: o.windowTokens === undefined ? 200_000 : o.windowTokens,

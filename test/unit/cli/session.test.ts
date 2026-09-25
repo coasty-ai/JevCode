@@ -1949,6 +1949,21 @@ describe('R4a / R4b: the `--plain` twins of /import and /model print the numbere
   }, 40_000);
 });
 
+describe('the model checks its own work by default: the `agent.verify` setting the engine gets', () => {
+  it('the default is off; `--agent-verify tests` and JEVCODE_VERIFY=tests reach EngineOptions.agentVerify', async () => {
+    for (const [o, want] of [[{}, 'off'], [{ flags: { agentVerify: 'tests' } }, 'tests'], [{ env: { JEVCODE_VERIFY: 'tests' } }, 'tests']] as const) {
+      const h = await build({ ...o, script: () => ({ hold: true }) });
+      void h.controller.run();
+      await h.ready();
+      const p = h.submit('go');
+      const eng = await h.factory.nextLive();
+      expect(eng.opts.agentVerify).toBe(want);
+      eng.release();
+      await p;
+    }
+  });
+});
+
 describe('complete autonomy by default: the confirmer the engine gets', () => {
   const settled = <T,>(p: Promise<T>): Promise<T | 'waited'> => Promise.race([p, new Promise<'waited'>((r) => setTimeout(() => r('waited'), 0))]);
 

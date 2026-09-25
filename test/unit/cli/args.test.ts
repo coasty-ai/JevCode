@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { COMMANDS, MODELS_OPS, parseCliArgs, usageText, type Command } from '../../../src/cli/args.js';
-import { AUTONOMY_SETTING_VALUES, DEFAULT_AUTONOMY } from '../../../src/config/defaults.js';
+import { AGENT_VERIFY_SETTING_VALUES, AUTONOMY_SETTING_VALUES, DEFAULT_AGENT_VERIFY, DEFAULT_AUTONOMY } from '../../../src/config/defaults.js';
 import { PROVIDER_IDS } from '../../../src/provider/ids.js';
 import { UsageError } from '../../../src/errors.js';
 
@@ -138,5 +138,30 @@ describe('complete autonomy by default: `--autonomy full|review`', () => {
     expect(usageText('run')).not.toContain('a blocked action always stops');
     expect(usageText('config')).toContain('--autonomy full|review');
     expect(AUTONOMY_SETTING_VALUES.join('|')).toBe('full|review');
+  });
+});
+
+describe('the model checks its own work by default: `--agent-verify off|tests`', () => {
+  it('parses on chat / run / config, is refused where no config is resolved, and its value is kept verbatim for config/validate.ts', () => {
+    expect(parse(['run', 'task', '--agent-verify', 'tests']).agentVerify).toBe('tests');
+    expect(parse(['run', 'task', '--agent-verify', 'off']).agentVerify).toBe('off');
+    expect(parse(['chat', '--agent-verify', 'tests']).agentVerify).toBe('tests');
+    expect(parse(['config', '--agent-verify', 'tests']).agentVerify).toBe('tests');
+    expect(parse(['run', 'task']).agentVerify).toBeUndefined();
+    // an unknown value is the config layer's ConfigError, not a UsageError, as with --autonomy
+    expect(parse(['run', 'task', '--agent-verify', 'always']).agentVerify).toBe('always');
+    expect(() => parse(['models', 'list', '--agent-verify', 'tests'])).toThrow(UsageError);
+    // login's `--verify` is a different flag: a boolean that checks the saved keys
+    expect(parse(['login', '--verify']).verify).toBe(true);
+  });
+
+  it('the help text names the enum and the default, and says what each side does', () => {
+    expect(usageText('run')).toContain('--agent-verify off|tests');
+    expect(usageText('run')).toContain(`who checks an agent run before it finishes (default ${DEFAULT_AGENT_VERIFY})`);
+    expect(usageText('run')).toContain('(default off)');
+    expect(usageText('run')).toContain('off = the model runs the checks the change calls for; tests = the harness also runs the detected test command after changes');
+    expect(usageText('chat')).toContain('--agent-verify off|tests');
+    expect(usageText('config')).toContain('--agent-verify off|tests');
+    expect(AGENT_VERIFY_SETTING_VALUES.join('|')).toBe('off|tests');
   });
 });

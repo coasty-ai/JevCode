@@ -315,6 +315,11 @@ who approves risky commands (default full): full never asks (a destructive
 command runs in the sandbox and leaves a note), review asks y/n before
 destructive and unrecognised ones
 .TP
+.BI \-\-agent\-verify " off|tests"
+who checks an agent run before it finishes (default off): off = the model runs
+the checks the change calls for; tests = the harness also runs the detected
+test command after changes
+.TP
 .BI \-\-force\-takeback
 with \-\-resume: re\-take a run a peer claimed (bumps the claim epoch); an
 ordinary resume never does
@@ -443,6 +448,11 @@ who approves risky commands (default full): full never asks (a destructive
 command runs in the sandbox and leaves a note), review asks y/n before
 destructive and unrecognised ones
 .TP
+.BI \-\-agent\-verify " off|tests"
+who checks an agent run before it finishes (default off): off = the model runs
+the checks the change calls for; tests = the harness also runs the detected
+test command after changes
+.TP
 .BI \-\-force\-takeback
 with \-\-resume: re\-take a run a peer claimed (bumps the claim epoch); an
 ordinary resume never does
@@ -552,6 +562,11 @@ post\-run update check through a detached jevcode upgrade \-\-check
 who approves risky commands (default full): full never asks (a destructive
 command runs in the sandbox and leaves a note), review asks y/n before
 destructive and unrecognised ones
+.TP
+.BI \-\-agent\-verify " off|tests"
+who checks an agent run before it finishes (default off): off = the model runs
+the checks the change calls for; tests = the harness also runs the detected
+test command after changes
 .TP
 .BI \-\-all
 config: include the hidden bookkeeping rows (seen.*); sessions who: include

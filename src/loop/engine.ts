@@ -3801,6 +3801,7 @@ class EngineImpl implements Engine {
       signal: this.signal,
       redact: this.redact,
       autonomy: this.opts.autonomy ?? 'full',
+      verify: this.opts.agentVerify ?? 'off',
       provider: { name: this.opts.provider.name, model: this.opts.provider.model },
       generation: this.opts.generation,
       // §7.1: the window the engine's own policy resolves (an explicit `contextPolicy.windowTokens`, else the pricing table's)

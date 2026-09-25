@@ -85,6 +85,17 @@ export const AUTONOMY_SETTING_VALUES = ['full', 'review'] as const;
 export type Autonomy = (typeof AUTONOMY_SETTING_VALUES)[number];
 export const DEFAULT_AUTONOMY: Autonomy = 'full';
 export const AUTONOMY_DESCRIPTION = 'who approves review-flagged actions: full auto-approves and logs them (default); review stops for y/n';
+/**
+ * Who checks an agent run before it finishes (docs/concepts/verification.md). `off` (the default): the model runs the checks
+ * its change calls for — a targeted test, a typecheck — and nothing for questions, docs or simple file operations, as in
+ * every leading coding agent. `tests`: the harness also runs the detected test command (the whole suite) after changes
+ * before the run may finish (the §3.3 rule 2 of docs/AGENT-LOOP-DESIGN.md). Opt-in: in a large repository the whole
+ * suite can take minutes after a one-line change.
+ */
+export const AGENT_VERIFY_SETTING_VALUES = ['off', 'tests'] as const;
+export type AgentVerify = (typeof AGENT_VERIFY_SETTING_VALUES)[number];
+export const DEFAULT_AGENT_VERIFY: AgentVerify = 'off';
+export const AGENT_VERIFY_DESCRIPTION = 'who checks an agent run before it finishes: off = the model runs the checks the change calls for (default); tests = the harness also runs the detected test command after changes';
 /** D-N: the badge word per mode — the ONLY table that maps a mode to a word; `·` is folded to the glyph set's dot by `modeBadgeWord(mode, g)` */
 export const MODE_BADGE_WORD: Readonly<Record<EngineMode, string>> = { 'jev-only': 'jev-only', 'jev-on': 'jev+llm', 'jev-off': 'llm-only', 'llm-jev': 'llm+jev · verified', 'agent': 'agent' };
 /** the badge is capped so `<badge> · next run` fits the 60-column top edge (`consoleTopEdgeParts`, console-lines.ts:14 `TOP_EDGE_FIXED = 8`) */
@@ -197,6 +208,8 @@ export const SETTINGS: readonly SettingSpec[] = [
   { name: 'mode', flag: 'mode', env: ['JEVCODE_MODE'], fileKey: 'mode', defaultValue: DEFAULT_MODE, secret: false, description: 'engine mode (jev-only | jev-on | jev-off | llm-jev | agent); jev-only needs no generator key', shape: { kind: 'enum', values: MODE_SETTING_VALUES } },
   // Complete autonomy by default: a `review` risk verdict is auto-approved and logged (`[review] auto-approved …`); `--autonomy review` restores the y/n card. A `block` verdict stops under both.
   { name: 'autonomy', flag: 'autonomy', env: ['JEVCODE_AUTONOMY'], fileKey: 'autonomy', defaultValue: DEFAULT_AUTONOMY, secret: false, description: AUTONOMY_DESCRIPTION, shape: { kind: 'enum', values: AUTONOMY_SETTING_VALUES } },
+  // The model checks its own work by default (docs/DECISIONS.md 2026-09-25); `--agent-verify tests` makes the harness also run the detected test command after changes.
+  { name: 'agent.verify', flag: 'agentVerify', env: ['JEVCODE_VERIFY'], fileKey: 'agentVerify', defaultValue: DEFAULT_AGENT_VERIFY, secret: false, description: AGENT_VERIFY_DESCRIPTION, shape: { kind: 'enum', values: AGENT_VERIFY_SETTING_VALUES } },
   { name: 'limits.spendCapUsd', flag: 'spendCap', env: ['JEVCODE_SPEND_CAP_USD'], fileKey: 'spendCapUsd', defaultValue: String(DEFAULT_SPEND_CAP_USD), secret: false, description: 'spend cap (USD)', shape: { kind: 'usd' } },
   { name: 'limits.maxSteps', flag: 'maxSteps', env: ['JEVCODE_MAX_STEPS'], fileKey: 'maxSteps', defaultValue: String(DEFAULT_MAX_STEPS), secret: false, description: 'max steps', shape: { kind: 'int', min: 1 } },
   { name: 'limits.maxWall', flag: 'maxWall', env: ['JEVCODE_MAX_WALL'], fileKey: 'maxWall', defaultValue: DEFAULT_MAX_WALL, secret: false, description: 'max wall time', shape: { kind: 'duration' } },

@@ -2600,6 +2600,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         contextAsk: PRODUCT_CONTEXT_ASK, // the product asks Jev little in the context stage (main 1d3648a); the bench keeps the legacy policy
         autonomy: cfg.autonomy, // the engine approves a `review` verdict itself under `full`; under `review` it asks the confirmer (the y/n card)
         confirmer: cfg.autonomy === 'review' ? renderer.confirmer : autonomousConfirmer(renderer.confirmer, (req) => note(autoApprovedNote(req, cfg.redact), { label: '[review]' })),
+        agentVerify: cfg.agentVerify, // off (the default): the model checks its own work; tests: the harness also runs the detected test command after changes
         meter,
         limits,
         sandboxProfile: cfg.sandbox,
@@ -3249,6 +3250,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         contextAsk: PRODUCT_CONTEXT_ASK,
         autonomy: rcfg.autonomy,
         confirmer: rcfg.autonomy === 'review' ? renderer.confirmer : autonomousConfirmer(renderer.confirmer, (req) => note(autoApprovedNote(req, rcfg.redact), { label: '[review]' })),
+        agentVerify: rcfg.agentVerify,
         meter,
         limits: rec.limits,
         sandboxProfile: identity.sandbox ?? rcfg.sandbox,

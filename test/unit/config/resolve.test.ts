@@ -965,6 +965,47 @@ describe('complete autonomy by default: the `autonomy` setting', () => {
   });
 });
 
+describe('the model checks its own work by default: the `agent.verify` setting', () => {
+  it('chain: --agent-verify > JEVCODE_VERIFY > ./.env > <JEVCODE_EXTRA_ENV_FILE> > file `agentVerify` > off; each layer records its source', async () => {
+    const dflt = await resolve(run());
+    expect(dflt.agentVerify).toBe('off');
+    expect(dflt.entries.get('agent.verify')).toEqual({ value: 'off', source: 'default' });
+    expect(dflt.record()['agent.verify']).toEqual({ value: 'off', source: 'default' });
+    expect(configTableRows(dflt.record()).find((r) => r.setting === 'agent.verify')).toEqual({ setting: 'agent.verify', value: 'off', source: 'default', atDefault: true });
+    // `jevcode config --all` prints the row at its default
+    expect(configTableLines(dflt.record(), { sandboxLevel: 'none', width: 110, all: true }).find((l) => l.startsWith('agent.verify '))).toMatch(/^agent\.verify\s+off$/);
+    await writeFile(join(cwd, 'jevcode.json'), JSON.stringify({ agentVerify: 'tests' }));
+    const file = await resolve(run());
+    expect(file.agentVerify).toBe('tests');
+    expect(file.entries.get('agent.verify')).toEqual({ value: 'tests', source: `file:${join(cwd, 'jevcode.json')}` });
+    expect(configTableRows(file.record()).find((r) => r.setting === 'agent.verify')).toMatchObject({ value: 'tests', atDefault: false });
+    const extra = join(root, 'extra-verify');
+    await mkdir(extra);
+    await writeFile(join(extra, '.env'), 'JEVCODE_VERIFY=off\n');
+    expect((await resolve(run(), { JEVCODE_EXTRA_ENV_FILE: join(extra, '.env') })).agentVerify).toBe('off');
+    await writeFile(join(cwd, '.env'), 'JEVCODE_VERIFY=tests\n');
+    expect((await resolve(run(), { JEVCODE_EXTRA_ENV_FILE: join(extra, '.env') })).entries.get('agent.verify')).toEqual({ value: 'tests', source: `dotenv:${join(cwd, '.env')}` });
+    expect((await resolve(run(), { JEVCODE_EXTRA_ENV_FILE: join(extra, '.env'), JEVCODE_VERIFY: 'off' })).entries.get('agent.verify')).toEqual({ value: 'off', source: 'env' });
+    const flagged = await resolve(run('--agent-verify', 'tests'), { JEVCODE_VERIFY: 'off' });
+    expect(flagged.entries.get('agent.verify')).toEqual({ value: 'tests', source: 'flag' });
+    expect(flagged.agentVerify).toBe('tests');
+    // case-insensitive, like every other enum row
+    expect((await resolve(run(), { JEVCODE_VERIFY: 'TESTS' })).agentVerify).toBe('tests');
+  });
+
+  it('a value that is not off|tests is an eager ConfigError naming the setting and the source (exit 2)', async () => {
+    let err: unknown;
+    try {
+      await resolve(run(), { JEVCODE_VERIFY: 'always' });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ConfigError);
+    expect((err as ConfigError).message).toContain('agent.verify: "always" (from env) is not one of off|tests');
+    expect((err as ConfigError).exitCode).toBe(2);
+  });
+});
+
 describe('TUI-DESIGN-2 §1.2: the `mode` setting', () => {
   it('chain: --mode > JEVCODE_MODE > ./.env > <JEVCODE_EXTRA_ENV_FILE> > file `mode` > DEFAULT_MODE; each layer records its source; the run-cap default follows', async () => {
     const dflt = await resolve(run());
