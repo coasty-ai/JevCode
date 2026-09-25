@@ -1,24 +1,88 @@
 /**
- * Test-command detection from the repository's own files and summary-line parsing (DESIGN.md §8).
- * Parsing is code, never a Jev question: the judge state carries the counts. Summaries are
- * read from the tail because a capped output keeps its last 16 KB.
+ * Test-command detection from the repository's own files, recognition of a test run, and summary-line parsing
+ * (DESIGN.md §8). Parsing is code, never a Jev question: the judge state carries the counts. Summaries are read from
+ * the tail because a capped output keeps its last 16 KB.
  *
- * Detection order (first match wins; repository shapes only, never benchmark names):
- *   1. a pytest configuration: pytest.ini, pyproject [tool.pytest], setup.cfg [tool:pytest],
- *      tox.ini [pytest]                                        → `python -m pytest -q`
- *   2. a top-level tests/runtests.py (a Django-style suite; `python -m pytest` exits 1 at once
- *      in such a checkout because nothing there is a pytest module) → `python tests/runtests.py --parallel 1`
- *   3. bin/test with a python shebang (a sympy-style runner)     → `python bin/test`
- *   4. a pytest layout without configuration: conftest.py at the root, test_*.py / *_test.py at
- *      the root or under tests/ or test/                         → `python -m pytest -q`
- *   5. a tests/ or test/ package (__init__.py, no pytest files)   → `python -m unittest discover -v`
- *   6. setup.py declaring a test_suite                            → `python setup.py test`
- *   7. package.json scripts.test, Cargo.toml, go.mod (unchanged)
- * `python` is the interpreter when the workspace has .venv/bin/python (the sandbox puts .venv/bin
- * on PATH, src/sandbox/run.ts), `python3` otherwise. A `.jevcode-spec.json` at the root, written
- * by a bench loader with the harness's own `test_cmd`, confirms the runner: when its command names
- * a runner whose entry point exists in the tree, that runner wins over the file order. Detection
- * works without it.
+ * Detection order (first match wins; repository shapes only, never benchmark names). The detected command is the
+ * model's hint and the reference a run is recognised against; the harness runs it itself only when asked to.
+ *   a. an explicit pytest configuration: pytest.ini, pyproject [tool.pytest…], setup.cfg [tool:pytest], tox.ini
+ *      [pytest]                                                    → `python -m pytest -q`. It beats a package.json:
+ *      a Python project that also carries JS tooling said which runner it uses.
+ *   b. a root package.json with a real scripts.test (not npm's placeholder), run with the project's package manager:
+ *      the packageManager field (pnpm@…, yarn@…, bun@…, npm@…), else the lockfile (pnpm-lock.yaml, yarn.lock,
+ *      bun.lockb / bun.lock), else npm                             → `npm test` / `pnpm test` / `yarn test` /
+ *      `bun run test` (not `bun test`, which is Bun's own runner rather than the script); the runner is read from the
+ *      script (vitest, jest, …, else `npm`, which tries every parser)
+ *   c. Cargo.toml                                                  → `cargo test`
+ *   d. go.mod                                                      → `go test ./...`
+ *   e. deno.json / deno.jsonc                                      → `deno task test` with a tasks.test, else `deno test`
+ *   f. Gemfile or Rakefile: spec/ → `bundle exec rspec` (`rspec` without a Gemfile); else a Rakefile and test/ →
+ *      `bundle exec rake test` (`rake test`). A Gemfile with test/ and no Rakefile names nothing (rake would find no
+ *      Rakefile; a Python repository with a Jekyll Gemfile keeps its own layout)
+ *   g. pom.xml                                                     → `./mvnw test` with the wrapper, else `mvn test`
+ *      (never -q: quiet mode hides the `Tests run:` summary)
+ *   h. build.gradle(.kts) / settings.gradle(.kts)                  → `./gradlew test` with the wrapper, else `gradle test`
+ *   i. a root *.sln / *.slnx / *.csproj / *.fsproj / *.vbproj      → `dotnet test`
+ *   j. mix.exs                                                     → `mix test`
+ *   k. composer.json: scripts.test → `composer test`; else Pest in require-dev → `vendor/bin/pest`; else a phpunit.xml
+ *      (.dist) / phpunit.dist.xml or vendor/bin/phpunit            → `vendor/bin/phpunit`
+ *   l. Package.swift                                               → `swift test`
+ *   m. Makefile / makefile / GNUmakefile with a `test:` target      → `make test`
+ *   n. only then the inferred Python shapes, which name no runner themselves:
+ *      - a top-level tests/runtests.py (a Django-style suite; `python -m pytest` exits 1 at once in such a checkout
+ *        because nothing there is a pytest module)               → `python tests/runtests.py --parallel 1`
+ *      - bin/test with a python shebang (a sympy-style runner)   → `python bin/test`
+ *      - a Django application: manage.py at the root that names django → `python manage.py test` (runner unittest: the
+ *        Django runner prints unittest's summary; the scope appends dotted labels)
+ *      - a pytest layout without configuration: conftest.py at the root, test_*.py / *_test.py at the root or under
+ *        tests/ or test/                                         → `python -m pytest -q`
+ *      - a tests/ or test/ package (__init__.py, no pytest files) → `python -m unittest discover -v`
+ * `setup.py test` is never proposed: setuptools 72 removed the command. Ecosystems e–m use runner `unknown`, which tries
+ * every parser; only the Python runners carry a scope builder (the legacy fast path reads `TestCommand.scope`).
+ * `python` is the interpreter when the workspace has .venv/bin/python (the sandbox puts .venv/bin on PATH,
+ * src/sandbox/run.ts), `python3` otherwise. A `.jevcode-spec.json` at the root, written by a bench loader with the
+ * harness's own `test_cmd`, confirms the runner: when its command names a runner whose entry point exists in the tree,
+ * that runner wins over the file order (a Django checkout carries a package.json whose `grunt test` would otherwise
+ * win). Detection works without it.
+ *
+ * Recognition (`isTestCommand`): a command is a run of the detected test command when, after normalising both — `cd
+ * <dir> &&`, `VAR=value`, `env`, `time` and `timeout <n>` prefixes and trailing `2>&1`, `| tail…`, `| head…`,
+ * `| grep…`, `| tee…`, `| cat` and `|| true` dropped — it is the detected command, or it is one command (no `&&`, `||`,
+ * `;`, `|`, `&` or newline left outside quotes: `npx vitest run && sed -i …` also edits) in the detected command's
+ * runner family. An extension counts only when it is in the family too (`./mvnw test deploy` extends `./mvnw test`).
+ * A line over 4 KB keeps its wrappers (the stripping is quadratic in their number). The families and the spellings
+ * each accepts:
+ *   js        npm test|t|tst|run test|run-script test (also `test:*` scripts), pnpm test|run test, yarn test|run
+ *             test (also `yarn workspace <w> test`), bun run test, bun test, and vitest / jest / mocha / ava / tap /
+ *             `node --test`, bare, after pnpm [exec], yarn [exec] or ./node_modules/.bin/ (these run only what is
+ *             installed), or after npx [--no-install], npm exec|x, bunx and bun x — which fetch a runner they cannot
+ *             find, so only by its bare name and with no option that names, fetches or configures a package (`-p`,
+ *             `--package`, `-y`, `--call`, `--registry`, `--userconfig`); `pnpm dlx` and `yarn dlx` never count. Any
+ *             options before or arguments after (`-- file`, `-w x`, `--workspace x`, `--filter x`, `-C dir`). Every
+ *             package-manager test script is in this family.
+ *   pytest    pytest, py.test, python[3[.X]] -m pytest, .venv/bin/pytest, venv/bin/python -m pytest, each also after
+ *             uv run, poetry run, pdm run, pipenv run, hatch run or rye run without an option that adds a package or
+ *             an index (`--with…`, `--index…`, `--extra-index-url`, `--find-links`)
+ *   unittest  python -m unittest, [python] [./]manage.py test
+ *   django    [python] [./][tests/]runtests.py
+ *   sympy     [python] [./]bin/test
+ *   cargo     cargo [+toolchain] test|t, cargo nextest run
+ *   go        go test
+ *   rspec     rspec, bin/rspec, bundle exec rspec, [bundle exec] rake spec
+ *   minitest  [bundle exec] rake test, [bin/]rails test, ruby -Itest <x_test.rb | test_x.rb>
+ *   maven     mvn / ./mvnw … test, every other goal a phase up to test (clean, validate, initialize, compile,
+ *             test-compile, generate-* / process-*); options anywhere (-D…, -P x, -pl x, -am, -q, -o, -B, -T n, -f x)
+ *   gradle    gradle / ./gradlew … test or :module:test, every other task clean, cleanTest or check; the arguments of
+ *             --tests, -x, -p and --project-dir skipped; never with --scan (it uploads the build)
+ *   dotnet    dotnet test;  mix: mix test;  swift: swift test
+ *   php       composer test|run test, [vendor/bin/]phpunit, [vendor/bin/]pest, php artisan test
+ *   deno      deno test, deno task test
+ *   make      make [-C dir] … test, every other target clean, all, build or check, or a VAR=value
+ * A build tool's other goals are allow-listed because `mvn deploy test`, `./gradlew publish test` and `make install
+ * test` also publish or install, and a recognised run is SAFE for the command classifier (`isVerificationRun`).
+ * A detected `make test` accepts any recognised family: it names no runner itself (runner `unknown`), and every parser
+ * is tried on its output. A detected command outside every family keeps the older rule: an extension of it, or the
+ * same program (and, for a package manager or toolchain, the same subcommand).
  */
 import type { TestCommand, TestCounts, TestRunner } from '../core/types.js';
 
@@ -41,10 +105,14 @@ export const SPEC_FILE = '.jevcode-spec.json';
 
 export type PythonInterpreter = 'python' | 'python3';
 export type ScopeBuilder = (targets: readonly string[]) => string;
+export type PackageManager = 'npm' | 'pnpm' | 'yarn' | 'bun';
 
 const NPM_PLACEHOLDER = /no test specified/;
 const PYTHON_SHEBANG = /^#![^\n]*\bpython[0-9.]*\b/;
 const TEST_FILE_NAME = /^test_.*\.py$|_tests?\.py$/;
+/** a `test` target, alone or among several (`unit test: deps`), never `test := value` or `integration-test:` */
+const MAKE_TEST_TARGET = /^(?:[^\s:#=]+[ \t]+)*test[ \t]*::?(?!=)/m;
+const DOTNET_PROJECT = /\.(sln|slnx|csproj|fsproj|vbproj)$/;
 
 function runnerFromScript(script: string): TestRunner {
   if (/\bvitest\b/.test(script)) return 'vitest';
@@ -85,6 +153,12 @@ async function hasSympyBinTest(r: ManifestReader): Promise<boolean> {
   return text !== null && PYTHON_SHEBANG.test(text);
 }
 
+/** A Django application's manage.py at the root (Flask-Script and others also name a manage.py). */
+async function hasDjangoManage(r: ManifestReader): Promise<boolean> {
+  const text = await r.read('manage.py');
+  return text !== null && /\bdjango\b/i.test(text);
+}
+
 async function hasPytestLayout(r: ManifestReader): Promise<boolean> {
   if ((await r.read('conftest.py')) !== null) return true;
   const root = await r.list('.');
@@ -101,9 +175,57 @@ async function hasUnittestPackage(r: ManifestReader): Promise<boolean> {
   return false;
 }
 
-async function hasSetupPyTestSuite(r: ManifestReader): Promise<boolean> {
-  const setup = await r.read('setup.py');
-  return setup !== null && /\btest_suite\s*=/.test(setup);
+type Json = Record<string, unknown>;
+
+function asObject(v: unknown): Json | null {
+  return typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Json) : null;
+}
+
+function parseJsonObject(text: string | null): Json | null {
+  if (text === null) return null;
+  try {
+    return asObject(JSON.parse(text));
+  } catch {
+    return null; // malformed: detection proceeds as if the file were not there
+  }
+}
+
+/** JSON with comments and trailing commas (deno.jsonc): comments outside strings are dropped before parsing. */
+function parseJsoncObject(text: string | null): Json | null {
+  if (text === null) return null;
+  let out = '';
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i]!;
+    if (ch === '"') {
+      let j = i + 1;
+      while (j < text.length && text[j] !== '"') j += text[j] === '\\' ? 2 : 1;
+      out += text.slice(i, j + 1);
+      i = j;
+    } else if (ch === '/' && text[i + 1] === '/') {
+      while (i < text.length && text[i] !== '\n') i += 1;
+      out += '\n';
+    } else if (ch === '/' && text[i + 1] === '*') {
+      const end = text.indexOf('*/', i + 2);
+      i = end === -1 ? text.length : end + 1;
+    } else out += ch;
+  }
+  return parseJsonObject(out.replace(/,(\s*[}\]])/g, '$1'));
+}
+
+/** The package manager a JS project uses: its packageManager field, else its lockfile, else npm. */
+export function packageManagerOf(pkg: Json, rootNames: ReadonlySet<string>): PackageManager {
+  const field = pkg['packageManager'];
+  const declared = typeof field === 'string' ? /^(npm|pnpm|yarn|bun)@/.exec(field.trim()) : null;
+  if (declared !== null) return declared[1] as PackageManager;
+  if (rootNames.has('pnpm-lock.yaml')) return 'pnpm';
+  if (rootNames.has('yarn.lock')) return 'yarn';
+  if (rootNames.has('bun.lockb') || rootNames.has('bun.lock')) return 'bun';
+  return 'npm';
+}
+
+/** The command that runs a package.json `test` script: `bun test` would run Bun's own runner, not the script. */
+export function packageTestCommand(pm: PackageManager): string {
+  return pm === 'bun' ? 'bun run test' : `${pm} test`;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -121,6 +243,9 @@ export function sympyCommand(py: PythonInterpreter): string {
 }
 export function unittestCommand(py: PythonInterpreter): string {
   return `${py} -m unittest discover -v`;
+}
+export function djangoManageCommand(py: PythonInterpreter): string {
+  return `${py} manage.py test`;
 }
 
 function withScope(command: string, runner: TestRunner): TestCommand {
@@ -191,30 +316,71 @@ async function commandForRunner(r: ManifestReader, runner: TestRunner, py: Pytho
   }
 }
 
-async function detectFromFiles(r: ManifestReader, py: PythonInterpreter): Promise<TestCommand | null> {
-  if (await hasPytestConfig(r)) return withScope(pytestCommand(py), 'pytest');
-  if (await hasDjangoRuntests(r)) return withScope(djangoCommand(py), 'django');
-  if (await hasSympyBinTest(r)) return withScope(sympyCommand(py), 'sympy_bintest');
-  if (await hasPytestLayout(r)) return withScope(pytestCommand(py), 'pytest');
-  if (await hasUnittestPackage(r)) return withScope(unittestCommand(py), 'unittest');
-  if (await hasSetupPyTestSuite(r)) return withScope(`${py} setup.py test`, 'unittest');
-  const pkg = await r.read('package.json');
-  if (pkg !== null) {
-    try {
-      const parsed: unknown = JSON.parse(pkg);
-      if (typeof parsed === 'object' && parsed !== null && 'scripts' in parsed) {
-        const scripts = (parsed as { scripts?: unknown }).scripts;
-        if (typeof scripts === 'object' && scripts !== null && 'test' in scripts) {
-          const t = (scripts as { test?: unknown }).test;
-          if (typeof t === 'string' && t.trim().length > 0 && !NPM_PLACEHOLDER.test(t)) return { command: 'npm test', runner: runnerFromScript(t) };
-        }
-      }
-    } catch {
-      /* malformed package.json: fall through */
-    }
+/** A runner named only by the command it runs: every parser is tried on its output. */
+const unknownRunner = (command: string): TestCommand => ({ command, runner: 'unknown' });
+
+/** b–m of the module comment: the manifests that name their ecosystem's test command. */
+async function detectFromManifests(r: ManifestReader): Promise<TestCommand | null> {
+  const listing = new Set((await r.list('.')) ?? []);
+  const has = async (name: string): Promise<boolean> => listing.has(name) || (await r.read(name)) !== null;
+
+  const pkg = parseJsonObject(await r.read('package.json'));
+  const script = asObject(pkg?.['scripts'])?.['test'];
+  if (pkg !== null && typeof script === 'string' && script.trim().length > 0 && !NPM_PLACEHOLDER.test(script)) {
+    return { command: packageTestCommand(packageManagerOf(pkg, listing)), runner: runnerFromScript(script) };
   }
   if ((await r.read('Cargo.toml')) !== null) return { command: 'cargo test', runner: 'cargo' };
   if ((await r.read('go.mod')) !== null) return { command: 'go test ./...', runner: 'go' };
+
+  const denoText = (await r.read('deno.json')) ?? (await r.read('deno.jsonc'));
+  if (denoText !== null) {
+    const tasks = asObject(parseJsoncObject(denoText)?.['tasks']);
+    return unknownRunner(tasks !== null && tasks['test'] !== undefined ? 'deno task test' : 'deno test');
+  }
+
+  const gemfile = await has('Gemfile');
+  const rakefile = (await has('Rakefile')) || (await has('rakefile'));
+  if (gemfile || rakefile) {
+    const bundle = gemfile ? 'bundle exec ' : '';
+    if ((await r.list('spec')) !== null) return unknownRunner(`${bundle}rspec`);
+    // rake without a Rakefile fails at once; a Gemfile beside a Python test/ (Jekyll docs) is no Ruby suite
+    if (rakefile && (await r.list('test')) !== null) return unknownRunner(`${bundle}rake test`);
+  }
+
+  if (await has('pom.xml')) return unknownRunner((await has('mvnw')) ? './mvnw test' : 'mvn test');
+  for (const f of ['build.gradle', 'build.gradle.kts', 'settings.gradle', 'settings.gradle.kts']) {
+    if (await has(f)) return unknownRunner((await has('gradlew')) ? './gradlew test' : 'gradle test');
+  }
+  if ([...listing].some((n) => DOTNET_PROJECT.test(n))) return unknownRunner('dotnet test');
+  if (await has('mix.exs')) return unknownRunner('mix test');
+
+  const composerText = await r.read('composer.json');
+  if (composerText !== null) {
+    const composer = parseJsonObject(composerText);
+    if (asObject(composer?.['scripts'])?.['test'] !== undefined) return unknownRunner('composer test');
+    const vendorBin = new Set((await r.list('vendor/bin')) ?? []);
+    const requiresPest = [composer?.['require-dev'], composer?.['require']].some((deps) => asObject(deps)?.['pestphp/pest'] !== undefined);
+    if (requiresPest || vendorBin.has('pest')) return unknownRunner('vendor/bin/pest');
+    if (vendorBin.has('phpunit') || (await has('phpunit.xml')) || (await has('phpunit.xml.dist')) || (await has('phpunit.dist.xml'))) return unknownRunner('vendor/bin/phpunit');
+  }
+
+  if (await has('Package.swift')) return unknownRunner('swift test');
+  for (const f of ['GNUmakefile', 'makefile', 'Makefile']) {
+    const text = await r.read(f);
+    if (text !== null && MAKE_TEST_TARGET.test(text)) return unknownRunner('make test');
+  }
+  return null;
+}
+
+async function detectFromFiles(r: ManifestReader, py: PythonInterpreter): Promise<TestCommand | null> {
+  if (await hasPytestConfig(r)) return withScope(pytestCommand(py), 'pytest');
+  const manifest = await detectFromManifests(r);
+  if (manifest !== null) return manifest;
+  if (await hasDjangoRuntests(r)) return withScope(djangoCommand(py), 'django');
+  if (await hasSympyBinTest(r)) return withScope(sympyCommand(py), 'sympy_bintest');
+  if (await hasDjangoManage(r)) return withScope(djangoManageCommand(py), 'unittest');
+  if (await hasPytestLayout(r)) return withScope(pytestCommand(py), 'pytest');
+  if (await hasUnittestPackage(r)) return withScope(unittestCommand(py), 'unittest');
   return null;
 }
 
@@ -237,27 +403,394 @@ export async function detectTestCommand(r: ManifestReader): Promise<TestCommand 
 // Recognising a run of the detected command
 // ---------------------------------------------------------------------------------------
 
+/** A shell word with its quotes: `'a b'`, `"a b"` or a run of other characters. */
+const WORD = `(?:'[^']*'|"[^"]*"|[^\\s'"])+`;
+const LEADING: readonly RegExp[] = [
+  new RegExp(`^cd\\s+${WORD}\\s*&&\\s*`),
+  new RegExp(`^[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|"[^"]*"|[^\\s'"])*\\s+`),
+  /^env\s+(?=[A-Za-z_][A-Za-z0-9_]*=)/,
+  /^time(?:\s+-p)?\s+/,
+  /^timeout\s+(?:-[sk]\s+\S+\s+|--?[A-Za-z][\w-]*(?:=\S+)?\s+)*\d+(?:\.\d+)?[smhd]?\s+/,
+];
+/** an argument of a trailing filter: a word that is not itself a pipe, a list operator or a redirect */
+const FILTER_ARG = `(?:'[^']*'|"[^"]*"|[^\\s'"|&;<>])+`;
+const TRAILING: readonly RegExp[] = [
+  /\s+2>&1$/,
+  /\s*\|\|\s*true$/,
+  new RegExp(`\\s*(?<!\\|)\\|&?\\s*(?:tail|head|grep|egrep|tee|cat)(?:\\s+${FILTER_ARG})*$`),
+];
+
+/** Longer lines are compared as they are: dropping wrappers one pass at a time is quadratic in their number. */
+const MAX_NORMALISED = 4096;
+/** A real line carries a handful of wrappers; the passes stop here whatever is left. */
+const MAX_PASSES = 16;
+
+/**
+ * One line: a line continuation (`\` newline) is a space and any other newline outside quotes a `;` (it separates two
+ * commands), then whitespace collapsed. One pass over the characters, whatever the input.
+ */
+function flattenLines(command: string): string {
+  if (!command.includes('\n')) return command.replace(/\s+/g, ' ').trim();
+  const text = command.replace(/\r\n/g, '\n');
+  let out = '';
+  let quote: string | null = null;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i]!;
+    if (quote !== null) {
+      if (ch === quote) quote = null;
+      else if (ch === '\\' && quote === '"') {
+        out += text.slice(i, i + 2);
+        i += 1;
+        continue;
+      }
+      out += ch;
+    } else if (ch === '\\') {
+      out += text[i + 1] === '\n' ? ' ' : text.slice(i, i + 2);
+      i += 1;
+    } else if (ch === '\n') out += ' ; ';
+    else {
+      if (ch === "'" || ch === '"') quote = ch;
+      out += ch;
+    }
+  }
+  return out.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * True when a list or pipeline is left outside quotes: `;`, `|`, `&&`, `||` or a background `&` (a redirect's `>&`,
+ * `<&` or `&>` is none). One pass over the characters.
+ */
+function composedOutsideQuotes(s: string): boolean {
+  let quote: string | null = null;
+  for (let i = 0; i < s.length; i += 1) {
+    const ch = s[i]!;
+    if (quote !== null) {
+      if (ch === quote) quote = null;
+      else if (ch === '\\' && quote === '"') i += 1;
+    } else if (ch === '\\') i += 1;
+    else if (ch === "'" || ch === '"') quote = ch;
+    else if (ch === ';' || ch === '|') return true;
+    else if (ch === '&' && s[i - 1] !== '>' && s[i - 1] !== '<' && s[i + 1] !== '>') return true;
+  }
+  return false;
+}
+
+/** The shell words of a line, quotes kept (`-Dtest="A B"` is one word). One pass over the characters. */
+function shellWords(s: string): string[] {
+  const words: string[] = [];
+  let word = '';
+  let quote: string | null = null;
+  for (const ch of s) {
+    if (quote !== null) {
+      if (ch === quote) quote = null;
+      word += ch;
+    } else if (ch === ' ') {
+      if (word !== '') words.push(word);
+      word = '';
+    } else {
+      if (ch === "'" || ch === '"') quote = ch;
+      word += ch;
+    }
+  }
+  if (word !== '') words.push(word);
+  return words;
+}
+
+/**
+ * The command a shell line runs, with the wrappers of the module comment dropped; `exitMasked` when a pipe or `|| true`
+ * went. A line over 4 KB keeps its wrappers (and so is recognised only when it has none).
+ */
+export function testInvocation(command: string): { core: string; exitMasked: boolean } {
+  let s = flattenLines(command);
+  if (command.length > MAX_NORMALISED) return { core: s, exitMasked: s.includes('|') };
+  let exitMasked = false;
+  for (let changed = true, pass = 0; changed && pass < MAX_PASSES; pass += 1) {
+    changed = false;
+    for (const re of LEADING) {
+      const next = s.replace(re, '');
+      if (next !== s && next !== '') {
+        s = next;
+        changed = true;
+      }
+    }
+    for (const re of TRAILING) {
+      const next = s.replace(re, '');
+      if (next !== s && next !== '') {
+        if (re !== TRAILING[0]) exitMasked = true;
+        s = next;
+        changed = true;
+      }
+    }
+  }
+  // a pipe left in the line (`npm test | tail -5 | sh`) reports its last command's status too
+  return { core: s, exitMasked: exitMasked || s.includes('|') };
+}
+
+type Family = 'js' | 'pytest' | 'unittest' | 'django' | 'sympy' | 'cargo' | 'go' | 'rspec' | 'minitest' | 'maven' | 'gradle' | 'dotnet' | 'mix' | 'php' | 'deno' | 'swift' | 'make';
+
+const unquote = (t: string): string => t.replace(/^(['"])(.*)\1$/, '$2');
+const baseName = (t: string): string => {
+  const u = unquote(t);
+  return u.slice(u.lastIndexOf('/') + 1);
+};
+const NO_ARGS: ReadonlySet<string> = new Set();
+
+/** The index of the first token at or after `i` that is not an option; an option in `withArg` also takes the next token. */
+function skipOptions(toks: readonly string[], i: number, withArg: ReadonlySet<string> = NO_ARGS): number {
+  let j = i;
+  while (j < toks.length && toks[j]!.startsWith('-')) j += withArg.has(toks[j]!) ? 2 : 1;
+  return j;
+}
+
+const JS_RUNNERS: ReadonlySet<string> = new Set(['vitest', 'jest', 'mocha', 'ava', 'tap']);
+const NODE_ARG_FLAGS: ReadonlySet<string> = new Set(['-r', '--require', '--import', '--loader', '--experimental-loader', '-C', '--conditions', '--env-file', '--test-reporter', '--test-reporter-destination', '--test-name-pattern', '--test-skip-pattern', '--test-concurrency', '--test-timeout', '--test-shard']);
+const PM_ARG_FLAGS: Readonly<Record<string, ReadonlySet<string>>> = {
+  npm: new Set(['--prefix', '-w', '--workspace', '--userconfig', '--cache', '--registry', '--loglevel']),
+  pnpm: new Set(['-C', '--dir', '--filter', '-F', '--filter-prod', '--workspace-concurrency', '--reporter', '--loglevel', '--test-pattern']),
+  yarn: new Set(['--cwd']),
+  bun: new Set(['--cwd', '--filter', '-F']),
+};
+/** npx / bunx / npm exec / bun x options that neither name, fetch nor configure a package (`npx [--no-install]`) */
+const NPX_PLAIN_OPTIONS: ReadonlySet<string> = new Set(['--no-install', '--no', '--offline', '--prefer-offline', '-q', '--quiet', '--silent', '--bun', '--workspaces', '-ws', '--include-workspace-root', '--']);
+const NPX_WORKSPACE_FLAGS: ReadonlySet<string> = new Set(['-w', '--workspace']);
+/** package-manager options that choose what an exec fetches or runs, or where from */
+const FETCH_CONFIG = /^(?:-p|--package|-y|--yes|-c|--call|--registry|--userconfig|--globalconfig)(?:=|$)/;
+const PY_PROJECT_RUNNERS: ReadonlySet<string> = new Set(['uv', 'poetry', 'pdm', 'pipenv', 'hatch', 'rye']);
+const PY_RUN_ARG_FLAGS: ReadonlySet<string> = new Set(['--python', '-p', '--extra', '--group', '--package', '--directory', '--project', '--env-file']);
+/** `uv run` options that add a package or an index: the run installs what they name */
+const PY_FETCH_OPTION = /^(?:--with|--with-requirements|--with-editable|--index|--default-index|--index-url|--extra-index-url|--find-links|-f)(?:=|$)/;
+const MAKE_ARG_FLAGS: ReadonlySet<string> = new Set(['-C', '--directory', '-f', '--file', '--makefile', '-I', '--include-dir', '-o', '--old-file', '-W', '--what-if', '--new-file']);
+/** make options whose count is optional (`-j`, `-j 4`, `-j4`) */
+const MAKE_COUNT_FLAGS: ReadonlySet<string> = new Set(['-j', '--jobs', '-l', '--load-average']);
+const RUBY_ARG_FLAGS: ReadonlySet<string> = new Set(['-I', '-r', '-C', '-E']);
+const MVN_ARG_FLAGS: ReadonlySet<string> = new Set(['-pl', '--projects', '-T', '--threads', '-P', '--activate-profiles', '-D', '--define', '-rf', '--resume-from', '-f', '--file']);
+/** the lifecycle phases up to `test`: nothing that packages, installs or deploys, and no plugin goal (`exec:exec`) */
+const MVN_GOAL = /^(?:clean|validate|initialize|compile|test-compile|test|(?:generate|process)-(?:test-)?(?:sources|resources)|process-(?:test-)?classes)$/;
+const MVN_TEST = /^test$/;
+const GRADLE_ARG_FLAGS: ReadonlySet<string> = new Set(['--tests', '-x', '--exclude-task', '-p', '--project-dir', '--console', '--warning-mode', '--max-workers']);
+const GRADLE_TASK = /^:?(?:[\w.-]+:)*(?:clean|cleanTest|test|check)$/;
+const GRADLE_TEST = /^:?(?:[\w.-]+:)*test$/;
+/** a build scan uploads the build to a server */
+const GRADLE_DENIED = /^--scan$/;
+const MAKE_TARGET = /^(?:test|clean|all|build|check)$|^[A-Za-z_][A-Za-z0-9_]*=/;
+const MAKE_TEST = /^test$/;
+
+/**
+ * A build tool's run is a test run only when every goal, task or target is allow-listed and one of them runs the
+ * tests: `mvn deploy test`, `./gradlew publish test` and `make install test` also publish or install. Options may
+ * appear anywhere; the argument of one in `argFlags` is skipped, and so is a count after one in `countFlags`.
+ */
+function onlyTestGoals(toks: readonly string[], from: number, o: { argFlags: ReadonlySet<string>; allowed: RegExp; test: RegExp; denied?: RegExp; countFlags?: ReadonlySet<string> }): boolean {
+  let sawTest = false;
+  for (let k = from; k < toks.length; k += 1) {
+    const t = toks[k]!;
+    if (t.startsWith('-')) {
+      if (o.denied?.test(t) === true) return false;
+      if (o.argFlags.has(t)) k += 1;
+      else if (o.countFlags?.has(t) === true && /^\d+(\.\d+)?$/.test(toks[k + 1] ?? '')) k += 1;
+    } else if (!o.allowed.test(unquote(t))) return false;
+    else if (o.test.test(unquote(t))) sawTest = true;
+  }
+  return sawTest;
+}
+
+const isTestScript = (s: string | undefined): boolean => s !== undefined && /^test(:|$)/.test(s);
+
+/** vitest / jest / mocha / ava / tap (any path to the binary), or `node --test` / `tsx --test`. */
+function jsRunnerAt(toks: readonly string[], i: number): boolean {
+  const name = baseName(toks[i] ?? '');
+  if (JS_RUNNERS.has(name)) return true;
+  if (name !== 'node' && name !== 'tsx') return false;
+  for (let j = i + 1; j < toks.length && toks[j]!.startsWith('-'); j += NODE_ARG_FLAGS.has(toks[j]!) ? 2 : 1) if (toks[j] === '--test') return true;
+  return false;
+}
+
+/** `npm test`, `pnpm --filter x run test`, `yarn workspace a test`, `bun run test`, `pnpm exec vitest`, `yarn jest`, … */
+function packageManagerFamily(pm: string, toks: readonly string[], i: number): Family | null {
+  const flags = PM_ARG_FLAGS[pm] ?? NO_ARGS;
+  let j = skipOptions(toks, i + 1, flags);
+  if (pm === 'yarn' && toks[j] === 'workspace') j = skipOptions(toks, j + 2, flags);
+  else if (pm === 'yarn' && toks[j] === 'workspaces') j = toks[j + 1] === 'foreach' ? skipOptions(toks, j + 2, new Set(['--from', '--include', '--exclude', '-j', '--jobs'])) : j + 1;
+  else if (pm === 'pnpm' && toks[j] === 'recursive') j = skipOptions(toks, j + 1, flags);
+  const sub = toks[j];
+  if (sub === 'test' || ((pm === 'npm' || pm === 'pnpm') && (sub === 't' || sub === 'tst'))) return 'js';
+  if (sub === 'run' || sub === 'run-script') {
+    const k = skipOptions(toks, j + 1, flags);
+    return isTestScript(toks[k]) || jsRunnerAt(toks, k) ? 'js' : null;
+  }
+  // npm exec|x and bun x fetch a runner they cannot find; pnpm exec and yarn exec run only what is installed; dlx
+  // always fetches, so it never counts
+  if ((pm === 'npm' || pm === 'bun') && (sub === 'exec' || sub === 'x')) return !toks.slice(i + 1, j).some((t) => FETCH_CONFIG.test(t)) && fetchedRunnerAt(toks, j + 1) ? 'js' : null;
+  if (sub === 'exec') return jsRunnerAt(toks, skipOptions(toks, j + 1)) ? 'js' : null;
+  // pnpm, yarn and bun run a script or a local binary named directly (`pnpm test:unit`, `yarn vitest`)
+  if (pm !== 'npm' && (isTestScript(sub) || jsRunnerAt(toks, j))) return 'js';
+  return null;
+}
+
+/**
+ * `npx [--no-install] vitest …`: a launcher that fetches a package it cannot find counts only for a runner named bare
+ * (not `user/vitest`, `vitest@1` or a URL, which fetch that package) after options that neither name, fetch nor
+ * configure one.
+ */
+function fetchedRunnerAt(toks: readonly string[], i: number): boolean {
+  let k = i;
+  for (; k < toks.length && toks[k]!.startsWith('-'); k += 1) {
+    const t = toks[k]!;
+    if (NPX_WORKSPACE_FLAGS.has(t)) k += 1;
+    else if (!NPX_PLAIN_OPTIONS.has(t) && !t.startsWith('--workspace=')) return false;
+  }
+  return JS_RUNNERS.has(toks[k] ?? '');
+}
+
+/** `uv run [opts] <command>`, or null when an option adds a package or an index (the run would install it). */
+function projectRunTarget(toks: readonly string[], i: number): number | null {
+  let k = i;
+  while (k < toks.length && toks[k]!.startsWith('-')) {
+    if (PY_FETCH_OPTION.test(toks[k]!)) return null;
+    k += PY_RUN_ARG_FLAGS.has(toks[k]!) ? 2 : 1;
+  }
+  return k;
+}
+
+/** `python [-X opt] -m pytest|unittest`, `python tests/runtests.py`, `python bin/test`, `python manage.py test`, `python .venv/bin/pytest`. */
+function pythonFamily(toks: readonly string[], i: number): Family | null {
+  let j = i + 1;
+  while (j < toks.length && toks[j]!.startsWith('-')) {
+    const t = toks[j]!;
+    if (t === '-m') {
+      const mod = toks[j + 1];
+      return mod === 'pytest' ? 'pytest' : mod === 'unittest' ? 'unittest' : null;
+    }
+    if (t === '-c') return null;
+    j += t === '-X' || t === '-W' ? 2 : 1;
+  }
+  return scriptFamily(toks, j);
+}
+
+function scriptFamily(toks: readonly string[], i: number): Family | null {
+  const tok = toks[i];
+  if (tok === undefined) return null;
+  const script = unquote(tok);
+  const name = baseName(script);
+  if (name === 'pytest' || name === 'py.test') return 'pytest';
+  if (name === 'runtests.py') return 'django';
+  if (name === 'manage.py') return toks[skipOptions(toks, i + 1)] === 'test' ? 'unittest' : null;
+  if (/(^|\/)bin\/test$/.test(script)) return 'sympy';
+  return null;
+}
+
+/** The runner family the command at `toks[i]` belongs to, or null (module comment, "Recognition"). `depth` counts launchers. */
+function familyAt(toks: readonly string[], i: number, depth = 0): Family | null {
+  const head = toks[i];
+  if (head === undefined || depth > 3) return null;
+  const name = baseName(head);
+  const sub = (k: number): string | undefined => toks[skipOptions(toks, k)];
+  if (/^python[0-9.]*$/.test(name) || name === 'py') return pythonFamily(toks, i);
+  if (PY_PROJECT_RUNNERS.has(name) && toks[i + 1] === 'run') {
+    const k = projectRunTarget(toks, i + 2);
+    return k === null ? null : familyAt(toks, k, depth + 1);
+  }
+  if (name === 'bundle' && toks[i + 1] === 'exec') return familyAt(toks, skipOptions(toks, i + 2), depth + 1);
+  if (name === 'npm' || name === 'pnpm' || name === 'yarn' || name === 'bun') return packageManagerFamily(name, toks, i);
+  if (name === 'npx' || name === 'bunx') return fetchedRunnerAt(toks, i + 1) ? 'js' : null;
+  if (jsRunnerAt(toks, i)) return 'js';
+  const script = scriptFamily(toks, i);
+  if (script !== null) return script;
+  switch (name) {
+    case 'cargo': {
+      const k = skipOptions(toks, toks[i + 1]?.startsWith('+') === true ? i + 2 : i + 1);
+      return toks[k] === 'test' || toks[k] === 't' || (toks[k] === 'nextest' && toks[k + 1] === 'run') ? 'cargo' : null;
+    }
+    case 'go':
+      return toks[skipOptions(toks, i + 1, new Set(['-C']))] === 'test' ? 'go' : null;
+    case 'rspec':
+      return 'rspec';
+    case 'rake': {
+      const task = sub(i + 1);
+      return task === 'spec' ? 'rspec' : isTestScript(task) ? 'minitest' : null;
+    }
+    case 'rails': {
+      const task = sub(i + 1);
+      return task === 't' || isTestScript(task) ? 'minitest' : null;
+    }
+    case 'ruby': {
+      const k = skipOptions(toks, i + 1, RUBY_ARG_FLAGS);
+      return /(^|\/)(test_[^/]*|[^/]*_test)\.rb$/.test(unquote(toks[k] ?? '')) ? 'minitest' : null;
+    }
+    case 'mvn':
+    case 'mvnw':
+      return onlyTestGoals(toks, i + 1, { argFlags: MVN_ARG_FLAGS, allowed: MVN_GOAL, test: MVN_TEST }) ? 'maven' : null;
+    case 'gradle':
+    case 'gradlew':
+      return onlyTestGoals(toks, i + 1, { argFlags: GRADLE_ARG_FLAGS, allowed: GRADLE_TASK, test: GRADLE_TEST, denied: GRADLE_DENIED }) ? 'gradle' : null;
+    case 'dotnet':
+      return sub(i + 1) === 'test' ? 'dotnet' : null;
+    case 'mix':
+      return sub(i + 1) === 'test' ? 'mix' : null;
+    case 'swift':
+      return sub(i + 1) === 'test' ? 'swift' : null;
+    case 'deno': {
+      const k = skipOptions(toks, i + 1);
+      return toks[k] === 'test' || (toks[k] === 'task' && isTestScript(sub(k + 1))) ? 'deno' : null;
+    }
+    case 'composer': {
+      const k = skipOptions(toks, i + 1, new Set(['-d', '--working-dir']));
+      return isTestScript(toks[k]) || ((toks[k] === 'run' || toks[k] === 'run-script') && isTestScript(sub(k + 1))) ? 'php' : null;
+    }
+    case 'phpunit':
+    case 'pest':
+      return 'php';
+    case 'php': {
+      const k = skipOptions(toks, i + 1, new Set(['-d', '-c']));
+      const script = baseName(toks[k] ?? '');
+      return script === 'phpunit' || script === 'pest' || (script === 'artisan' && toks[k + 1] === 'test') ? 'php' : null;
+    }
+    case 'make':
+    case 'gmake':
+      return onlyTestGoals(toks, i + 1, { argFlags: MAKE_ARG_FLAGS, allowed: MAKE_TARGET, test: MAKE_TEST, countFlags: MAKE_COUNT_FLAGS }) ? 'make' : null;
+    default:
+      return null;
+  }
+}
+
+function familyOf(core: string): Family | null {
+  return familyAt(shellWords(core), 0);
+}
+
 const SUBCOMMAND_LAUNCHERS: ReadonlySet<string> = new Set(['npm', 'yarn', 'pnpm', 'bun', 'cargo', 'go', 'make']);
 
-/** True when `command` runs the detected test command (same program, e.g. `pytest tests/x.py` for `pytest -q`). */
-export function isTestCommand(command: string, test: TestCommand | null): boolean {
-  if (!test) return false;
-  const norm = (s: string): string => s.replace(/\s+/g, ' ').trim();
-  const c = norm(command);
-  const t = norm(test.command);
-  if (c === t || c.startsWith(`${t} `)) return true;
+/** The older rule, for a detected command outside every family: the same program (and subcommand, for a launcher). */
+function sameProgram(c: string, t: string): boolean {
   const program = (s: string): string => {
     const toks = s.split(' ');
-    // `python -m pytest ...` and `npx vitest ...` name the runner after a launcher.
     if ((toks[0] === 'python' || toks[0] === 'python3') && toks[1] === '-m' && toks[2]) return toks[2];
     if (toks[0] === 'npx' && toks[1]) return toks[1];
-    // Package managers and toolchains take a subcommand: `npm run build` is not `npm test`,
-    // `cargo build` is not `cargo test`; compare the first two tokens for these.
     if (toks[0] && SUBCOMMAND_LAUNCHERS.has(toks[0]) && toks[1]) return `${toks[0]} ${toks[1]}`;
     return toks[0] ?? '';
   };
   const pc = program(c);
   return pc.length > 0 && pc === program(t);
+}
+
+/**
+ * True when `command` runs the workspace's detected test command: the command itself, a scoped or extended form of it
+ * (`pytest -q tests/x.py` for `pytest -q`), or another spelling of the same runner family (`npx vitest run a.test.ts`,
+ * `node --test test/a.test.js` or `pnpm test` for a detected `npm test`; `uv run pytest` for `python3 -m pytest -q`),
+ * after the wrappers of the module comment are dropped. A detected `make test` accepts any recognised family. An
+ * extension of a detected command in a family must itself be in the family: `./mvnw test deploy` extends `./mvnw test`
+ * and also deploys. A list or pipeline left after the wrappers (`npx vitest run && sed -i x src/a.ts`) runs something
+ * else as well, whose edits must still count as edits, so it is no test run.
+ */
+export function isTestCommand(command: string, test: TestCommand | null): boolean {
+  if (!test) return false;
+  const c = testInvocation(command).core;
+  const t = testInvocation(test.command).core;
+  if (c === t) return true;
+  if (composedOutsideQuotes(c)) return false;
+  const ft = familyOf(t);
+  if (ft === null) return c.startsWith(`${t} `) || sameProgram(c, t);
+  const fc = familyOf(c);
+  return fc !== null && (fc === ft || ft === 'make');
 }
 
 /** shell composition would make "the test command" run something else as well; one plain invocation only */
@@ -266,7 +799,8 @@ const SHELL_COMPOSITION = /[;&|<>`$(){}\\\n]/;
 /**
  * True when `command` is one plain invocation of the detected workspace test command or a scoped
  * form of it (`pytest -q tests/test_x.py::test_y`, `python3 -m pytest -q` for `pytest -q`): the same
- * predicate the execute stage uses to record `workspace.lastTestRun`, minus any shell composition.
+ * predicate the execute stage uses to record `workspace.lastTestRun`, minus any shell composition
+ * (a pipe, `&&`, `||`, a redirect, a substitution), so a composed line is never a verification run.
  */
 export function isVerificationRun(command: string, test: TestCommand | null): boolean {
   if (test === null || SHELL_COMPOSITION.test(command)) return false;
@@ -395,9 +929,12 @@ export function sympyScope(command: string): ScopeBuilder {
 /** unittest: `python -m unittest -v <module or dotted labels>` (discovery is replaced by the explicit names). */
 export function unittestScope(command: string): ScopeBuilder {
   const py = command.trim().split(/\s+/)[0] ?? 'python3';
+  // Django's `manage.py test` takes the same dotted labels, and needs its settings: the labels go after it
+  const manage = /(^|\s|\/)manage\.py\s+test(\s|$)/.test(command);
   return (targets) => {
     const labels = uniq(targets.map((t) => unittestModuleLabel(t)).filter((l) => l !== ''));
-    return labels.length === 0 ? command : `${py} -m unittest -v ${labels.map(quoteArg).join(' ')}`;
+    if (labels.length === 0) return command;
+    return manage ? `${command.trim()} ${labels.map(quoteArg).join(' ')}` : `${py} -m unittest -v ${labels.map(quoteArg).join(' ')}`;
   };
 }
 
@@ -871,23 +1408,236 @@ const NODE_TEST_SUMMARY = /^(?:#|ℹ) (tests|suites|pass|fail|cancelled|skipped|
  * when stdout is not a TTY) and the spec summary (`ℹ pass 1`, `ℹ fail 1`, … `--test-reporter=spec` or a TTY). A
  * `"test": "node --test"` script is detected as `npm test` with runner `npm`, so without this its output parsed to nothing and
  * no run of such a workspace could ever be `complete`. Both `pass` and `fail` rows are required (a stray `# pass` line in
- * other output is not a summary); the last value of each row wins. `cancelled` tests count as errors (a timeout or a
- * cancelled parent), `skipped` and `todo` as skipped.
+ * other output is not a summary). Each row is summed over every summary in the output: `npm test --workspaces` prints one
+ * per workspace. `cancelled` tests count as errors (a timeout or a cancelled parent), `skipped` and `todo` as skipped.
  */
 export function parseNodeTest(text: string): TestCounts | null {
   const rows = new Map<string, number>();
-  for (const m of text.replace(ANSI, '').matchAll(NODE_TEST_SUMMARY)) rows.set(m[1]!, num(m[2]));
+  for (const m of text.replace(ANSI, '').matchAll(NODE_TEST_SUMMARY)) rows.set(m[1]!, (rows.get(m[1]!) ?? 0) + num(m[2]));
   const pass = rows.get('pass');
   const fail = rows.get('fail');
   if (pass === undefined || fail === undefined) return null;
   return { passed: pass, failed: fail, errors: rows.get('cancelled') ?? 0, skipped: (rows.get('skipped') ?? 0) + (rows.get('todo') ?? 0) };
 }
 
-// parseNodeTest is LAST: the list is tried in order and the first reader wins, so appending it only adds counts where no
-// other format matched — the legacy modes gain facts, never different ones (docs/AGENT-LOOP-DESIGN.md §15 S4).
-const ALL_PARSERS: readonly ((t: string) => TestCounts | null)[] = [parsePytest, parseJest, parseVitest, parseCargo, parseGo, parseUnittest, parseSympyBinTest, parseNodeTest];
+const tally = (passed: number, failed: number, errors: number, skipped: number): TestCounts => ({ passed: Math.max(0, passed), failed, errors, skipped });
 
-/** Pure. Parses from the tail; `npm`/`unknown` try every format. */
+/** RSpec: `3 examples, 1 failure, 1 pending` and `0 examples, 0 failures, 1 error occurred outside of examples`. */
+export function parseRspec(text: string): TestCounts | null {
+  const m = lastMatch(text.replace(ANSI, ''), /^\s*(\d+) examples?, (\d+) failures?(?:, (\d+) pending)?(?:, (\d+) errors? occurred outside of examples)?\s*$/gm);
+  if (m === null) return null;
+  const failed = num(m[2]);
+  const pending = num(m[3]);
+  return tally(num(m[1]) - failed - pending, failed, num(m[4]), pending);
+}
+
+/** Minitest `4 runs, 2 assertions, 1 failures, 1 errors, 1 skips`; test-unit `3 tests, 2 assertions, 1 failures, 0 errors, 0 pendings, 1 omissions, …`. */
+export function parseMinitest(text: string): TestCounts | null {
+  const m = lastMatch(text.replace(ANSI, ''), /^\s*(\d+) (?:runs?|tests?), \d+ assertions?, (\d+) failures?, (\d+) errors?, (?:(\d+) skips?|(\d+) pendings?, (\d+) omissions?)/gm);
+  if (m === null) return null;
+  const failed = num(m[2]);
+  const errors = num(m[3]);
+  const skipped = num(m[4]) + num(m[5]) + num(m[6]);
+  return tally(num(m[1]) - failed - errors - skipped, failed, errors, skipped);
+}
+
+const SUREFIRE = /Tests run: (\d+), Failures: (\d+), Errors: (\d+), Skipped: (\d+)(.*)$/gm;
+
+/**
+ * Maven Surefire / Failsafe: the `Results:` totals line `Tests run: 3, Failures: 1, Errors: 0, Skipped: 0`, summed over
+ * the modules of a reactor build (one totals line each); the per-class lines (`…, Time elapsed: 0.05 s - in a.BTest`)
+ * are counted only when no totals line survived (a killed build).
+ */
+export function parseMaven(text: string): TestCounts | null {
+  const all = [...text.replace(ANSI, '').matchAll(SUREFIRE)];
+  const totals = all.filter((m) => !/Time elapsed/.test(m[5] ?? ''));
+  const rows = totals.length > 0 ? totals : all;
+  if (rows.length === 0) return null;
+  let run = 0;
+  let failed = 0;
+  let errors = 0;
+  let skipped = 0;
+  for (const m of rows) {
+    run += num(m[1]);
+    failed += num(m[2]);
+    errors += num(m[3]);
+    skipped += num(m[4]);
+  }
+  return tally(run - failed - errors - skipped, failed, errors, skipped);
+}
+
+/** Gradle prints counts only when tests fail: `3 tests completed, 1 failed, 1 skipped`, one line per failing test task. */
+export function parseGradle(text: string): TestCounts | null {
+  let seen = false;
+  let done = 0;
+  let failed = 0;
+  let skipped = 0;
+  for (const m of text.replace(ANSI, '').matchAll(/^\s*(\d+) tests? completed(?:, (\d+) failed)?(?:, (\d+) skipped)?\s*$/gm)) {
+    seen = true;
+    done += num(m[1]);
+    failed += num(m[2]);
+    skipped += num(m[3]);
+  }
+  return seen ? tally(done - failed - skipped, failed, 0, skipped) : null;
+}
+
+/**
+ * `dotnet test`: `Passed!  - Failed:     0, Passed:     3, Skipped:     0, Total:     3, Duration: 15 ms - A.Tests.dll (net8.0)`
+ * (or `Failed!  - …`), summed over the test projects; the terminal logger's `Test summary: total: 3, failed: 0,
+ * succeeded: 3, skipped: 0` when that is all there is.
+ */
+export function parseDotnet(text: string): TestCounts | null {
+  const clean = text.replace(ANSI, '');
+  let seen = false;
+  const c = tally(0, 0, 0, 0);
+  for (const m of clean.matchAll(/(?:Passed|Failed)!\s+-\s+Failed:\s+(\d+),\s+Passed:\s+(\d+),\s+Skipped:\s+(\d+),\s+Total:\s+(\d+)/g)) {
+    seen = true;
+    c.failed += num(m[1]);
+    c.passed += num(m[2]);
+    c.skipped += num(m[3]);
+  }
+  if (seen) return c;
+  const s = lastMatch(clean, /Test summary: total: (\d+), failed: (\d+), succeeded: (\d+), skipped: (\d+)/g);
+  return s === null ? null : tally(num(s[3]), num(s[2]), 0, num(s[4]));
+}
+
+/**
+ * ExUnit (`mix test`): `1 doctest, 3 tests, 1 failure, 2 excluded, 1 invalid, 1 skipped`. Every counted kind (doctests,
+ * properties, tests) is a test; excluded and skipped tests are skipped, invalid ones (a failed setup_all) errors.
+ */
+export function parseExUnit(text: string): TestCounts | null {
+  const m = lastMatch(text.replace(ANSI, ''), /^\s*((?:\d+ (?:doctests?|propert(?:y|ies)|tests?|features?), )+)(\d+) failures?((?:, \d+ (?:excluded|invalid|skipped))*)\s*$/gm);
+  if (m === null) return null;
+  let total = 0;
+  for (const k of (m[1] ?? '').matchAll(/(\d+) /g)) total += num(k[1]);
+  const extra = (kind: string): number => num(new RegExp(`(\\d+) ${kind}`).exec(m[3] ?? '')?.[1]);
+  const failed = num(m[2]);
+  const skipped = extra('excluded') + extra('skipped');
+  const errors = extra('invalid');
+  return tally(total - failed - skipped - errors, failed, errors, skipped);
+}
+
+/**
+ * PHPUnit `OK (3 tests, 5 assertions)` or `Tests: 3, Assertions: 3, Errors: 1, Failures: 1, Skipped: 1.` (after
+ * `FAILURES!`, `ERRORS!` or `OK, but …`); Pest / `php artisan test` `Tests:    1 failed, 2 passed (3 assertions)`.
+ * Skipped and incomplete tests are skipped; risky tests, warnings and deprecations passed.
+ */
+export function parsePhpunit(text: string): TestCounts | null {
+  const clean = text.replace(ANSI, '');
+  const ok = lastMatch(clean, /^\s*OK \((\d+) tests?, \d+ assertions?\)\s*$/gm);
+  const fields = lastMatch(clean, /^\s*Tests: (\d+), Assertions: \d+((?:, [A-Za-z ]+: \d+)*)\.?\s*$/gm);
+  const pest = lastMatch(clean, /^\s*Tests:\s+((?:\d+ [a-z]+(?:, )?)+?)\s*(?:\(\d+ assertions?\))?\s*$/gm);
+  const latest = [ok, fields, pest].filter((m): m is RegExpExecArray => m !== null).sort((a, b) => b.index - a.index)[0];
+  if (latest === undefined) return null;
+  if (latest === ok) return tally(num(ok[1]), 0, 0, 0);
+  if (latest === fields) {
+    const f = (name: string): number => num(new RegExp(`${name}: (\\d+)`).exec(fields[2] ?? '')?.[1]);
+    const failed = f('Failures');
+    const errors = f('Errors');
+    const skipped = f('Skipped') + f('Incomplete');
+    return tally(num(fields[1]) - failed - errors - skipped, failed, errors, skipped);
+  }
+  const c = tally(0, 0, 0, 0);
+  for (const part of (latest[1] ?? '').matchAll(/(\d+) ([a-z]+)/g)) {
+    const n = num(part[1]);
+    if (part[2] === 'failed') c.failed += n;
+    else if (part[2] === 'skipped' || part[2] === 'incomplete' || part[2] === 'todo' || part[2] === 'todos') c.skipped += n;
+    else c.passed += n; // passed, risky, warnings, deprecated, notices
+  }
+  return c;
+}
+
+/** Deno: `ok | 3 passed (2 steps) | 0 failed | 1 ignored (15ms)` or `FAILED | 2 passed | 1 failed (20ms)`. */
+export function parseDeno(text: string): TestCounts | null {
+  const m = lastMatch(text.replace(ANSI, ''), /^(?:ok|FAILED) \| (\d+) passed(?: \(\d+ steps?\))? \| (\d+) failed(?: \(\d+ steps?\))?((?: \| \d+ [a-z ]+?)*)(?: \([^)]*\))?\s*$/gm);
+  if (m === null) return null;
+  return tally(num(m[1]), num(m[2]), 0, num(/(\d+) ignored/.exec(m[3] ?? '')?.[1]));
+}
+
+/** Mocha: `3 passing (8ms)`, then `1 pending` and `2 failing` on the lines that follow it. */
+export function parseMocha(text: string): TestCounts | null {
+  const clean = text.replace(ANSI, '');
+  const m = lastMatch(clean, /^\s*(\d+) passing \([^)]*\)\s*$/gm);
+  if (m === null) return null;
+  const after = clean.slice(m.index + m[0].length).split('\n').slice(0, 4).join('\n');
+  return tally(num(m[1]), num(/^\s*(\d+) failing\s*$/m.exec(after)?.[1]), 0, num(/^\s*(\d+) pending\s*$/m.exec(after)?.[1]));
+}
+
+/** Bun's runner: ` 3 pass`, ` 1 fail`, ` 1 skip`, ` 1 todo`, ` 1 error` rows just above `Ran 5 tests across 2 files.`. */
+export function parseBun(text: string): TestCounts | null {
+  const clean = text.replace(ANSI, '');
+  const ran = lastMatch(clean, /^Ran \d+ tests? across \d+ files?\./gm);
+  if (ran === null) return null;
+  const rows = clean.slice(0, ran.index).split('\n').slice(-10).join('\n');
+  const row = (kind: string): number => num(new RegExp(`^\\s*(\\d+) ${kind}\\s*$`, 'm').exec(rows)?.[1]);
+  return tally(row('pass'), row('fail'), row('errors?'), row('skip') + row('todo'));
+}
+
+/**
+ * `swift test`: XCTest's last `Executed 5 tests, with 1 test skipped and 2 failures (0 unexpected) in …` (the `All tests`
+ * suite) plus swift-testing's `Test run with 3 tests passed after 0.001 seconds.` / `… failed after … with 2 issues.`
+ * Both count assertion failures or issues, not failing tests, so a test's failures are capped at the tests run.
+ */
+export function parseSwift(text: string): TestCounts | null {
+  const clean = text.replace(ANSI, '');
+  const x = lastMatch(clean, /Executed (\d+) tests?, with (?:(\d+) tests? skipped and )?(\d+) failures? \(\d+ unexpected\)/g);
+  const st = lastMatch(clean, /Test run with (\d+) tests?(?: in \d+ suites?)? (passed|failed) after [\d.]+ seconds?(?: with (\d+) issues?)?/g);
+  if (x === null && st === null) return null;
+  const c = tally(0, 0, 0, 0);
+  if (x !== null) {
+    const ran = num(x[1]) - num(x[2]);
+    const failed = Math.min(num(x[3]), Math.max(0, ran));
+    c.passed += Math.max(0, ran - failed);
+    c.failed += failed;
+    c.skipped += num(x[2]);
+  }
+  if (st !== null) {
+    const total = num(st[1]);
+    const failed = st[2] === 'failed' ? Math.min(Math.max(1, num(st[3])), total) : 0;
+    c.passed += total - failed;
+    c.failed += failed;
+  }
+  return c;
+}
+
+// The list is tried in order and the first reader wins, so a reader appended after the others only adds counts where no
+// other format matched — the legacy modes gain facts, never different ones (docs/AGENT-LOOP-DESIGN.md §15 S4). parseNodeTest
+// joined last in S4; the readers after it cover the ecosystems detection learned later (Ruby, JVM, .NET, Elixir, PHP, Deno,
+// mocha, Bun, Swift).
+const ALL_PARSERS: readonly ((t: string) => TestCounts | null)[] = [
+  parsePytest,
+  parseJest,
+  parseVitest,
+  parseCargo,
+  parseGo,
+  parseUnittest,
+  parseSympyBinTest,
+  parseNodeTest,
+  parseRspec,
+  parseMinitest,
+  parseMaven,
+  parseDotnet,
+  parseExUnit,
+  parsePhpunit,
+  parseDeno,
+  parseMocha,
+  parseBun,
+  parseSwift,
+  parseGradle,
+];
+
+function parseAny(t: string): TestCounts | null {
+  for (const p of ALL_PARSERS) {
+    const r = p(t);
+    if (r) return r;
+  }
+  return null;
+}
+
+/**
+ * Pure. Parses from the tail; `npm`/`unknown` try every format. jest and vitest read their own formats first and then
+ * every other one: the whole JS family is one test command (`node --test` or mocha run in a vitest workspace).
+ */
 export function parseTestOutput(runner: TestRunner, output: string): TestCounts | null {
   if (typeof output !== 'string' || output.length === 0) return null;
   const t = tail(output);
@@ -900,21 +1650,16 @@ export function parseTestOutput(runner: TestRunner, output: string): TestCounts 
     case 'sympy_bintest':
       return parseSympyBinTest(t);
     case 'jest':
-      return parseJest(t) ?? parseVitest(t);
+      return parseJest(t) ?? parseVitest(t) ?? parseAny(t);
     case 'vitest':
-      return parseVitest(t) ?? parseJest(t);
+      return parseVitest(t) ?? parseJest(t) ?? parseAny(t);
     case 'cargo':
       return parseCargo(t);
     case 'go':
       return parseGo(t);
     case 'npm':
-    case 'unknown': {
-      for (const p of ALL_PARSERS) {
-        const r = p(t);
-        if (r) return r;
-      }
-      return null;
-    }
+    case 'unknown':
+      return parseAny(t);
     default:
       return null;
   }
