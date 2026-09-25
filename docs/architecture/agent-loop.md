@@ -253,7 +253,9 @@ replay stays off for the run.
   `jevcode run --resume <id>` continues a stopped run from its last committed step.
 - A reply (`answered`) is not resumable; `-c` or `--resume` on one sends your message as the next turn instead.
 - `/undo`, `/rewind` and `/diff N` work per step exactly as in every other mode. Pause lands between steps; `/steer`
-  text reaches the model as a note before its next turn, and any calls it had queued are answered "not executed".
+  text reaches the model as a note before its next turn, and any calls it had queued are answered "not executed". A
+  steer typed while a reply (or a task's final answer) streams is applied to that step when the turn ends, and one more
+  turn answers it before the run can finish; nothing is left queued.
 
 ## The code
 

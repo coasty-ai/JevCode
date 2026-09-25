@@ -5,8 +5,8 @@
  * the calls of the latest assistant record that have no result — from the transcript, every time. A non-empty queue
  * yields the next segment: a run of resolvable calls (an `observe` step, resolved here in parallel batches of 8) or one
  * mutating call (an `act` step the engine executes). An empty queue samples a turn — after the pending loop nudge
- * (RA1), the due progress check (RA2), and masking or compaction — and a turn without calls goes through the stop rules:
- * continue, verify, or finish.
+ * (RA1), the due progress check (RA2), and masking or compaction — and a turn without calls first absorbs a steer the user
+ * sent while it streamed (one more turn answers it), then goes through the stop rules: continue, verify, or finish.
  *
  * `observe()` receives the engine's result of an act / verify / finish step before the checkpoint: the tool result goes
  * into the transcript (memory first, then disk), the counters and the loop detector are updated, and the state is handed
@@ -179,6 +179,9 @@ class Driver implements AgentDriver {
         if (sampled.calls.length > 0) continue;
         reply = sampled.record;
       }
+      // §10 Steer: a message the user sent while this turn streamed is answered before the stop rules may finish past it — one
+      // more turn per absorbed steer; the continuation and verify rules then apply to that turn as to any other
+      if (await this.absorbSteers(ctx, t)) continue;
       // §3.3 rule 2 is the `agent.verify tests` opt-in: by default the model decides what to run, and nothing is run for it
       const d = decideStop(reply, this.state, ctx.verify === 'tests' ? ctx.workspaceInfo.testCommand : null);
       if (d.kind === 'continue') {
@@ -200,13 +203,17 @@ class Driver implements AgentDriver {
     }
   }
 
-  /** §3.1 step 2 / §10: steers answer every unresolved call and reach the model as a note before the next turn. */
-  private async absorbSteers(ctx: AgentContext, t: Transcript): Promise<void> {
+  /**
+   * §3.1 step 2 / §10: steers answer every unresolved call and reach the model as a note before the next turn. Asked at the top of
+   * `next()` and again after a turn with no tool call (nothing is unresolved then); true when a steer was absorbed.
+   */
+  private async absorbSteers(ctx: AgentContext, t: Transcript): Promise<boolean> {
     const steers = ctx.takeSteers();
-    if (steers.length === 0) return;
+    if (steers.length === 0) return false;
     for (const c of t.unresolved()) await t.append({ kind: 'result', toolUseId: c.id, name: c.name, content: NOT_EXECUTED_STEER, isError: true, summary: `${c.name} (not executed)` });
     for (const s of steers) await this.note(steerNote(ctx.redact(s)), 'steer');
     this.pending = null;
+    return true;
   }
 
   /** §3.1 step 4: the notes and context policy of a turn build, then the turn itself. */

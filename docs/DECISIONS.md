@@ -10,10 +10,11 @@ document, not part of this repository — are also listed in `docs/DESIGN.md` un
 
 ## Contents
 
-103 entries, newest first.
+104 entries, newest first.
 
 **2026-09-25**
 
+- [A steer typed while an agent reply streams is answered in the same step, never left pending](#2026-09-25-a-steer-typed-while-an-agent-reply-streams-is-answered-in-the-same-step-never-left-pending)
 - [Verification is the model's, in proportion to the change; the harness runs the test suite only under `agent.verify tests`](#2026-09-25-verification-is-the-models-in-proportion-to-the-change-the-harness-runs-the-test-suite-only-under-agentverify-tests)
 
 **2026-09-23**
@@ -2085,3 +2086,27 @@ followed unevenly by small models: glm-5.3-flash still runs `npm test` in a one-
 `src/cli/session.ts`, `src/core/types.ts`), the output, test-detection and tool changes of the same wave, and the
 documentation (`docs/AGENT-LOOP-DESIGN.md` §A6, §3.3, §5, §6.3; `docs/architecture/agent-loop.md`;
 `docs/concepts/verification.md`; the configuration, environment and CLI references; the README).
+
+## 2026-09-25 A steer typed while an agent reply streams is answered in the same step, never left pending
+
+**Decision.** In agent mode, when a model turn ends with no tool call, the driver asks `ctx.takeSteers()` again before the
+stop rules. A directive the user queued while that turn streamed is applied by the engine to the step in progress
+(`steer:applied`; it joins the directives applied at the step's start and supersedes none of them), reaches the model as
+the usual redacted note, and one more turn answers it instead of the run finishing. Each absorbed steer is one more turn;
+the continuation and verify rules apply to that turn as to any other; a run that stays tool-less still stops `answered`.
+Decided with the TUI owner: the fix is engine-side and the controllers are unchanged.
+
+**Why.** Found live on 0.7.0: a message typed while a reply-only run was answering was queued for the step in progress, but
+the driver absorbed steers only at the top of `next()`. The turn then finished the run (`answered`, or `complete` /
+`generator_done` for a task's final answer), so the steer silently vanished from the conversation and stayed in
+`state.json` as a pending directive that no run consumed.
+
+**What stays.** A steer typed during a tool step is applied at the next step start and absorbed at the top of the next
+`next()`, as before. Pause, abort and resume are unchanged: a pause-now during the steer's turn discards the step with
+nothing pending, and the resume re-arms the steer from the plan. Once `finish()` is in flight a steer is refused as
+`finished` (TUI-DESIGN §8.6) and the controller keeps the text. The engine tail between the driver's last ask and
+`finish()` (the finish step's commit, a few milliseconds) still queues a steer that the next run does not consume.
+
+**Affects.** `src/agent/driver.ts` (`next()`, `absorbSteers`), `src/loop/engine.ts` (`takeAgentSteers`,
+`applyPendingDirectives`), `docs/AGENT-LOOP-DESIGN.md` §2.3, §2.4, §3.1, §10, S3, S4; `docs/architecture/agent-loop.md`;
+`docs/TUI.md`; tests `test/unit/agent/driver-steer.test.ts`, `test/unit/loop/agent-steer.test.ts`.

@@ -2761,25 +2761,32 @@ class EngineImpl implements Engine {
   // TUI-DESIGN §8.6: the one plan mutation outside commit() — human directives at step start
   // -------------------------------------------------------------------------------------
 
-  private applyPendingDirectives(): void {
-    if (this.pendingDirectives.length === 0) return;
+  /**
+   * `midStep` (agent mode, docs/AGENT-LOOP-DESIGN.md §10 Steer): the directives queued while the step in progress ran are applied
+   * to THAT step — they join the ones applied at its start (kept in the plan and in `activeHuman`, never superseded by them), so a
+   * resume re-arms all of them. Returns the texts applied now.
+   */
+  private applyPendingDirectives(midStep = false): string[] {
+    if (this.pendingDirectives.length === 0) return [];
     const step = this.step + 1;
     // each ≤ 600, ≤ 8 of them → ≤ 4,800 chars; NEVER re-clipped as a batch (F7: max 8 × 600)
     const texts = this.pendingDirectives.map((d) => d.text);
+    const kept = midStep && this.activeHuman?.step === step ? this.activeHuman.texts : [];
     // seed / undo problems carry step 0 (§8.3) and are never superseded by a steer
-    const isSteer = (h: HarnessProblem): boolean => h.kind === 'human' && h.step > 0;
+    const isSteer = (h: HarnessProblem): boolean => h.kind === 'human' && h.step > 0 && !(midStep && h.step === step);
     const superseded = this.plan.harnessProblems.filter((h) => isSteer(h) || h.kind === 'replan');
     // one problem per directive: ≤ 8 of the 16 PLAN_MAX_HARNESS_PROBLEMS slots; planJson clips per problem at 600 (state.ts);
     // the bound drops the oldest non-seed problems first, so the step-0 framing survives eight steers meeting eight other problems
     const added: HarnessProblem[] = texts.map((text) => ({ kind: 'human', text, step }));
     this.plan = { ...this.plan, harnessProblems: boundHarnessProblems([...this.plan.harnessProblems.filter((h) => !isSteer(h)), ...added], PLAN_MAX_HARNESS_PROBLEMS) };
     // reaches exactly this step's prompt hints, common state and SynthesisContext.directive; cleared at commit
-    this.activeHuman = { texts, step };
+    this.activeHuman = { texts: [...kept, ...texts], step };
     // counts and tripped cleared; trips history and replanCount kept
     this.detector.resetCounts();
     this.pendingDirectives = [];
     this.emit({ type: 'steer:applied', step, count: texts.length, superseded: superseded.map((h) => clip(h.text, 80)) });
     this.emitStatus();
+    return texts;
   }
 
   // -------------------------------------------------------------------------------------
@@ -3918,12 +3925,21 @@ class EngineImpl implements Engine {
     }
   }
 
-  /** §10 Steer: this step's applied steers, handed to the driver once — a discarded attempt of the same step gets none again. */
+  /**
+   * §10 Steer: this step's applied steers, handed to the driver once — a discarded attempt of the same step gets none again. A
+   * steer queued since the step started (typed while its turn streamed) is applied to this step here, at the driver's ask
+   * (`steer:applied`, nothing left pending), and handed over with them: the driver asks again when a turn ends with no tool call,
+   * so the reply answers the steer instead of finishing past it. Once finish() is in flight nothing is queued any more (§8.6).
+   */
   private takeAgentSteers(step: number): readonly string[] {
     const active = this.activeHuman;
-    if (active === null || active.step !== step || active === this.agentSteersTaken) return [];
-    this.agentSteersTaken = active;
-    return [...active.texts];
+    const atStart = active === null || active.step !== step || active === this.agentSteersTaken ? [] : [...active.texts];
+    if (atStart.length > 0) this.agentSteersTaken = active;
+    // only for the step in progress (the draft is `this.step + 1`, the step applyPendingDirectives names)
+    if (this.pendingDirectives.length === 0 || this.isFinished() || this.draft?.step !== step) return atStart;
+    const late = this.applyPendingDirectives(true);
+    this.agentSteersTaken = this.activeHuman;
+    return [...atStart, ...late];
   }
 
   /**

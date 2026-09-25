@@ -268,8 +268,8 @@ Why this mapping:
   commit as one step. The pre-images of a `run` copy the whole dirty set, up to 200 files / 16 MiB per command
   (`src/checkpoint/images.ts:38-41`, `src/loop/engine.ts:4736-4745`). Moving `ls`, `cat`, `rg` and `git diff` out of
   that path is the largest per-command speed-up available (inferred).
-- **Checks between turns.** Every step contains at most one model turn, plus one nudge turn (section 3.3). Pause-at-step, steers and
-  budget checks therefore land between turns.
+- **Checks between turns.** Every step contains at most one model turn, plus one nudge turn (section 3.3) and one turn per steer
+  typed while a turn with no tool call streamed (section 10). Pause-at-step, steers and budget checks therefore land between turns.
 
 ### 2.4 The loop
 
@@ -284,7 +284,9 @@ flowchart TD
   sample --> parse["repair and normalise the tool calls; unique ids"]
   parse --> any{"any tool calls?"}
   any -- yes --> seg
-  any -- no --> rules{"stop rules"}
+  any -- no --> steered{"a steer typed while it streamed?"}
+  steered -- "yes: the engine applies it to this step (steer:applied); a note" --> sample
+  steered -- no --> rules{"stop rules"}
   rules -- "cut off at the output limit, or ends announcing an action with ':' (max 2 per run)" --> cont["append a continue note and sample once more"] --> sample
   rules -- "agent.verify tests only: changed files other than docs, no passing unscoped test run since, test command known (max 2 per run)" --> verify["verify step: run the test command"]
   rules -- otherwise --> finish["finish step: done with the final text"]
@@ -335,7 +337,9 @@ flowchart TD
    - At most `AGENT_MAX_CALLS_PER_TURN` (32) calls are kept; the rest are answered with `NOT_EXECUTED_TOO_MANY`.
 7. **Empty reply.** A reply with no text and no calls throws `GeneratorResponseError('empty reply')`. That is a stage failure
    (`src/loop/engine.ts:5777-5790`), and three in a row stop the run with `error`.
-8. **Calls present:** go back to step 3. **No calls:** apply the stop rules (3.3).
+8. **Calls present:** go back to step 3. **No calls:** take steers again (`ctx.takeSteers()`); a steer the user sent while this turn
+   streamed becomes a note and one more turn is sampled (section 10), so the stop rules never finish past it. Otherwise apply the
+   stop rules (3.3); they apply to the turn after a steer as to any other.
 
 **Nothing slow before the first request** (§A1). The path from Enter to the first model request runs no baseline test,
 takes no fresh workspace listing (it uses the cached candidates) and spawns no git process that is not already cached. The
@@ -1643,8 +1647,16 @@ and assert that the next request pairs every `tool_use` with a `tool_result`.
 - Pause-now aborts the step signal. An in-flight turn is discarded (rule 1), nothing is appended, and the resume samples the turn again.
 - Agent mode writes no step replay cache (`cache/step-N.json`); `takeReplay()` returns null in this mode.
 
-**Steer.** `/steer` text is applied at the next step start as today (`src/loop/engine.ts:2613-2636`). The driver takes it with
+**Steer.** `/steer` text is applied at the next step start as today (`applyPendingDirectives`). The driver takes it with
 `takeSteers()`, answers the unresolved calls with `NOT_EXECUTED_STEER`, and sends the text as a user note before the next turn.
+
+A steer typed while a turn with no tool call streams (a reply, or a task's final answer) is queued for the step in progress. The
+driver asks `takeSteers()` again when that turn ends, before the stop rules: the engine applies the queued directive to the running
+step then (`steer:applied`; it joins the directives applied at the step's start and supersedes none of them, so a resume re-arms all
+of them from the plan), and the driver samples one more turn with the note instead of finishing. Nothing is left pending in
+`state.json`. Each absorbed steer is one more turn; a run that stays tool-less still stops `answered`. A steer typed during a tool
+step is applied at the next step start and absorbed at the top of the next `next()`, as before. Once `finish()` is in flight a steer
+is refused as `finished` (TUI-DESIGN §8.6), and the controller keeps the text.
 
 **Undo and rewind.** Unchanged. `act` and `verify` steps take pre- and post-images exactly as today
 (`src/loop/engine.ts:4632-4646`). `observe` and `finish` steps change nothing; a read-only `bash` is proven read-only by the
@@ -2275,7 +2287,7 @@ Tests use a fake `AgentContext` over the unit fakes' workspace and sandbox, with
 - **Segmenting:** reads, then an edit, then reads → observe, act, observe, in order; a batch of 10 reads runs 8 then 2 concurrently; `git diff` and `ls` join the observe batch and `npm install` does not.
 - **Discard re-derivation:** after `next()` returns an act and no `observe()` follows, the next `next()` returns the same call.
 - **Stop rules:** the continuation table of 3.3 (8 closing lines finish, `Let me check the tests:` continues, `max_tokens` continues, cap 2); verify ≤ 2; the failed-test nudge; a verify timeout note; finish.
-- **Steers:** a steer cancels unresolved calls.
+- **Steers:** a steer cancels unresolved calls; a steer that lands while a turn with no tool call streams is answered by one more turn before the stop rules.
 - **Loop detector:** the cases of 3.6.
 - **Context:** masking thresholds (client mode only), compaction shape (one user message, no assistant turn, no `providerState`), the `llm` writer with a code fallback on error, the server-clearing request field for anthropic, masking off for `anthropic/*` on openrouter.
 - **Session carry:** a parent transcript is copied, unresolved calls are answered, `providerState` is stripped on a `systemHash` mismatch, and `# Conversation so far` is present with no parent.
@@ -2324,7 +2336,7 @@ In `src/loop/engine.ts` (and `src/loop/stages/agent.ts` for everything that need
    - `routeToken` uses `stepTokenFor`;
    - `jevAvailable` = the decider model is not `ABSENT_DECIDER_MODEL`;
    - `writeOutput` uses `store.writeOutput`;
-   - `takeSteers` hands over this step's `activeHuman` texts once;
+   - `takeSteers` hands over this step's `activeHuman` texts once, and applies a directive queued since the step started to the step itself (`steer:applied`) before handing it over;
    - `dirtyAtStart` and `conversation` come from the engine;
    - `reportContext` feeds `EngineStatus.context` in agent mode.
 9. **`compact()`** in agent mode sets the compact request instead of returning early (`src/loop/engine.ts:2352-2357`).

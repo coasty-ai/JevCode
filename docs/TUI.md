@@ -517,9 +517,10 @@ follow-up has its own run cap and shares the session cap.
   for step 8: <text>`; the queue rows above the composer read `↑1 queued for step 8: …   [↑ takes back]`). Up to 8
   directives queue (`steer queue full (8)` after that); ↑ on the first row of an empty draft or `/unsteer` takes
   the newest back; at the next step start they become one instruction each for the generator and for every Jev
-  stage (`steer applied to step 8 (N directives; superseded: …)`). A steer typed while the run is pausing or
-  aborting is checkpointed and applied by `/resume`, or carried into the follow-up seed — never lost. `/steer
-  <text>` is the same thing for `--plain`.
+  stage (`steer applied to step 8 (N directives; superseded: …)`). In agent mode a steer typed while a reply (or
+  a task's final answer) streams is applied to that step as the reply ends, and the model answers it in one more
+  turn before the run finishes. A steer typed while the run is pausing or aborting is checkpointed and applied by
+  `/resume`, or carried into the follow-up seed — never lost. `/steer <text>` is the same thing for `--plain`.
 - **Pause and abort.** Esc (or `/pause`) stops after the step in flight commits: `end human_pause`, then `paused
   after step N — /resume continues, or type a follow-up`; the run exits with code 4 in the session item but is
   resumable without `--force`. Esc Esc (or `/abort`) aborts now; the in-flight step is discarded or committed as
