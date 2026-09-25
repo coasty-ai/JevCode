@@ -17,17 +17,22 @@ the rules are in `docs/concepts/verification.md`.
   in behaviour (one test file or test name, or a typecheck, lint or build of what it touched), for the whole suite only
   when you ask or the change is broad, and for nothing after a question, a docs edit or a simple file operation. A check
   that fails for a reason other than the change is reported, not repaired. The workspace facts say that the detected test
-  command is the whole suite and how to run one file with it. The harness's own run of the detected test command is now
-  opt-in: `--agent-verify tests`, `agentVerify` in the config file, or `JEVCODE_VERIFY=tests` (`off|tests`, default `off`).
+  command is the whole suite and, where its runner takes a file path, how to run one file with it. The harness's own run
+  of the detected test command is now opt-in: `--agent-verify tests`, `agentVerify` in the config file, or
+  `JEVCODE_VERIFY=tests` (`off|tests`, default `off`).
 - **`complete` means a test run passed after the last change.** Any test run the harness recognises counts: one file or
   test, a subdirectory, another package manager, the runner called directly, a run piped through `tail`. Before, only the
-  unscoped detected command counted, so the targeted check the model is now asked for could never complete a run. A run
-  that finishes without one ends `generator_done` (exit 0), which now renders as an ordinary finish, not a warning.
-- **`--agent-verify tests` reports a failed run once.** The harness hands the result back once. A reply that explains the
-  failure has another cause ends the run instead of drawing a second nudge, and the note no longer says "verify again". A
-  failure no parser could read is reported by its exit code, not as "0 passed, 0 failed, 0 errors". A change to docs alone
-  (Markdown, text, images, `LICENSE`, `README`) is not verified.
-- **Reasoning effort per model.** Only Anthropic (`high`) and GLM models on any provider (`low`) get an explicit effort.
+  unscoped detected command counted, so the targeted check the model is now asked for could never complete a run. A change
+  to docs alone after the green run does not make it stale. A run that finishes without one ends `generator_done` (exit
+  0), which now renders as an ordinary finish, not a warning.
+- **`--agent-verify tests` reports a failed run once.** The harness hands the result back once, whether it ran the suite
+  or the model did. A reply that explains the failure has another cause ends the run instead of drawing a second nudge or
+  a second run of the suite, and the note no longer says "verify again". A verify that could not start is not tried again.
+  A failure no parser could read is reported by its exit code, not as "0 passed, 0 failed, 0 errors". A change to docs
+  alone (Markdown, text, images, `LICENSE`, `README`) is not verified; a `.txt` build or dependency manifest
+  (`CMakeLists.txt`, `requirements.txt`) and a file under a test-data directory are not docs.
+- **Reasoning effort per model.** Only Claude models (`high`, on the Anthropic adapter and on OpenRouter, which thinks on
+  a Claude model only when asked) and GLM models on any provider (`low`) get an explicit effort.
   gpt-5.x, Gemini, Grok, DeepSeek and every other model now run at their provider's default instead of being forced to
   `low`, which was tuning for the default model. The first-turn effort hint is asked wherever `low` differs from that
   default. Every model family without its own prompt paragraph gets the one that asks for native tool calls rather than

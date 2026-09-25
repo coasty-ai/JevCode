@@ -2041,8 +2041,9 @@ test command after any change before the run could finish, becomes the opt-in `a
 off|tests`, `JEVCODE_VERIFY`, file key `agentVerify`; default `off`). The run stays honest without nagging: `complete` needs
 the last test run the harness recognised (the detected command, a scoped or subdirectory form, another package manager, the
 runner called directly, a run piped through `tail`) to be green and to come after the last change; anything else that
-finishes is `generator_done`, exit 0, and renders as an ordinary finish. Under `tests` a failed verify is handed back once,
-and a change to docs alone arms nothing. This supersedes two clauses of the 2026-09-23 default-mode entry: "verifies with
+finishes is `generator_done`, exit 0, and renders as an ordinary finish. Under `tests` a failed run of the suite is handed
+back once, whether the harness or the model ran it, and a change to docs alone arms nothing; in either setting a change to
+docs alone leaves a green run current. This supersedes two clauses of the 2026-09-23 default-mode entry: "verifies with
 the workspace's own detected test command — `complete` needs a green, current run of the whole command", and RA0 being asked
 "today Anthropic alone".
 
@@ -2070,8 +2071,9 @@ with the harness verify off, `create temp.py` in a small node fixture is 2 steps
   allow-list of four variables, which lost proxy and CA settings, `JAVA_HOME` and toolchain shims.
 - **The file tools refuse a file that is not UTF-8** for edits and overwrites, instead of rewriting its bytes, and refuse
   `$`-variable paths that only `bash` expands.
-- **Tuning that served only the default model is removed**: a model other than GLM gets its provider's default reasoning
-  effort instead of a forced `low`, and every open-weight family gets the native-tool-call prompt paragraph.
+- **Tuning that served only the default model is removed**: a model other than GLM or Claude gets its provider's default
+  reasoning effort instead of a forced `low` (Claude gets `high` on every adapter, since OpenRouter thinks on it only when
+  asked), and every open-weight family gets the native-tool-call prompt paragraph.
 
 **What it gives up.** A model that changes code and runs no check finishes `generator_done` instead of being made to run the
 suite; `--agent-verify tests` restores the harness run for anyone who wants it. A green targeted test that does not cover the
@@ -2079,7 +2081,7 @@ change also completes a run; the step row names the command that ran, so the evi
 followed unevenly by small models: glm-5.3-flash still runs `npm test` in a one-file project, where that is the whole suite.
 
 **Affects.** `src/agent/{driver,stop,state,prompt,head,providers,turn,context}.ts`, the engine's completion rule
-(`src/loop/engine.ts`, `src/loop/stages/agent.ts`), the `agent.verify` setting (`src/config/*`, `src/cli/args.ts`,
+(`src/loop/engine.ts`, `src/loop/stages/agent.ts`), the docs-path rule both share (`src/workspace/docs-paths.ts`), the `agent.verify` setting (`src/config/*`, `src/cli/args.ts`,
 `src/cli/session.ts`, `src/core/types.ts`), the output, test-detection and tool changes of the same wave, and the
 documentation (`docs/AGENT-LOOP-DESIGN.md` §A6, §3.3, §5, §6.3; `docs/architecture/agent-loop.md`;
 `docs/concepts/verification.md`; the configuration, environment and CLI references; the README).

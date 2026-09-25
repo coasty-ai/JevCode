@@ -20,8 +20,8 @@ OpenCode:
   it says what failed and why, and leaves unrelated code, tests, dependencies and the environment
   alone.
 - A run stops `complete` when the last test run the harness recognised parsed, passed, and came
-  after the last change. Anything else that finishes is `generator_done`, which exits 0 and reads
-  as an ordinary finish. A reply that never called a tool stops `answered`. A green targeted test
+  after the last change. A change to docs alone after it does not count as a change. Anything else
+  that finishes is `generator_done`, which exits 0 and reads as an ordinary finish. A reply that never called a tool stops `answered`. A green targeted test
   that does not cover the change also completes; the step row names the command that ran.
 
 ### When the harness runs your tests itself
@@ -29,9 +29,12 @@ OpenCode:
 `--agent-verify tests` (or `agent.verify` in the config file, or `JEVCODE_VERIFY=tests`) makes the
 harness also run the detected test command, the whole suite, after the model finishes with
 changes it has not tested: a `verify` step, at most twice per run. The result goes back to the
-model once; a failure it explains for another reason ends the run, and a change to docs alone
-(Markdown, text, images, `LICENSE`, `README`) is not verified. It is off by default because in a
-large repository the whole suite can take minutes after a one-line change.
+model once, and so does a failure of the model's own run of the whole suite: a failure it explains
+for another reason ends the run, and only a new change starts another run. A change to docs alone
+(Markdown, text, images, `LICENSE`, `README`) is not verified; a `.txt` build or dependency
+manifest (`CMakeLists.txt`, `requirements.txt`) and a file under a test-data directory (`tests/`,
+`fixtures/`, `__snapshots__/`) are not docs. It is off by default because in a large repository
+the whole suite can take minutes after a one-line change.
 
 ### The detected test command
 
@@ -41,7 +44,9 @@ chooses it. Detection goes by manifest, in this order: a pytest configuration; `
 `Cargo.toml`, `go.mod`, `deno.json`, a `Gemfile` or `Rakefile`, `pom.xml`, `build.gradle`, a .NET
 project file, `mix.exs`, `composer.json`, `Package.swift`, a Makefile `test` target, and finally a
 Python test layout. The model is told the command, that it runs the whole suite, and how to run one
-file with it where that is known.
+file with it where that is known: the runner's own scoped form, or, for a `package.json` script, what
+the script runs and, when its runner takes a file path (vitest, jest, mocha, `node --test`, …),
+`npm test -- <file>`.
 
 The common spellings of a run of that runner count as a test run, so their results are parsed and
 can make a run `complete`: another package manager (`pnpm test` for a detected `npm test`), the

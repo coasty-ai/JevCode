@@ -161,7 +161,7 @@ stream.
 | answered in prose and never called a tool | stops `answered`, exit 0. It is a reply: no run header, no step rows, and it never names the session |
 | stopped mid-sentence at the output limit, or ended announcing an action (`Let me check the tests:`) | gets one "continue" note and another turn (at most twice per run) |
 | changed files and did not run your test command since, under `--agent-verify tests` | gets a `verify` step: the harness runs the detected test command and hands the result back once (at most twice per run) |
-| finished after a green test run, with no change since | stops `complete`, exit 0 |
+| finished after a green test run, with no change since (a change to docs alone does not count) | stops `complete`, exit 0 |
 | finished otherwise | stops `generator_done`, exit 0, shown as an ordinary finish |
 | repeated the same call with the same result (3 in a row, or more than 5 times in the last 10 calls) | gets a nudge to change approach; the sixth trip stops the run `stuck`, exit 4, resumable |
 
@@ -171,7 +171,8 @@ or a typecheck, lint or build of it), the whole suite only when you ask or the c
 question, a docs edit or a simple file operation. When a check fails for a reason that is not its change, it says so
 instead of repairing the environment. The harness runs no test command of its own unless you pass `--agent-verify tests`
 (or set `agent.verify` / `JEVCODE_VERIFY` to `tests`): then, after changes other than docs, it runs the detected test
-command before the run may finish, and hands the result back once. See [Verification](../concepts/verification.md).
+command before the run may finish, and hands the result back once; when the model's own run of the whole suite failed,
+it hands that failure back once instead of running the suite again. See [Verification](../concepts/verification.md).
 
 The test command is detected, never chosen by a model: `detectTestCommand()` over the workspace. Any test run the
 harness recognises counts toward `complete`: the detected command, a run of one file or test, a run in a subdirectory, the

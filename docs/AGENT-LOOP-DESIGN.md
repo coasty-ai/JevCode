@@ -242,7 +242,8 @@ The agent mode adds one branch next to the `jev-off` branch (`src/loop/engine.ts
   (rule in section 3.4). It passes that set as `AgentObservation.changedFiles`, not the run-cumulative `changedFiles`
   (`src/loop/stages/execute.ts:168`, `src/workspace/files.ts:184-243`). In agent mode it also sets `lastChangeStep` when
   a command other than the detected test command changed a workspace file. Today a `run` never sets it
-  (`src/loop/engine.ts:5896`).
+  (`src/loop/engine.ts:5896`). A step whose per-step change set is docs alone (`isDocsOnlyChange`, 3.3) sets it for
+  neither an edit nor a command, so a green run before it stays current.
 - **Loop trips.** The driver reports them on the step summary (section 3.6). The engine skips `computeSignatures` and
   `detector.observe` in agent mode.
 
@@ -398,19 +399,26 @@ The rules are evaluated in order. Their counters live in `AgentStateV1` and surv
    - `changedSinceVerify` is true: files other than docs changed since the last passing unscoped run of the detected test
      command. A change whose every path is prose, markup or an image by its extension (`.md`, `.rst`, `.txt`, `.adoc`, `.png`,
      `.svg`, …) or a project document by its base name (`LICENSE`, `COPYING`, `NOTICE`, `AUTHORS`, `CHANGELOG`, `README`)
-     arms nothing (`isDocsOnlyChange`, `src/agent/stop.ts`);
+     arms nothing (`isDocsOnlyChange`, `src/workspace/docs-paths.ts`). Not docs, whatever the extension: a build or
+     dependency manifest with a `.txt` name (`CMakeLists.txt`, `requirements*.txt`, `constraints*.txt`, anything under
+     `requirements/`) and any file under a test-data directory (`test/`, `tests/`, `spec/`, `__snapshots__/`, `fixtures/`,
+     `testdata/`), since a build or a test run reads them;
    - `ctx.workspaceInfo.testCommand` is known;
    - `verifyRuns < AGENT_VERIFY_MAX` (2).
 
    What happens:
    - If the model already ran the unscoped test command after its last change and the run failed: append
      `VERIFY_FAILED_NUDGE` (with the counts, or the exit code when no parser read the output) and sample one more turn in
-     this step. This counts as a verify run.
+     this step. This counts as a verify run, and it clears `changedSinceVerify` and `failedTest`: the model has the failure
+     once, the reply that follows finishes, and the harness does not run the same suite again. Only a new change re-arms
+     the rule.
    - Otherwise return `{ kind: 'verify', proposal: run <testCommand> }`. The command runs at the workspace root with timeout
      `AGENT_VERIFY_TIMEOUT_MS`: `MAX_COMMAND_TIMEOUT_MS` (600 s, `src/config/defaults.ts:87-88`), clamped to the wall time left.
      In `observe()`, the result goes back once as `VERIFY_RESULT`, pass or fail, and clears `changedSinceVerify`: a reply that
      explains a failure finishes, and only a new change arms the next verify. A timeout goes back as `VERIFY_TIMEOUT`: "not
-     verified", not a failure to fix. The next step samples a turn.
+     verified", not a failure to fix. A verify that did not run at all (the sandbox could not start the command, or it was
+     refused or declined) goes back as `VERIFY_RESULT` with the reason. Both a timeout and a run that did not start set
+     `verifyRuns` to `AGENT_VERIFY_MAX`, since a second verify would end the same way. The next step samples a turn.
      The verify step always runs the unscoped command, the one check that needs no judgement of what the change touched.
 
    **Why it is off by default.** In a large repository the whole suite runs for minutes after a one-line change: the session
@@ -424,7 +432,7 @@ The rules are evaluated in order. Their counters live in `AgentStateV1` and surv
 **Passing and `complete`.**
 - A *passing run* for rule 2 is a run of the detected test command that is **unscoped** (its normalised command equals `testCommand.command`, with no `workdir` or with `workdir: '.'`) and exits 0.
 - An exit-0 run whose output the parser cannot read resets `changedSinceVerify`. It never yields `complete`. It replaces today's `tests_pass_unparsed` question (`src/jev-modes/stages/complete.ts:265`).
-- The engine stops with `complete` when the agent variant of `verifiedCompletion` holds: a `done` proposal after a last test run that is parsed, all passed and current (`lastChangeStep` < its step). Any run the test-output parser recognises counts: the detected command, a scoped form (`pytest -q tests/test_a.py`), a subdirectory run (recorded as `cd <dir> && <command>`), or the runner reached another way (another package manager, the runner called directly, piped through `tail`). `allPassed` is count-based (parsed, no failure or error, at least one pass), so a pipe's exit code decides nothing. The residual risk: a green targeted test that does not cover the change also completes; the step row names the command that ran. Todo items left pending do not block it; the finish row lists them as a note. (Until 2026-09-25 only a green run of the unscoped detected command could complete, so the targeted check the prompt now asks for would always have ended `generator_done`.)
+- The engine stops with `complete` when the agent variant of `verifiedCompletion` holds: a `done` proposal after a last test run that is parsed, all passed and current (`lastChangeStep` < its step). Any run the test-output parser recognises counts: the detected command, a scoped form (`pytest -q tests/test_a.py`), a subdirectory run (recorded as `cd <dir> && <command>`), or the runner reached another way (another package manager, the runner called directly, piped through `tail`). `allPassed` is count-based (parsed, no failure or error, at least one pass), so a pipe's exit code decides nothing. The residual risk: a green targeted test that does not cover the change also completes; the step row names the command that ran. A change to docs alone (`isDocsOnlyChange`, the rule 2 uses) does not move `lastChangeStep`, so a README or CHANGELOG edit after a green run still completes: the harness applies one rule to what needs re-checking, and the driver does not re-verify such a change either. Todo items left pending do not block it; the finish row lists them as a note. (Until 2026-09-25 only a green run of the unscoped detected command could complete, so the targeted check the prompt now asks for would always have ended `generator_done`.)
 - Otherwise the stop is `generator_done`, which exits 0 and renders as an ordinary finish. Today's check also requires an empty plan (`src/loop/engine.ts:5233-5238`); the agent variant ignores the plan.
 - **A reply** (§A1). A run whose every step is a `finish` with no call — the model answered in prose and never called a
   tool — stops `answered` instead of `generator_done`. `isReplyOnlyRun` (`src/core/agent-run.ts`) is the one predicate; the
@@ -442,9 +450,9 @@ The engine calls it after the execute tail of `act`, `verify` and `finish` steps
   - Render the tool result (section 4.3) from `o.outcome`, `o.output`, `o.tests` and `o.error`.
   - For a successful `edit_file`/`write_file`, run the optional syntax check (4.8).
   - Append the `tool_result`.
-  - Update `changedSinceVerify`. It becomes true for an executed edit or write, and for a run whose per-step change set is non-empty and which is not the detected test command, unless every changed path is docs (`isDocsOnlyChange`, 3.3). It becomes false after a passing unscoped test run.
+  - Update `changedSinceVerify`. It becomes true for an executed edit or write, and for a run whose per-step change set is non-empty and which is not the detected test command, unless every changed path is docs (`isDocsOnlyChange`, 3.3). It becomes false after a passing unscoped test run, and when the failed-test nudge is sent.
   - Feed the call to the loop detector (3.6). Emit `tool:result`.
-- **`verify`:** append `VERIFY_RESULT` or `VERIFY_TIMEOUT` as a harness note for the next turn; `verifyRuns += 1`. A verify that ran clears `changedSinceVerify` and `failedTest`, whatever its result: the model has the result once.
+- **`verify`:** append `VERIFY_RESULT` or `VERIFY_TIMEOUT` as a harness note for the next turn; `verifyRuns += 1`. A verify that ran clears `changedSinceVerify` and `failedTest`, whatever its result: the model has the result once. A timeout, or a verify that did not run, sets `verifyRuns` to `AGENT_VERIFY_MAX`.
 - **`blocked` / `declined` outcomes:** the result text says so (`BLOCKED`, `DECLINED`), and `blocks += 1`. The classifier
   never blocks (§A2, section 12): `declined` is a human's `n` on a review card under `--autonomy review`, and `blocked` comes
   only from the engine's ownership refusal in a delegated child (`ownershipRefusal`).
@@ -974,7 +982,10 @@ Built once at the start of a fresh run and kept at the head of the transcript. C
 - detected: {manifests and languages, e.g. package.json (node, type module), pyproject.toml (python)}
 - test command: `{command}` (the whole suite); one file: `{the runner's scoped form of <file>}` | `{command}` (the whole
   suite; it runs `{package.json test script}`); one file: `{command} [--] <file>` | none detected   (the one-file form only
-  when the runner can scope, or when the package script is a single command; npm and pnpm need the `--`)
+  when the runner can scope, or when the package script is one command whose runner takes a file path and names none of
+  its own: vitest, jest, mocha, ava, tap, jasmine, `node --test`, `tsx --test`, `bun test`, `playwright test`, after
+  `VAR=…`, `cross-env`, `c8`, `nyc`, `npx`, `pnpm exec` or `yarn`; `scriptTakesFile`, `src/agent/head.ts`. `ng test`,
+  `karma start`, `nx`, `turbo`, `gulp`, `cypress run` or `node test/run.js` get no one-file form. npm and pnpm need the `--`)
 - top level: {up to 40 entries of the root, directories first, e.g. src/ test/ docs/ package.json README.md}
 
 # Previous run in this session            (only when the previous run was a legacy-mode run; from EngineSeed)
@@ -1121,7 +1132,7 @@ For agent requests the Anthropic adapter also maps `reasoning`: `{effort}` → `
 
 | Provider (default model) | `toolChoice` | `reasoning` | `temperature` | Notes |
 |---|---|---|---|---|
-| openrouter (`z-ai/glm-5.3-flash`) | `auto` | `{effort:'low'}` for a GLM model (reasoning is mandatory; `enabled:false` is a 400: `src/provider/openrouter.ts:88-93`); any other model: not sent, its default | config | No `providerPrefs` (no `require_parameters`, no `order`/`sort`), so Auto Exacto stays on for tool requests (https://openrouter.ai/docs/guides/routing/auto-exacto). XML-leak extraction is on. |
+| openrouter (`z-ai/glm-5.3-flash`) | `auto` | `{effort:'low'}` for a GLM model (reasoning is mandatory; `enabled:false` is a 400: `src/provider/openrouter.ts:88-93`); `{effort:'high'}` for a Claude model (OpenRouter enables thinking on Anthropic models "only using the unified `reasoning` parameter", https://openrouter.ai/docs/use-cases/reasoning-tokens, so an absent member would mean no thinking); any other model: not sent, its default | config | No `providerPrefs` (no `require_parameters`, no `order`/`sort`), so Auto Exacto stays on for tool requests (https://openrouter.ai/docs/guides/routing/auto-exacto). XML-leak extraction is on. |
 | anthropic (`claude-sonnet-5`) | `auto` | `{effort:'high'}` → `output_config.effort`; `thinking: {type:'adaptive', display:'summarized', block_binding: …}` (6.5) | `null` (non-default values are a 400) | `high` is the minimum the Claude API reference recommends for intelligence-sensitive work. `xhigh` is Claude Code's default, but it adds latency per turn, and the user's speed directive favours `high` (inferred). `display: 'summarized'` because Sonnet 5 defaults to `omitted`, which "looks like a long pause before output" (Claude API reference, https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking). Thinking is never disabled, because Opus 5.5 and Fable 5.1 reject `disabled` with a 400 (same reference). |
 | openai (`gpt-5.6-luna`) | `auto` | not sent: the model's default | not sent (`openAiAcceptsTemperature`) | Responses API, encrypted reasoning replayed. |
 | xai (`grok-4.7`) | `auto` | not sent: the model's default | config | Calls arrive whole in one chunk (`src/provider/xai.ts:5-6`). |
@@ -1131,9 +1142,11 @@ For agent requests the Anthropic adapter also maps `reasoning`: `{effort}` → `
 
 - `maxTokens` for a turn is `max(generation.maxTokens, AGENT_MAX_OUTPUT_TOKENS)`, so at least 16,384. The global default
   of 4,096 (`src/config/defaults.ts:9`) is too small for a turn that writes a file (inferred).
-- `agentReasoning(provider, model)` (`src/agent/providers.ts`): Anthropic `high`; a GLM model on any provider (base id
-  `glm*`) `low`, because reasoning is mandatory on OpenRouter's GLM and low keeps the default model fast; the mock `low`;
-  every other model nothing, so its provider's default applies. Until 2026-09-25 every provider but Anthropic was sent
+- `agentReasoning(provider, model)` (`src/agent/providers.ts`): Anthropic, and a Claude model behind any other adapter
+  (`isClaudeModel`), `high`: OpenRouter turns thinking on for an Anthropic model only when the request asks, so leaving the
+  member out would run Claude there with no thinking at all; a GLM model on any provider (base id `glm*`) `low`, because
+  reasoning is mandatory on OpenRouter's GLM and low keeps the default model fast; the mock `low`; every other model
+  nothing, so its provider's default applies. Until 2026-09-25 every provider but Anthropic was sent
   `low`, tuning for the default GLM model that degraded gpt-5.x, Gemini, Grok and DeepSeek (§A6).
 - Effort and every other request setting are constant for the whole session, with one exception: RA0 may send a run's
   first turn at the provider's low effort (section 13.2). RA0 is asked only where that changes the request: every provider
@@ -2292,7 +2305,8 @@ In `src/loop/engine.ts` (and `src/loop/stages/agent.ts` for everything that need
    - compute the per-step change set (3.4);
    - call the wrapped `driver.observe(actx, observation)`; on an exception, write a transcript warning and add a stage failure;
    - set `draft.judge = codeJudge(...)` when `draft.tests !== null`, `draft.proposer = 'agent'`, and `draft.agent = { ...next.summary, seqAfter, loopTrip }`;
-   - in agent mode, set `lastChangeStep` when a run other than the detected test command has a non-empty per-step change set.
+   - in agent mode, set `lastChangeStep` when a run other than the detected test command has a non-empty per-step change set
+     that is not docs alone (`isDocsOnlyChange`); an edit or write of docs alone does not set it either.
 5. **`commit()`:**
    - claim evidence `verbatim` for agent (`src/loop/engine.ts:5847`);
    - skip `computeSignatures`/`detector.observe` in agent mode;
