@@ -121,14 +121,40 @@ export function rootLine(name: string, candidates: readonly Candidate[]): string
   return `${name} (your working directory: tool paths are relative to it, so \`src/a.ts\`, never \`${name}/src/a.ts\`)`;
 }
 
+/** A package manager's run of the package.json `test` script (`npm test`, `pnpm run test`, `yarn test`, `bun run test`). */
+const PM_TEST_SCRIPT_RE = /^(npm|pnpm|yarn|bun)\s+(run\s+)?test(\s|$)/;
+const TEST_SCRIPT_SHOWN_CHARS = 120;
+
 /**
- * The detected test command, said to be the whole suite, and its one-file form when the runner can scope: the model is
- * told to run the tests of what it touched (§5.1 "Verifying"), and in a large repository the whole suite takes minutes.
+ * The detected test command, said to be the whole suite, and how to run less of it: the one-file form when the runner can
+ * scope, or what a package.json `test` script runs (`node --test`, `vitest run`), so the model can call the runner directly
+ * with a file. The model is told to run the tests of what it touched (§5.1 "Verifying"); in a large repository the whole
+ * suite takes minutes.
  */
-export function testCommandLine(test: TestCommand | null): string {
+export function testCommandLine(test: TestCommand | null, packageTestScript: string | null = null): string {
   if (test === null) return 'none detected';
-  const scoped = test.scope !== undefined ? `; one file: \`${test.scope(['<file>'])}\`` : '';
-  return `\`${test.command}\` (the whole suite)${scoped}`;
+  if (test.scope !== undefined) return `\`${test.command}\` (the whole suite); one file: \`${test.scope(['<file>'])}\``;
+  const script = packageTestScript?.replace(/\s+/g, ' ').trim() ?? '';
+  const pm = PM_TEST_SCRIPT_RE.exec(test.command)?.[1];
+  if (script === '' || script === test.command || pm === undefined) return `\`${test.command}\` (the whole suite)`;
+  const runs = `\`${test.command}\` (the whole suite; it runs \`${clip(script, TEST_SCRIPT_SHOWN_CHARS)}\`)`;
+  // arguments after the script name reach the end of the script: a single runner command takes a file there (npm and pnpm
+  // need `--` first, or they keep the argument); a chain (`tsc && vitest run`, `a; b`, a pipe) would hand it to the last part
+  if (/&&|\|\||[;|<>]/.test(script)) return runs;
+  return `${runs}; one file: \`${test.command}${pm === 'npm' || pm === 'pnpm' ? ' --' : ''} <file>\``;
+}
+
+/** package.json's `scripts.test`, when the workspace root has one. */
+async function packageTestScript(ctx: AgentContext, top: ReadonlySet<string>): Promise<string | null> {
+  if (!top.has('package.json')) return null;
+  try {
+    const pkg: unknown = JSON.parse((await ctx.workspace.read('package.json', 64 * 1024)).content);
+    const scripts = typeof pkg === 'object' && pkg !== null ? (pkg as { scripts?: unknown }).scripts : undefined;
+    const test = typeof scripts === 'object' && scripts !== null ? (scripts as { test?: unknown }).test : undefined;
+    return typeof test === 'string' ? test : null;
+  } catch {
+    return null;
+  }
 }
 
 async function workspaceBlock(ctx: AgentContext): Promise<string> {
@@ -142,7 +168,7 @@ async function workspaceBlock(ctx: AgentContext): Promise<string> {
     lines.push(`- your uncommitted changes: ${shown.join(', ')}${paths.length > shown.length ? `, … (+${paths.length - shown.length} more)` : ''}`);
   }
   lines.push(`- detected: ${await detectedLine(ctx, top.files)}`);
-  lines.push(`- test command: ${testCommandLine(ctx.workspaceInfo.testCommand)}`);
+  lines.push(`- test command: ${testCommandLine(ctx.workspaceInfo.testCommand, await packageTestScript(ctx, top.files))}`);
   lines.push(`- top level: ${top.line || '(empty)'}`);
   return `# Workspace\n${lines.join('\n')}`;
 }

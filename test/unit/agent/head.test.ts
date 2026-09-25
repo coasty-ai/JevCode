@@ -68,6 +68,19 @@ describe('the first user message (no agent parent)', () => {
     expect(scope).not.toBeNull();
     expect(testCommandLine({ command: 'pytest -q', runner: 'pytest', scope: scope! })).toBe(`\`pytest -q\` (the whole suite); one file: \`${scope!(['<file>'])}\``);
     expect(scope!(['<file>'])).toContain('<file>');
+    // a package-manager `test` script names what it runs, and a single runner command takes a file at its end
+    expect(testCommandLine({ command: 'npm test', runner: 'npm' }, 'node --test')).toBe('`npm test` (the whole suite; it runs `node --test`); one file: `npm test -- <file>`');
+    expect(testCommandLine({ command: 'pnpm run test', runner: 'npm' }, '  vitest   run ')).toBe('`pnpm run test` (the whole suite; it runs `vitest run`); one file: `pnpm run test -- <file>`');
+    expect(testCommandLine({ command: 'yarn test', runner: 'npm' }, 'jest')).toBe('`yarn test` (the whole suite; it runs `jest`); one file: `yarn test <file>`');
+    // a chain would hand the file to its last part only: no one-file form
+    expect(testCommandLine({ command: 'npm test', runner: 'npm' }, 'tsc && node --test')).toBe('`npm test` (the whole suite; it runs `tsc && node --test`)');
+    expect(testCommandLine({ command: 'make test', runner: 'unknown' }, 'node --test')).toBe('`make test` (the whole suite)');
+    expect(testCommandLine({ command: 'npm test', runner: 'npm' }, '')).toBe('`npm test` (the whole suite)');
+  });
+
+  it('the workspace block reads the test script from package.json', async () => {
+    const ctx = createAgentContext({ files: { 'package.json': '{"name":"x","scripts":{"test":"vitest run"}}', 'src/a.ts': '' }, testCommand: { command: 'npm test', runner: 'npm' }, gitState: null });
+    expect(await firstUserMessage(ctx)).toContain('- test command: `npm test` (the whole suite; it runs `vitest run`); one file: `npm test -- <file>`');
   });
 
   it('drops the "never <root>/…" example when the workspace has a top-level entry named like its root (a package named like its repo)', async () => {
