@@ -132,7 +132,8 @@ describe('detectTestCommand from the repository shape', () => {
     // requests-style: test_requests.py at the root, setup.py, no configuration
     ['root-tests', PYTEST],
     ['unittest-pkg', { command: 'python3 -m unittest discover -v', runner: 'unittest' }],
-    ['setup-py-test', { command: 'python3 setup.py test', runner: 'unittest' }],
+    // setup.py declaring a test_suite is no longer a test command: setuptools 72 removed `setup.py test`
+    ['setup-py-test', null],
     ['npm-jest', { command: 'npm test', runner: 'jest' }],
     ['npm-vitest', { command: 'npm test', runner: 'vitest' }],
     ['npm-plain', { command: 'npm test', runner: 'npm' }],
