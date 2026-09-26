@@ -5,6 +5,9 @@ came from.
 
 | File | What it is |
 |---|---|
+| `demo.gif` | The README's demo: one live interactive session in `examples/demo-py`. `jevcode` is typed at a shell prompt, it answers `hi`, it is asked to `fix the failing tests` and does, and `/exit` ends it. Replayed at real time, on the default model |
+| `demo.png` | The screen just before `/exit` in that recording, as a still |
+| `demo.md` | How that recording was made: the task, model, flags, machine, which take it is, and the numbers the runs recorded |
 | `side-by-side.gif` | Two live runs of the same bug fix, one in each mode, replayed at one sixth of real speed. History: it compares the `llm-jev` default of 2026-09-22 with `jev-off`, and left the README when the `agent` mode became the default on 2026-09-23 |
 | `side-by-side.png` | The final frame of that recording, as a still |
 | `side-by-side.md` | How the recording was made, the exact commands, and the numbers behind it |
@@ -48,4 +51,4 @@ Keep committed images small. A GIF over about 10 MB stops rendering reliably on 
 well below that; reduce the frame rate, the width or the duration rather than the honesty of
 the recording.
 
-The tools live in `scripts/demo/side-by-side/`.
+The tools live in `scripts/demo/session/` (the demo) and `scripts/demo/side-by-side/`.
