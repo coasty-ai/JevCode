@@ -52,9 +52,10 @@ a timer. A slow reply is recorded as slow.
 | `PTY_ROWS` / `PTY_COLS` | `28` / `100` | terminal geometry |
 | `SEED` | `7` | the typist's seed |
 
-`HOME` is not replaced. Everything JevCode keeps under it goes into the take instead: `JEVCODE_HOME`, an empty
-`JEVCODE_CONFIG`, and `JEVCODE_NO_IMPORT`, `JEVCODE_NO_MEMORY` and `JEVCODE_NO_HISTORY`. bash keeps its history in the
-take too.
+`HOME` is an empty directory in the take, as [the media rules](../../../docs/media/README.md) ask, so nothing of the
+machine's user is read. On top of it the take keeps its own `JEVCODE_HOME`, points `JEVCODE_CONFIG` at an empty file
+and sets `JEVCODE_NO_IMPORT`, `JEVCODE_NO_MEMORY` and `JEVCODE_NO_HISTORY`. bash keeps its history in the take too
+(`HISTFILE`), never in the user's `~/.bash_history`.
 
 A take directory ends up with:
 
@@ -67,6 +68,8 @@ oracle.txt       the tail of the workspace's own pytest run after the session
 fix.diff         what the run changed
 demo-py/         the workspace, with its git history
 .jevcode/        the take's JEVCODE_HOME: the run directories and the session index
+home/            the take's HOME, empty when the take starts
+.bash_history    what the typist typed at the shell
 ```
 
 After a take, `record.sh` scans the capture for anything key-shaped. If it finds any, it exits 3 before a frame can be
@@ -92,18 +95,25 @@ python3 scripts/demo/session/render.py /tmp/jevcode-demo/take1 \
 | `--allow-problems` | off | render even when the check below finds a problem |
 | `--ignore-sync` | off | sample mid-repaint, as a terminal without mode 2026 would; use it to see what the check catches |
 
-Before it draws anything, the renderer checks every state the screen passed through in the shown span, not only the
-sampled ones. It looks for escape debris, replacement characters, a console box with a missing or broken edge, and a
-cursor off the screen. If any state fails, it prints the first ones and exits without rendering.
+Before it draws anything, the renderer checks every state the screen reached in the shown span, not only the sampled
+ones: the screen after each chunk the terminal received, and after each complete repaint when one chunk held more than
+one. It looks for escape debris, replacement characters, a console box with a missing or broken edge, and a cursor off
+the screen, and on the last state it checks that the shell's prompt came back below the console box, at column 0. If
+any state fails, it prints the first ones and exits without rendering.
 
-It prints a JSON summary: the file size, the frame count, the screen states checked, the time shown and the hold.
+It prints a JSON summary: the file size, the frame count, the screen states checked, the time shown, the hold and
+what the palette cost.
 
 The GIF plays at real time and nothing in it is sped up. The only cuts are the dead time before the typist's first key
-(everything but the lead-in) and everything after the session puts the terminal back on `/exit`. The still is the
-screen just before `/exit` is typed.
+(everything but the lead-in) and what comes after the shell's first prompt once the session has exited: the `exit` that
+ends the recording. The picture ends on that prompt, under the console box, and holds it. The still is the screen just
+before `/exit` is typed.
 
 To make the file smaller, in this order: `--scale 1`, a lower `--fps`, then fewer `--colors`. Do not trim the session
 and do not speed it up. The length is part of what the picture shows.
+
+Record the demo again for each minor release. The wordmark's caption in the picture carries the version it was
+recorded with, and the picture must show the program as it is.
 
 ## How it works
 
@@ -120,8 +130,14 @@ needs:
   supports the mode shows it. Ignoring it produces torn frames: half-erased consoles and doubled box edges.
 * **Glyphs drawn cell by cell.** Text sits exactly on the grid. Braille (the mini donut), block elements (the wordmark)
   and light box drawing are drawn as shapes that fill the cell, as most terminal emulators draw them. Menlo has no
-  braille, and a font's box glyphs leave gaps once the line is taller than the font.
+  braille, and a font's box glyphs leave gaps once the line is taller than the font. A colour emoji in a reply is drawn
+  from the system's emoji font (Apple Color Emoji, or Noto Color Emoji on Linux) into its two cells. A character that
+  no font can draw stops the render rather than showing up as an empty box.
 
-Colours come from the capture. The background is `#1e1e1e`, the one the theme's contrasts are measured on. The
+Colours come from the capture. The GIF's one 256-colour palette is chosen by maximum coverage, so rare colours (an
+emoji's shading, a status word) keep their own entries, and each entry is then set to the most common colour it stands
+for, so the background and the text colours are exact. The summary reports the share of pixels drawn exactly and the
+largest error in any channel. The still is saved with every colour it was drawn with. The background is `#1e1e1e`, the
+one the theme's contrasts are measured on. The
 foreground is the theme's `code` colour. `dim` is drawn at the `DIM_OPACITY` read out of `scripts/gen-brand.mjs`, so
 the picture and the README's generated wordmark agree.

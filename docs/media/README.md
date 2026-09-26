@@ -5,7 +5,7 @@ came from.
 
 | File | What it is |
 |---|---|
-| `demo.gif` | The README's demo: one live interactive session in `examples/demo-py`. `jevcode` is typed at a shell prompt, it answers `hi`, it is asked to `fix the failing tests` and does, and `/exit` ends it. Replayed at real time, on the default model |
+| `demo.gif` | The README's demo: one live interactive session in `examples/demo-py`. `jevcode` is typed at a shell prompt, it answers `hi`, it is asked to `fix the failing tests` and does, and `/exit` hands the shell its prompt back. Replayed at real time, on the default model |
 | `demo.png` | The screen just before `/exit` in that recording, as a still |
 | `demo.md` | How that recording was made: the task, model, flags, machine, which take it is, and the numbers the runs recorded |
 | `side-by-side.gif` | Two live runs of the same bug fix, one in each mode, replayed at one sixth of real speed. History: it compares the `llm-jev` default of 2026-09-22 with `jev-off`, and left the README when the `agent` mode became the default on 2026-09-23 |

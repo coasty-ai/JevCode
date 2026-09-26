@@ -10,11 +10,12 @@
 # fresh copy of examples/demo-py with one git commit and a .venv holding pytest, as its README
 # says. Keys are never passed on a command line: node reads them from ENV_FILE.
 #
-# Isolation: HOME is left alone. Everything JevCode keeps under it is moved into the take instead:
-# JEVCODE_HOME (runs, sessions, trust, coordination, the model cache), JEVCODE_CONFIG (an empty
-# config file, so no saved login or setting is read), and JEVCODE_NO_IMPORT / JEVCODE_NO_MEMORY /
-# JEVCODE_NO_HISTORY (no import offer, no user memory file, no composer history). bash runs with
-# no profile or rc file and keeps its history in the take.
+# Isolation: HOME is an empty directory in the take (docs/media/README.md), so nothing of the
+# machine's user is read: no saved login or setting, no keybindings, no memory file, nothing to
+# import. On top of it the take keeps JEVCODE_HOME (runs, sessions, trust, coordination, the model
+# cache) where meta.py reads it, points JEVCODE_CONFIG at an empty config file, and sets
+# JEVCODE_NO_IMPORT / JEVCODE_NO_MEMORY / JEVCODE_NO_HISTORY (no import offer, no user memory file,
+# no composer history). bash runs with no profile or rc file and keeps its history in the take.
 #
 # Environment (all optional):
 #   ENV_FILE    .env with OPENROUTER_API_KEY (default: <repo>/.env)
@@ -43,6 +44,7 @@ mkdir -p "$outdir"
 outdir=$(cd -- "$outdir" && pwd)
 ws=$outdir/demo-py          # the prompt and the console header show basename(cwd)
 jhome=$outdir/.jevcode      # JEVCODE_HOME: runs, sessions, trust, coordination
+home=$outdir/home           # HOME: empty
 bin=$outdir/bin
 
 # The workspace, exactly as examples/demo-py/README.md builds it.
@@ -60,7 +62,7 @@ python3 -m venv "$ws/.venv"
 # An empty config file: JEVCODE_CONFIG points at it, so no saved login or setting of the machine's
 # user is read (src/config/resolve.ts, src/config/credentials.ts).
 printf '{}\n' > "$outdir/config.json"
-mkdir -p "$jhome" "$bin"
+mkdir -p "$jhome" "$home" "$bin"
 
 # The command the viewer sees typed: `jevcode`, this checkout's build, keys from ENV_FILE.
 cat > "$bin/jevcode" <<SH
@@ -83,7 +85,7 @@ python3 "$repo/perf/drivers/pty_type.py" \
   env -u ANTHROPIC_API_KEY -u CI -u CONTINUOUS_INTEGRATION -u NO_COLOR -u FORCE_COLOR \
       -u JEVCODE_WARM -u JEVCODE_MODE -u JEVCODE_MODEL -u JEVCODE_PROVIDER -u JEVCODE_AUTONOMY \
       -u JEVCODE_VERIFY -u JEV_PROVIDER -u JEVCODE_TRACE -u JEVCODE_EXTRA_ENV_FILE \
-      "JEVCODE_HOME=$jhome" "JEVCODE_CONFIG=$outdir/config.json" \
+      "HOME=$home" "JEVCODE_HOME=$jhome" "JEVCODE_CONFIG=$outdir/config.json" \
       JEVCODE_NO_IMPORT=1 JEVCODE_NO_MEMORY=1 JEVCODE_NO_HISTORY=1 \
       TERM=xterm-256color COLORTERM=truecolor LANG=en_US.UTF-8 \
       BASH_SILENCE_DEPRECATION_WARNING=1 "HISTFILE=$outdir/.bash_history" "PATH=$bin:$PATH" 'PS1=\W $ ' \

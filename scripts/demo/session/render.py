@@ -13,20 +13,25 @@ complete repaints, as a terminal that supports the mode shows it. Nothing is dra
 terminal did not receive, and time is not stretched: a frame is shown for exactly as long as
 the screen stood still in the capture, to the GIF's 10 ms resolution (`--fps` sets how finely
 the capture is sampled). What is trimmed is the time before the typist's first key (all but a
-short lead-in) and everything after the session put the terminal back on exit; the last frame
-is then held for `--hold` seconds before the loop restarts.
+short lead-in) and everything after the shell's first prompt once the session has exited (the
+typed `exit` that ends the recording); that last frame, the prompt under the console box, is
+then held for `--hold` seconds before the loop restarts.
 
 Text is drawn cell by cell on the terminal grid, so no run of glyphs can drift off it. Braille,
 block elements and the light box-drawing set are drawn as shapes filling the cell, as most
 terminal emulators draw them (Menlo has no braille, and a font's box glyphs leave gaps between
 rows once the line is taller than the font); everything else comes from the font.
 
-Before anything is drawn, every state the screen passed through in the shown span is checked for
-escape debris, replacement characters and a torn console box; any problem stops the render
+Before anything is drawn, every state the screen reached in the shown span is checked: the screen
+after each chunk the terminal received, and after each complete repaint when one chunk carried
+several. The check looks for escape debris, replacement characters, a torn console box and, on
+the last state, a shell prompt inside the box instead of below it; any problem stops the render
 (`--allow-problems` overrides, `--ignore-sync` shows what the check catches without mode 2026).
 
 Requires Pillow. Fonts: Menlo, else SF Mono, else DejaVu Sans Mono; Apple Symbols and Arial
-Unicode fill any glyph the first font lacks.
+Unicode fill any glyph the first font lacks, and Apple Color Emoji (or Noto Color Emoji) draws a
+colour emoji into its cells. A character no font draws stops the render (`--allow-problems`
+overrides).
 """
 from __future__ import annotations
 
@@ -39,7 +44,7 @@ import re
 import sys
 from typing import Optional
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFont
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
@@ -56,6 +61,17 @@ def _side_by_side():
 
 
 sbs = _side_by_side()
+
+
+def _steps():
+    """The keystroke plan, for the shell prompt it waits on (one definition of it in the repository)."""
+    spec = importlib.util.spec_from_file_location("jevcode_demo_session_steps", os.path.join(HERE, "steps.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+steps = _steps()
 
 # --------------------------------------------------------------------------------------
 # colours: the background the theme's contrast was measured on, and the theme's own `code`
@@ -149,8 +165,14 @@ def load_timing(path: str):
     return chunks, marks, sends
 
 
+ESU = b"\x1b[?2026l"
+
+
 def screen_events(capture: bytes, chunks, rows: int, cols: int, until_off: Optional[int] = None):
-    """Every change of the visible screen, with the arrival time of the chunk that made it."""
+    """Every change of the visible screen, with the arrival time of the chunk that made it.
+
+    A chunk is fed in pieces that end at each end of a synchronized update (`ESC[?2026l`), so two
+    complete repaints that reached the terminal in one read are two states, not one."""
     term = Term(rows, cols)
     dec = codecs.getincrementaldecoder("utf-8")("replace")
     events = [(0.0, term.view())]
@@ -158,10 +180,16 @@ def screen_events(capture: bytes, chunks, rows: int, cols: int, until_off: Optio
         if until_off is not None and off >= until_off:
             break
         end = off + n if until_off is None else min(off + n, until_off)
-        term.feed(dec.decode(capture[off:end]))
-        v = term.view()
-        if v != events[-1][1]:
-            events.append((t, v))
+        data = capture[off:end]
+        start = 0
+        while start < len(data):
+            cut = data.find(ESU, start)
+            stop = len(data) if cut < 0 else cut + len(ESU)
+            term.feed(dec.decode(data[start:stop]))
+            start = stop
+            v = term.view()
+            if v != events[-1][1]:
+                events.append((t, v))
     return events
 
 
@@ -193,6 +221,22 @@ def problems_in(view, cols: int) -> list[str]:
     return found
 
 
+def prompt_problems(view, prompt: str) -> list[str]:
+    """The last state: the shell's prompt must be below the console box, where the session left the cursor."""
+    grid, _ = view
+    text = ["".join(c[0] for c in row) for row in grid]
+    rows = [r for r, line in enumerate(text) if prompt in line]
+    bottoms = [r for r, line in enumerate(text) if line.startswith("╰")]
+    found = []
+    if not rows:
+        found.append(f"no shell prompt {prompt!r} on the last screen")
+    elif bottoms and rows[-1] <= bottoms[-1]:
+        found.append(f"row {rows[-1]}: the shell prompt is inside the console box: {text[rows[-1]].rstrip()!r}")
+    elif not text[rows[-1]].startswith(prompt):
+        found.append(f"row {rows[-1]}: the shell prompt does not start at column 0: {text[rows[-1]].rstrip()!r}")
+    return found
+
+
 def view_at(events, t: float):
     lo, hi = 0, len(events) - 1
     while lo < hi:
@@ -218,6 +262,11 @@ FALLBACK = [
     "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
     "/Library/Fonts/Arial Unicode.ttf",
 ]
+# colour emoji, drawn from the font's own bitmaps at one of its strike sizes and scaled into the cells
+EMOJI = [
+    ("/System/Library/Fonts/Apple Color Emoji.ttc", 160),
+    ("/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf", 109),
+]
 UI_FONTS = ["/System/Library/Fonts/SFNS.ttf", "/System/Library/Fonts/Helvetica.ttc"]
 
 
@@ -241,6 +290,16 @@ class Fonts:
         self.baseline = int(round((cell_h - (ascent + descent)) / 2 + ascent))
         self._missing: dict = {}
         self.name = os.path.basename(self.path)
+        self.emoji = None
+        for p, size in EMOJI:
+            if os.path.exists(p):
+                try:
+                    self.emoji = ImageFont.truetype(p, size)
+                    break
+                except OSError:
+                    continue
+        # characters no font could draw: reported, and a reason not to render
+        self.unknown: set = set()
 
     def _notdef(self, font) -> bytes:
         key = ("notdef", id(font))
@@ -257,13 +316,34 @@ class Fonts:
         return self._missing[key]
 
     def pick(self, ch: str, bold: bool):
+        """The first text font with a glyph for `ch`, or None."""
         first = self.bold if bold else self.regular
         if self.has(first, ch):
             return first
         for f in self.fallbacks:
             if self.has(f, ch):
                 return f
-        return first
+        return None
+
+    def emoji_tile(self, ch: str, w: int, h: int, bg) -> Optional[Image.Image]:
+        """A colour emoji fitted into its cells (two, for a wide one), centred, as a terminal draws it."""
+        if self.emoji is None:
+            return None
+        size = int(self.emoji.size)
+        probe = Image.new("RGBA", (size * 3, size * 2), (0, 0, 0, 0))
+        try:
+            ImageDraw.Draw(probe).text((0, 0), ch, font=self.emoji, embedded_color=True)
+        except (OSError, ValueError):
+            return None
+        box = probe.getbbox()
+        if box is None:
+            return None
+        glyph = probe.crop(box)
+        k = min(w / glyph.width, h * 0.94 / glyph.height)
+        glyph = glyph.resize((max(1, round(glyph.width * k)), max(1, round(glyph.height * k))), Image.LANCZOS)
+        t = Image.new("RGB", (w, h), bg)
+        t.paste(glyph, ((w - glyph.width) // 2, (h - glyph.height) // 2), glyph)
+        return t
 
 
 def ui_font(size: float):
@@ -395,11 +475,18 @@ class Painter:
         fgc, bgc = self.colours(cell)
         w = self.w * (2 if wide else 1)
         t = _shape_tile(ch, w, self.h, fgc, bgc) if ch.strip() else None
+        if t is None and ch.strip():
+            font = self.fonts.pick(ch, bool(cell[3]))
+            if font is None:
+                t = self.fonts.emoji_tile(ch, w, self.h, bgc)
+                if t is None:
+                    self.fonts.unknown.add(ch)
+                    font = self.fonts.regular
+            if t is None:
+                t = Image.new("RGB", (w, self.h), bgc)
+                ImageDraw.Draw(t).text((0, self.fonts.baseline), ch, font=font, fill=fgc, anchor="ls")
         if t is None:
             t = Image.new("RGB", (w, self.h), bgc)
-            if ch.strip():
-                font = self.fonts.pick(ch, bool(cell[3]))
-                ImageDraw.Draw(t).text((0, self.fonts.baseline), ch, font=font, fill=fgc, anchor="ls")
         self.cache[key] = t
         return t
 
@@ -489,8 +576,9 @@ def main() -> int:
             raise SystemExit(f"render.py: the capture contains {needle!r}; refusing to render")
     chunks, marks, sends = load_timing(os.path.join(args.take, "timing.jsonl"))
 
-    # The end: the session's own teardown after /exit (bracketed paste off). Bytes after it belong
-    # to the shell and are not drawn.
+    # The end: the shell's first prompt after the session's own teardown on /exit (bracketed paste
+    # off). The prompt coming back is part of the exit, so it is drawn; what follows it (the typed
+    # `exit` that ends the recording) is not.
     exit_sent = marks.get("exit-sent")
     if exit_sent is None:
         raise SystemExit("render.py: the take has no exit-sent mark (did the session finish?)")
@@ -498,19 +586,23 @@ def main() -> int:
     teardown = capture.find(b"\x1b[?2004l", exit_off)
     if teardown < 0:
         raise SystemExit("render.py: no teardown after /exit in the capture")
-    cut_off = teardown + len(b"\x1b[?2004l")
-    # the rest of the restore string, up to the next thing the shell writes
-    tail = re.match(rb"(?:\x1b\[[0-9;?]*[ -/]*[@-~])*", capture[cut_off:])
-    cut_off += tail.end() if tail else 0
+    prompt = re.compile(steps.PROMPT.encode()).search(capture, teardown)
+    if prompt is None:
+        raise SystemExit("render.py: no shell prompt after the session's teardown in the capture")
+    cut_off = prompt.end()
     end_t = next(t for t, off, n in chunks if off + n >= cut_off)
 
     events = screen_events(capture, chunks, rows, cols, until_off=cut_off)
     # the shell's prompt is the first thing drawn; the picture starts with it on screen
     start_t = max(chunks[0][0], marks["first-key"] - args.lead_in * 1000.0)
 
-    # Every state the screen passed through in the shown span is checked, not only the sampled ones.
+    # Every state the screen reached in the shown span is checked, not only the sampled ones, and on
+    # the last one the shell's prompt must be below the console box.
     shown_states = [(t, v) for t, v in events if t <= end_t]
     bad = [(t, p) for t, v in shown_states for p in [problems_in(v, cols)] if p]
+    last_problems = prompt_problems(shown_states[-1][1], prompt.group(0).decode("utf-8", "replace"))
+    if last_problems:
+        bad.append((shown_states[-1][0], last_problems))
     for t, p in bad[:20]:
         sys.stderr.write(f"render.py: screen at {t:.0f} ms: {'; '.join(p[:3])}\n")
     if bad and not args.allow_problems:
@@ -547,15 +639,44 @@ def main() -> int:
     )
     layout = Layout(rows, cols, args.cell_width, args.cell_height, args.scale, title)
     rgb = [layout.frame(v) for v in frames_views]
+    # a character no font could draw would be a box in the picture, not what the terminal showed
+    if layout.fonts.unknown:
+        names = ", ".join(f"U+{ord(c):04X}" for c in sorted(layout.fonts.unknown))
+        sys.stderr.write(f"render.py: no font draws {names}\n")
+        if not args.allow_problems:
+            raise SystemExit("render.py: characters with no glyph; not writing the GIF")
 
     # one palette for every frame, so an unchanged pixel keeps its index and only the changed
-    # rectangle of each frame is stored
+    # rectangle of each frame is stored. Maximum coverage keeps rare colours (an emoji's shading, a
+    # status word) apart instead of merging them into the common ones; then each entry is set to
+    # the most common colour it stands for, so the background and the text colours are exact.
     picks = sorted(set([0, len(rgb) - 1] + [int(i * (len(rgb) - 1) / 11) for i in range(12)]))
     sheet = Image.new("RGB", (layout.width, layout.height * len(picks)))
     for k, i in enumerate(picks):
         sheet.paste(rgb[i], (0, k * layout.height))
-    pal = sheet.quantize(colors=args.colors, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE)
+    pal = sheet.quantize(colors=args.colors, method=Image.Quantize.MAXCOVERAGE, dither=Image.Dither.NONE)
+    counts = sheet.getcolors(1 << 24)
+    strip = Image.new("RGB", (len(counts), 1))
+    strip.putdata([c for _, c in counts])
+    commonest: dict = {}
+    for (n, c), i in zip(counts, strip.quantize(palette=pal, dither=Image.Dither.NONE).getdata()):
+        if i not in commonest or n > commonest[i][0]:
+            commonest[i] = (n, c)
+    flat = list(pal.getpalette()[: 3 * args.colors])
+    for i, (_, c) in commonest.items():
+        flat[3 * i: 3 * i + 3] = list(c)
+    pal = Image.new("P", (1, 1))
+    pal.putpalette(flat)
     quant = [f.quantize(palette=pal, dither=Image.Dither.NONE) for f in rgb]
+    # what the palette costs, over every pixel of every frame: the share drawn in exactly the colour
+    # the terminal had, the largest change in any channel, and the frame with most pixels off by 40+
+    errors = [0] * 256
+    far = 0
+    for f, q in zip(rgb, quant):
+        d = ImageChops.difference(f, q.convert("RGB")).split()
+        h = ImageChops.lighter(ImageChops.lighter(d[0], d[1]), d[2]).histogram()
+        far = max(far, sum(h[40:]))
+        errors = [a + b for a, b in zip(errors, h)]
     quant[0].save(args.out, save_all=True, append_images=quant[1:], duration=durations, loop=0,
                   optimize=False, disposal=1)
 
@@ -564,7 +685,8 @@ def main() -> int:
         poster_t = marks.get("poster", end_t) - 1.0
         big = Layout(rows, cols, args.cell_width, args.cell_height, args.poster_scale, title)
         still = big.frame(view_at(events, poster_t))
-        still.quantize(colors=256, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE).save(args.poster, optimize=True)
+        # the still keeps every colour it was drawn with (a PNG has no palette limit to meet)
+        still.save(args.poster, optimize=True)
 
     size = os.path.getsize(args.out)
     print(json.dumps({
@@ -573,8 +695,12 @@ def main() -> int:
         "dimOpacity": DIM, "sampledFps": args.fps,
         "screenStatesChecked": len(shown_states), "screenStatesWithProblems": len(bad),
         "startMs": round(start_t, 1), "endMs": round(end_t, 1),
+        "teardownMs": round(next(t for t, off, n in chunks if off + n > teardown), 1),
         "shownSeconds": round(total_ms / 1000.0, 2), "holdSeconds": args.hold,
         "gifSeconds": round(sum(durations) / 1000.0, 2),
+        "paletteExactShare": round(errors[0] / sum(errors), 4),
+        "paletteMaxChannelError": max(i for i, n in enumerate(errors) if n),
+        "palettePixelsOff40MaxPerFrame": far,
         "poster": args.poster, "posterMs": None if poster_t is None else round(poster_t, 1),
     }, indent=1))
     return 0
