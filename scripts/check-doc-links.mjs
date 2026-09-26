@@ -3,14 +3,15 @@
  * check-doc-links — every relative link in the published Markdown must resolve.
  *
  * Scope: README.md, CONTRIBUTING.md, SECURITY.md, CHANGELOG.md and everything under docs/.
- * Checks, for each inline link and image target that is not absolute (`http:`, `https:`,
- * `mailto:`) and not a bare in-page anchor:
+ * Checks, for each inline link and image target — and each `src`, `href` and `srcset` target of
+ * an HTML tag, such as the README's `<img>` and `<picture>` — that is not absolute (`http:`,
+ * `https:`, `mailto:`) and not a bare in-page anchor:
  *   1. the file or directory the path names exists on disk;
  *   2. if the target carries a `#fragment` and names a Markdown file, that heading exists
  *      in it (GitHub's slug rules) or an explicit HTML anchor with that id does.
  * A bare `#fragment` is checked against the headings of the file it appears in.
  * Fenced blocks and inline code spans are stripped first, so an example link inside
- * backticks is not mistaken for a real one.
+ * backticks is not mistaken for a real one; HTML comments are skipped for the tag scan.
  *
  * Usage: node scripts/check-doc-links.mjs [--quiet]
  * Exit 0 when every link resolves, 1 otherwise.
@@ -112,6 +113,28 @@ function linksIn(text) {
     // Requiring the end of the line keeps prose such as `[D10]: the supervisor…` out.
     const def = /^\s{0,3}\[[^\]]+\]:\s*<?([^\s<>]+)>?\s*(?:"[^"]*"|'[^']*')?\s*$/.exec(line);
     if (def) out.push({ target: def[1], line: i + 1 });
+  }
+  out.push(...htmlTargetsIn(body));
+  return out;
+}
+
+/**
+ * HTML tag targets: `src`, `href` and every candidate of a `srcset`. A Markdown-only scan misses the README's
+ * hero image, so a missing picture would pass. Tags may span lines; comments are blanked (newlines kept) first.
+ */
+function htmlTargetsIn(body) {
+  const out = [];
+  const text = body.replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, ' '));
+  const lineAt = (index) => text.slice(0, index).split('\n').length;
+  for (const tag of text.matchAll(/<[a-z][a-z0-9-]*\b[^>]*>/gi)) {
+    for (const attr of tag[0].matchAll(/\s(src|href|srcset)\s*=\s*(?:"([^"]*)"|'([^']*)')/gi)) {
+      const value = (attr[2] ?? attr[3] ?? '').trim();
+      const line = lineAt(tag.index + attr.index);
+      const targets = attr[1].toLowerCase() === 'srcset'
+        ? value.split(',').map((c) => c.trim().split(/\s+/)[0]).filter(Boolean)
+        : value ? [value] : [];
+      for (const target of targets) out.push({ target, line });
+    }
   }
   return out;
 }
