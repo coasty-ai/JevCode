@@ -525,6 +525,13 @@ export interface Bridge {
    * the first resize and in tests that mount <App> directly.
    */
   geometry: { rows: number; columns: number } | null;
+  /**
+   * Set once by the renderer's `unmount()`, before its last commit: the session is leaving, so the App's children stop
+   * placing the terminal cursor. Ink's `log.done()` does not move a placed cursor back to the bottom of the frame, so a
+   * frame that still places it (the composer's input row) would leave the shell's next prompt printed inside the
+   * console box. A last frame that places no cursor gets Ink's own return-to-bottom instead, below the box's bottom edge.
+   */
+  closing: boolean;
   notify(): void;
   command(c: BridgeCommand): void;
 }
@@ -541,6 +548,7 @@ export function createBridge(host: SessionHost | null, wizardHost: WizardHost | 
     handler: null,
     stateReader: null,
     geometry: null,
+    closing: false,
     notify() {
       for (const fn of [...b.listeners]) fn();
     },
@@ -868,6 +876,8 @@ export function splitInputChunk(input: string, key: Key): SplitChunk {
 const EMPTY_BUFFER = createBuffer();
 /** The spans of an empty (note-mode) composer — one frozen array, so the console's span memo keeps its key. */
 const NO_DRAFT_SPANS: ReturnType<typeof hitSpans> = [];
+/** The cursor setter the children get once the session is leaving (`Bridge.closing`): nothing is placed. */
+const NO_CURSOR = (): void => undefined;
 
 function useBridge(bridge: Bridge): number {
   const [tick, setTick] = useState(0);
@@ -3490,8 +3500,10 @@ export function App(p: AppProps): React.JSX.Element {
   // question, so the ghost reads `matches[selected]`, never `matches[0]` — A4 p5 captured a marker on `/llm` beside a
   // `/mode +5` ghost, and with §4.2's Enter cycling the ghost would otherwise never move at all.
   const ghost = palette && palette.mode === 'command' ? guard('composer', () => paletteGhostFor(buffer.text.trim(), paletteMatches(buffer.text.trim(), paletteState()), palette.selected), null) : null;
-  // the App owns the single cursor: hidden unless a child places it during its render
+  // the App owns the single cursor: hidden unless a child places it during its render — and never once the session is
+  // leaving (`Bridge.closing`), so the last frame leaves the terminal cursor below the console for the shell's prompt
   setCursorPosition(undefined);
+  const placeCursor = bridge.closing ? NO_CURSOR : setCursorPosition;
   const staticOnly = layout.degraded === 'static-only';
   const maskGlyph = maskGlyphFor(glyphs);
   const logName = log.file || 'jevcode.log';
@@ -3630,7 +3642,7 @@ export function App(p: AppProps): React.JSX.Element {
       ) : null}
       {!staticOnly && (layout.overlay > 0 || layout.preview > 0) && !wizardHosted ? (
         <PaneBoundary pane="overlay" onFail={onPaneFail} fault={fault} log={logName} resetKey={overlayKind}>
-          <Overlay kind={layout.degraded === 'minsize' ? 'none' : overlayKind} rows={layout.overlay} previewRows={layout.preview} columns={columns} terminalRows={rows} top={overlayTop} data={overlayData} degraded={layout.degraded} cursor={setCursorPosition} glyphs={glyphs} theme={theme} color={depth} screenReader={launch.screenReader} chrome={chrome} />
+          <Overlay kind={layout.degraded === 'minsize' ? 'none' : overlayKind} rows={layout.overlay} previewRows={layout.preview} columns={columns} terminalRows={rows} top={overlayTop} data={overlayData} degraded={layout.degraded} cursor={placeCursor} glyphs={glyphs} theme={theme} color={depth} screenReader={launch.screenReader} chrome={chrome} />
         </PaneBoundary>
       ) : null}
       {!staticOnly && layout.chrome > 0 && (layout.composer > 0 || wizardHosted) ? (
@@ -3653,7 +3665,7 @@ export function App(p: AppProps): React.JSX.Element {
             height={wizardHosted ? layout.overlay : Math.max(1, layout.composer - layout.gate)}
             top={cTop}
             scrollTop={composer.scrollTop}
-            cursor={setCursorPosition}
+            cursor={placeCursor}
             active={wizardHosted ? true : composerActive && !state.noteMode}
             mode={composerMode}
             recent={state.recent}
@@ -3690,7 +3702,7 @@ export function App(p: AppProps): React.JSX.Element {
             </Box>
           )}
         >
-          <Composer buffer={state.noteMode || collapsing ? EMPTY_BUFFER : buffer} columns={columns} height={layout.composer} top={top} scrollTop={composer.scrollTop} cursor={setCursorPosition} active={composerActive && !state.noteMode} mode={composerMode} rows={rows} live={runChrome} spans={state.noteMode ? NO_DRAFT_SPANS : draftSpans} ghost={ghost} searchRow={composer.searchRow()} glyphs={glyphs} theme={theme} color={depth} onScroll={(n) => composer.setScrollTop(n)} />
+          <Composer buffer={state.noteMode || collapsing ? EMPTY_BUFFER : buffer} columns={columns} height={layout.composer} top={top} scrollTop={composer.scrollTop} cursor={placeCursor} active={composerActive && !state.noteMode} mode={composerMode} rows={rows} live={runChrome} spans={state.noteMode ? NO_DRAFT_SPANS : draftSpans} ghost={ghost} searchRow={composer.searchRow()} glyphs={glyphs} theme={theme} color={depth} onScroll={(n) => composer.setScrollTop(n)} />
         </PaneBoundary>
       ) : null}
       {layout.status > 0 && layout.chrome === 0 ? (
@@ -3899,6 +3911,15 @@ export function createTuiRenderer(opts: TuiRendererOptions): TuiRenderer {
       offResize = null;
       liveScheduler.cancel();
       hygiene?.uninstall();
+      // the last frame places no cursor (`Bridge.closing`): committed synchronously here, Ink's write for it moves the
+      // cursor from the composer's input row back below the frame, so the shell's next prompt lands under the console
+      // box instead of inside it. The flush below writes it.
+      bridge.closing = true;
+      try {
+        instance?.rerender(tree());
+      } catch {
+        /* the tree is already gone: nothing was placed */
+      }
       // finding 10: the controller unmounts right after `run:end`; let React commit that state and Ink flush the frame
       // (bounded), so the scrollback ends on `done <stop>` with the composer gone, not on a frozen spinner
       let flushTimer: NodeJS.Timeout | null = null;

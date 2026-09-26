@@ -650,14 +650,31 @@ export function syncFrames(text: string): SyncFrame[] {
  * sits on, frame by frame, as the terminal shows them.
  */
 export function syncScreens(text: string, rows: number, cols: number): string[][] {
+  const out: string[][] = [];
+  let seen = false;
+  const end = emulate(text, rows, cols, (screen) => {
+    if (seen) out.push(screen);
+    seen = true;
+  });
+  if (seen) out.push(end.screen);
+  return out;
+}
+
+/**
+ * The same emulator run to the end of `text`: the screen (trailing blanks trimmed) and the cell the cursor was left on
+ * (0-based). Append what a shell prints next to a capture and this shows where it lands.
+ */
+export function screenAtEnd(text: string, rows: number, cols: number): { screen: string[]; row: number; col: number } {
+  return emulate(text, rows, cols);
+}
+
+/** The emulator behind `syncScreens` / `screenAtEnd`; `onFrame` sees the screen as it stood before each `BSU`. */
+function emulate(text: string, rows: number, cols: number, onFrame?: (screen: string[]) => void): { screen: string[]; row: number; col: number } {
   const blank = (): string[] => Array.from({ length: cols }, () => ' ');
   let screen = Array.from({ length: rows }, blank);
   let r = 0;
   let c = 0;
-  const out: string[][] = [];
-  const snap = (): void => {
-    out.push(screen.map((row) => row.join('').replace(/\s+$/, '')));
-  };
+  const view = (): string[] => screen.map((row) => row.join('').replace(/\s+$/, ''));
   const lf = (): void => {
     if (r === rows - 1) screen = [...screen.slice(1), blank()];
     else r += 1;
@@ -665,15 +682,11 @@ export function syncScreens(text: string, rows: number, cols: number): string[][
   const cells = [...text];
   const CSI = /^\x1b\[([?>=]?)([0-9;]*)([ -/]*)([@-~])/;
   const OSC = /^\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/;
-  let seen = false;
   for (let i = 0; i < cells.length; ) {
     const ch = cells[i]!;
     if (ch === '\x1b') {
       const rest = cells.slice(i, i + 64).join('');
-      if (rest.startsWith(BSU)) {
-        if (seen) snap();
-        seen = true;
-      }
+      if (onFrame && rest.startsWith(BSU)) onFrame(view());
       const m = CSI.exec(rest);
       if (m) {
         i += [...m[0]].length;
@@ -736,8 +749,7 @@ export function syncScreens(text: string, rows: number, cols: number): string[][
       c += 1;
     }
   }
-  if (seen) snap();
-  return out;
+  return { screen: view(), row: r, col: c };
 }
 
 /** indices of the sync frames whose lines contain `needle` */
