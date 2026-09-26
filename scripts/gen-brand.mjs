@@ -5,7 +5,7 @@
 //   docs/media/wordmark-{dark,light}.svg   the 5-row mark, in the splash's own geometry
 //   docs/media/rule-{dark,light}.svg       the section rule, in the two pinks
 //   docs/media/badge-<name>.svg            the header badges
-//   docs/media/swatch-<hex>.svg            the palette swatches in the Colour table
+//   docs/media/swatch-<hex>.svg            the palette swatches in the Colour table (docs/TUI.md)
 //
 //   node scripts/gen-brand.mjs           write every target
 //   node scripts/gen-brand.mjs --check   exit 1 and list the targets that are stale
@@ -199,7 +199,7 @@ function badgeSvg({ label, message, color }) {
   return parts.join('\n');
 }
 
-/** one solid pill naming its own hex — the swatches in the README's Colour table */
+/** one solid pill naming its own hex — the swatches in the Colour table of docs/TUI.md */
 function swatchSvg(color) {
   const label = color.toLowerCase();
   const w = Math.round(cells(label) * B_CH) + B_PAD * 2;

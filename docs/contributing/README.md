@@ -32,7 +32,7 @@ That is exactly five things, in order:
 | 1 | `tsc -p tsconfig.json --noEmit` | the TypeScript project typechecks under its strict settings |
 | 2 | `node scripts/no-any.mjs` | **no `any` anywhere** in `src/`, `test/`, `perf/` or `scripts/` |
 | 3 | `node scripts/jev-contract.mjs` | every decision call site is either annotated or grandfathered, and no question id is one of the forbidden ones |
-| 4 | `node scripts/check-doc-links.mjs` | every relative link in `README.md` and `docs/**` resolves to a file that exists |
+| 4 | `node scripts/check-doc-links.mjs` | every relative link in `README.md` and `docs/**` resolves to a file that exists, Markdown links and images and the `src`, `href` and `srcset` of HTML tags alike |
 | 5 | `vitest run --project unit` | the unit suite |
 
 Steps 1 and 2 are both `npm run typecheck`. Steps 3, 4 and 5 are `npm run jev-contract`,

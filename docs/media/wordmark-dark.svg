@@ -47,5 +47,5 @@
 <rect x="459" y="98" width="66" height="22" fill="#e5e5e5" fill-opacity="0.45"/>
 <rect x="547" y="98" width="77" height="22" fill="#e5e5e5" fill-opacity="0.45"/>
 <text x="646" y="25.84" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,'DejaVu Sans Mono',monospace" font-size="13.64" textLength="242" lengthAdjust="spacingAndGlyphs" fill="#e5e5e5" fill-opacity="0.45">Decisions, not strings</text>
-<text x="646" y="113.84" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,'DejaVu Sans Mono',monospace" font-size="13.64" textLength="77" lengthAdjust="spacingAndGlyphs"><tspan fill="#d45bb6">◆</tspan><tspan fill="#e5e5e5" fill-opacity="0.45"> 0.6.0</tspan></text>
+<text x="646" y="113.84" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,'DejaVu Sans Mono',monospace" font-size="13.64" textLength="77" lengthAdjust="spacingAndGlyphs"><tspan fill="#d45bb6">◆</tspan><tspan fill="#e5e5e5" fill-opacity="0.45"> 0.8.0</tspan></text>
 </svg>

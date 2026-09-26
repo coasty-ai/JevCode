@@ -13,21 +13,26 @@ by the `prepublishOnly` guard unless `CI=true` is set.
 
 ## Current state
 
-Checked on 2026-09-23:
+Checked on 2026-09-25 (this replaces the 2026-09-23 snapshot, when nothing was published yet; the user-facing
+view is [Install channels](getting-started/install.md#install-channels)):
 
 - `coasty-ai/JevCode` is public and `main` is pushed.
-- `package.json` reads 0.6.0. The top CHANGELOG heading is `## [0.6.0] — 2026-09-22 (not yet published)`.
-- Nothing is published. npm refused the unscoped name `jevcode` twice (very likely its name-similarity rule: the
-  package `jev-code` exists), so the package is the scoped **`@coasty/jevcode`** in the npm organization
-  `coasty`. `https://registry.npmjs.org/@coasty%2fjevcode` returns 404. The command stays `jevcode` (`bin`),
-  and the Homebrew formula, the AUR package and the nix package keep the name `jevcode`.
-- The Homebrew tap `coasty-ai/homebrew-jevcode` does not exist. The AUR package `jevcode` does not exist.
+- `package.json` reads 0.8.0, and so does the top CHANGELOG heading.
+- The package is published as the scoped **`@coasty/jevcode`** in the npm organization `coasty`: npm refused the
+  unscoped name `jevcode` twice (very likely its name-similarity rule: the package `jev-code` exists).
+  `npm view @coasty/jevcode dist-tags` shows `latest` at 0.8.0, and `npx -y @coasty/jevcode@latest --version`
+  from an empty directory prints `jevcode 0.8.0`, so the registry round trip works. The command stays `jevcode`
+  (`bin`), and the Homebrew formula, the AUR package and the nix package keep the name `jevcode`.
+- The Homebrew tap `coasty-ai/homebrew-jevcode` exists; its formula's `url` is the 0.8.0 tarball on the npm
+  registry. `flake.lock` is committed.
+- The AUR package `jevcode` does not exist yet (the AUR RPC `info` query for it returns no results): it waits on
+  one-time step 7.
 - The owner strings in the source already name `coasty-ai/JevCode`: `OPENROUTER_REFERER` in
   `src/provider/openrouter.ts`, `DEFAULT_REFERER` in `src/jev/types.ts` and `ISSUES_URL` in `src/cli/report.ts`.
   `package.json` `repository`, `homepage` and `bugs` point there too. npm provenance compares `repository.url`
   with the publishing repository, so these must stay in step.
 - `./scripts/verify-install.sh` proves the offline chain from a clean clone: build, pack, install the tarball,
-  run it. The registry round trip is the only leg not yet exercised.
+  run it.
 
 ## What ships
 
