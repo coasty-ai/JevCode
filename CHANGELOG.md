@@ -4,7 +4,7 @@ All notable changes to `jevcode`. The format follows [Keep a Changelog](https://
 the project uses semantic versioning. `package.json` is the single source of truth for the version and is bumped
 by the release procedure in `docs/RELEASE.md` — the entries below describe the tree at 2026-09-22 (`package.json` reads 0.6.0); nothing has been pushed to the npm registry or the Homebrew tap.
 
-## [Unreleased]
+## [0.8.0] — 2026-09-26
 
 ### Changed — the model checks its own work; the harness runs your test suite only when asked (2026-09-25)
 
