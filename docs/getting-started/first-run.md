@@ -98,6 +98,10 @@ What the wizard writes goes to `${XDG_CONFIG_HOME:-~/.config}/jevcode/config.jso
 mode `0600`. **Keys are never accepted as command-line arguments in this flow**, and
 `jevcode config set` refuses secret settings outright.
 
+Without a terminal — `--no-input`, `--json`, or a pipe — there is no wizard and JevCode never
+prompts. It exits `2` and prints the environment variable or the `jevcode login` command that
+would fix it.
+
 Answering `y` at the wizard's verify prompt — or running `jevcode login --verify` later — makes
 three calls and names the outcome: one real priced decision (about $0.00002), one 1-token
 completion from the code model, and one free key-info request. The outcome is one of `ok`,
@@ -152,11 +156,22 @@ stateDiagram-v2
 The whole loop is on [The agent loop](../architecture/agent-loop.md), and its specification is
 [`../AGENT-LOOP-DESIGN.md`](../AGENT-LOOP-DESIGN.md).
 
+## Try it on the demo project
+
+`examples/demo-py` in a clone of this repository is a small Python package with two planted
+bugs:
+
+```sh
+cp -r examples/demo-py /tmp/demo && cd /tmp/demo
+git init -q && git add -A && git commit -qm init
+python3 -m venv .venv && .venv/bin/pip -q install pytest
+jevcode run "Fix the failing tests in tests/test_core.py without changing the tests."
+```
+
 ## What a task looks like
 
-This is the shape of the demo task from the README (`examples/demo-py`, two planted bugs) in
-the transcript. The prose is the model's own and will read differently on your machine; the
-rows are the harness's.
+This is the shape of that demo task in the transcript. The prose is the model's own and will
+read differently on your machine; the rows are the harness's.
 
 ```
 [you]      Fix the failing tests in tests/test_core.py without changing the tests.

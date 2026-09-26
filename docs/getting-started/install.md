@@ -1,7 +1,11 @@
 # Install
 
-JevCode is one command, `jevcode`. This page lists every install path, in order of how well it
-works today, and gives the command that proves each one succeeded.
+JevCode is one command, `jevcode`. This page lists every install path, says which ones are live,
+and gives the command that proves each one succeeded. The short version:
+
+```sh
+npm i -g @coasty/jevcode
+```
 
 ## What you need
 
@@ -25,10 +29,10 @@ single ECMAScript module, `dist/jevcode.mjs`, so installing JevCode adds exactly
 your machine and nothing else. `THIRD_PARTY_LICENSES.txt` carries the attributions for
 everything that was bundled in, because the bundler strips license comments from its output.
 
-## From source — the path that works today
+## From source
 
 ```sh
-git clone <this repository> && cd JevCode
+git clone https://github.com/coasty-ai/JevCode && cd JevCode
 npm ci
 npm run build
 npm link            # optional: puts `jevcode` on PATH
@@ -53,19 +57,19 @@ to, and where that value came from. Secrets appear as fingerprints, never as key
 
 ## Install channels
 
-Each channel below works once the first release is published. Nothing is published yet, so today only
-"From source" above works. Homebrew, AUR and Nix also need a one-time step by the repository owner first; the
-table names it. The owner's steps are in
+Checked on 2026-09-25: the package is on npm, so npm, the one-shot runners and mise work; the Homebrew
+tap exists and carries the latest stable release; `flake.lock` is committed for Nix. The AUR package
+does not exist yet: it needs a one-time step by the repository owner. The owner's steps are in
 [`../RELEASE.md`](../RELEASE.md#one-time-setup).
 
-| Channel | Command | Needs first |
+| Channel | Command | Available |
 | --- | --- | --- |
-| npm / npx | `npm i -g @coasty/jevcode`, `npx @coasty/jevcode` | the first release |
-| bun / pnpm / yarn | `bunx @coasty/jevcode`, `pnpm dlx @coasty/jevcode`, `yarn dlx @coasty/jevcode` | the first release |
-| mise | `mise use -g npm:@coasty/jevcode` | the first release |
-| Homebrew | `brew install coasty-ai/jevcode/jevcode` | the first release, and the owner's tap setup (step 6) |
-| AUR | `yay -S jevcode` or `paru -S jevcode` | the first release, and the owner's AUR setup (step 7) |
-| Nix | `nix run github:coasty-ai/JevCode` | the owner's `flake.lock` commit (step 8); it builds from source, not from npm |
+| npm / npx | `npm i -g @coasty/jevcode`, `npx @coasty/jevcode` | yes |
+| bun / pnpm / yarn | `bunx @coasty/jevcode`, `pnpm dlx @coasty/jevcode`, `yarn dlx @coasty/jevcode` | yes |
+| mise | `mise use -g npm:@coasty/jevcode` | yes |
+| Homebrew | `brew install coasty-ai/jevcode/jevcode` | yes, stable releases |
+| AUR | `yay -S jevcode` or `paru -S jevcode` | not yet: waits for the owner's AUR setup (step 7) |
+| Nix | `nix run github:coasty-ai/JevCode` | yes; it builds from source, not from npm |
 
 Every channel still runs the launcher under Node, so Node 22.12 or newer must be on `PATH` (Homebrew, AUR and Nix
 install it for you).
@@ -84,7 +88,7 @@ npx @coasty/jevcode           # run once without installing
 
 Proof: `jevcode --version` prints `jevcode <version>`. Update with `jevcode upgrade` or `npm i -g @coasty/jevcode@latest`.
 
-**Status:** available from the first published release; see [`../RELEASE.md`](../RELEASE.md).
+**Status:** available.
 
 ### bun, pnpm and yarn
 
@@ -98,7 +102,7 @@ yarn dlx @coasty/jevcode      # Yarn 2 or newer
 
 Proof: `bunx @coasty/jevcode --version` prints `jevcode <version>`.
 
-**Status:** available from the first published release; see [`../RELEASE.md`](../RELEASE.md).
+**Status:** available.
 
 ### mise
 
@@ -113,7 +117,7 @@ Proof: `mise exec -- jevcode --version`. Update with `mise upgrade npm:@coasty/j
 
 The bare shorthand `mise use -g jevcode` does not work: the name is not in mise's registry.
 
-**Status:** available from the first published release; see [`../RELEASE.md`](../RELEASE.md).
+**Status:** available.
 
 ### Homebrew
 
@@ -124,8 +128,8 @@ brew install coasty-ai/jevcode/jevcode
 Proof: `jevcode --version` and `brew test jevcode`. Update with `brew upgrade jevcode`. The formula also installs
 the man page and the bash, zsh and fish completions.
 
-**Status:** available from the first stable release after the owner creates the tap (one-time step 6 in
-[`../RELEASE.md`](../RELEASE.md#6-homebrew-tap)). Until then the tap does not exist.
+**Status:** available. The owner's tap setup (one-time step 6 in
+[`../RELEASE.md`](../RELEASE.md#6-homebrew-tap)) is done, and the tap takes stable releases only.
 
 ### AUR (Arch Linux)
 
@@ -143,8 +147,8 @@ makepkg -si
 
 Proof: `jevcode --version` and `pacman -Qi jevcode`. Update through your AUR helper.
 
-**Status:** available from the first stable release after the owner sets up the AUR key (one-time step 7 in
-[`../RELEASE.md`](../RELEASE.md#7-aur)). Until then the package does not exist.
+**Status:** not available yet. The package appears with the first stable release after the owner sets up the
+AUR key (one-time step 7 in [`../RELEASE.md`](../RELEASE.md#7-aur)). Until then the package does not exist.
 
 ### Nix
 
@@ -163,7 +167,7 @@ Proof: `nix run github:coasty-ai/JevCode -- --version` prints `jevcode <version>
 `nix profile upgrade JevCode` (the element name nix gives a `github:coasty-ai/JevCode` install), or
 `nix profile upgrade --all`.
 
-**Status:** available once the owner commits `flake.lock` (one-time step 8 in
+**Status:** available: `flake.lock` is committed (one-time step 8 in
 [`../RELEASE.md`](../RELEASE.md#8-nix-lock)). A pinned tag works when that tag contains `flake.lock`.
 
 For mise, AUR and Nix installs, update with the tool you installed with.
@@ -175,7 +179,7 @@ flowchart TD
   A(["start"]) --> N{"node --version at least 22.12?"}
   N -->|"no"| NVM["nvm use, or install Node 22.12 or newer"]
   NVM --> N
-  N -->|"yes"| S1["git clone, then cd into the checkout"]
+  N -->|"yes, from source"| S1["git clone, then cd into the checkout"]
   S1 --> S2["npm ci"]
   S2 --> S3["npm run build"]
   S3 --> S3A["scripts/build.mjs bundles dist/jevcode.mjs<br/>then runs the first-frame and --version smoke"]
@@ -184,10 +188,13 @@ flowchart TD
   S4 --> V["jevcode --version"]
   V --> READY(["ready — see Your first run"])
 
-  X1["npx @coasty/jevcode, npm i -g, bunx, pnpm dlx, yarn dlx, mise npm:@coasty/jevcode"] -.->|"not published yet"| BLOCKED["blocked on the first release"]
-  X2["brew install coasty-ai/jevcode/jevcode"] -.->|"first stable release + tap setup"| BLOCKED
-  X3["yay -S jevcode"] -.->|"first stable release + AUR key"| BLOCKED
-  X4["nix run github:coasty-ai/JevCode"] -.->|"flake.lock not committed yet"| LOCK["blocked on the owner's flake.lock commit"]
+  N -->|"yes"| X1["npm i -g @coasty/jevcode, npx, bunx, pnpm dlx, yarn dlx, mise npm:@coasty/jevcode"]
+  N -->|"yes"| X2["brew install coasty-ai/jevcode/jevcode"]
+  N -->|"yes"| X4["nix run github:coasty-ai/JevCode"]
+  X1 --> V
+  X2 --> V
+  X4 --> V
+  X3["yay -S jevcode"] -.->|"AUR key not set up yet"| BLOCKED["blocked on the owner's AUR setup"]
 ```
 
 ## Measured build facts

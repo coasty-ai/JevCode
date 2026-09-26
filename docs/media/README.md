@@ -9,9 +9,9 @@ came from.
 | `side-by-side.png` | The final frame of that recording, as a still |
 | `side-by-side.md` | How the recording was made, the exact commands, and the numbers behind it |
 | `wordmark-{dark,light}.svg` | The README's wordmark — **generated**, not drawn (see below) |
-| `rule-{dark,light}.svg` | The README's section rule, in the same two pinks |
-| `badge-*.svg` | The README's header badges |
-| `swatch-*.svg` | The pills in the README's Colour table, one per hex the themes use |
+| `rule-{dark,light}.svg` | A section rule in the same two pinks, generated for pages that want one (the README does not use it) |
+| `badge-*.svg` | The header badges; the README shows three of them |
+| `swatch-*.svg` | The pills in the Colour table of [the TUI guide](../TUI.md), one per hex the themes use |
 
 ## Rules for anything added here
 

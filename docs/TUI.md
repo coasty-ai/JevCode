@@ -505,6 +505,20 @@ textual marker (`[you]`, the badge word, the box glyphs), so `--no-color`, `NO_C
 read the same. `--ascii` draws the console and cards with `+ - |`, the prompt as `> `, the panel chevrons as `> v`,
 the wordmark in `#`.
 
+The roles and their markers, in the two main themes. Pink is brand, never meaning: `[block]` is red *and* says
+`[block]`.
+
+| Role | Dark | Light | Marker |
+| --- | --- | --- | --- |
+| brand / accent | ![#f386a1](media/swatch-f386a1.svg) | ![#be185d](media/swatch-be185d.svg) | — |
+| selected / active | ![#d45bb6](media/swatch-d45bb6.svg) | ![#831843](media/swatch-831843.svg) | `[you]`, `live` |
+| ok | ![#4ade80](media/swatch-4ade80.svg) | ![#15803d](media/swatch-15803d.svg) | `✓` |
+| review | ![#fbbf24](media/swatch-fbbf24.svg) | ![#0369a1](media/swatch-0369a1.svg) | `[review]` |
+| block / error | ![#f87171](media/swatch-f87171.svg) | ![#b91c1c](media/swatch-b91c1c.svg) | `[block]` |
+
+The swatches, like the README's wordmark and badges, are generated from `src/tui/theme.ts` by
+[`scripts/gen-brand.mjs`](../scripts/gen-brand.mjs); `npm run brand -- --check` fails when they have drifted apart.
+
 ## Sessions, follow-ups, steering, pause
 
 Every run of one `jevcode` process belongs to a **session** (the first run's id, per workspace). After a run

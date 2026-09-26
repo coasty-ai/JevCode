@@ -23,6 +23,10 @@ man jevcode                 # the full manual page
 | `login` | store an API key, from a masked prompt or from stdin |
 | `logout` | remove a stored API key |
 | `sessions` | list, reindex, prune or unlock sessions |
+| `models` | browse the model catalogue: list, search, refresh |
+| `import` | import memory and workflows from other agents |
+| `agents` | list the agents of a run |
+| `doctor` | read-only check of this machine — version, install method, paths, sandbox level, whether `pytest` imports for the Python the sandbox runs — with one fix per problem |
 | `report` | write a redacted support bundle for a run |
 | `why` | explain one Jev decision of a stored run |
 | `calibration` | reliability report over this workspace's runs |
@@ -43,6 +47,10 @@ jevcode perf [flags]
 jevcode login [flags]
 jevcode logout [--generator] [--jev]
 jevcode sessions [list|reindex|prune|unlock <id>]
+jevcode models [list|search <query>|refresh]
+jevcode import [<source>]
+jevcode agents [list]
+jevcode doctor
 jevcode report <id> [--include-requests] [--out <dir>]
 jevcode why <id> <step> <ref>
 jevcode calibration [flags]
