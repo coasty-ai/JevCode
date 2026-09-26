@@ -21,8 +21,8 @@ Jev is kept for three quick routing hints at the edges of a run:
 | RA2 | after 30 model turns, every 10 turns | are the recent steps unproductive? If so, add one "step back" hint | 400 ms | no hint |
 
 None of them can allow or block a command, end or extend a run, or declare a task done. A
-normal run makes at most one Jev request, and on the default provider none: every provider but
-Anthropic already sends each turn at low effort, so RA0 is not asked there. The Jev key is
+normal run makes at most one Jev request, and on the default model none: the default is a GLM
+model, which already sends each turn at low effort, so RA0 is not asked there. The Jev key is
 optional in agent mode; without one, each placement takes its fallback at once.
 
 **In the Jev-driven modes** — `jev-only`, and the legacy `llm-jev` and `jev-on` kept for saved

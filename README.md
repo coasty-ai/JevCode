@@ -19,7 +19,7 @@ JevCode is a coding agent that runs in your terminal. You chat with it, and when
 change it reads, edits and runs your code itself.
 
 <p align="center">
-  <img alt="JevCode fixing a failing test in the terminal" src="docs/media/demo.gif" width="800">
+  <img alt="JevCode running in a terminal and fixing the failing tests of a small Python project" src="docs/media/demo.gif" width="800">
   <br>
   <sub>A real run, recorded in a terminal. <a href="docs/media/demo.md">How it was recorded</a>.</sub>
 </p>
@@ -37,11 +37,13 @@ available.
 
 ## Quick start
 
-Run `jevcode` in your project. The first time, it asks for an API key and saves it. Then just
-talk to it. Ask a question and it answers; ask for a change and it does the work:
+Run `jevcode` in your project. The first time, it asks for an OpenRouter key and saves it; to use
+another provider, see [Bring your own model](#bring-your-own-model) below. Then just talk to it.
+Ask a question and it answers; ask for a change and it does the work. A run looks like this (the
+model's wording will differ):
 
 ```text
-[you]      Fix the failing tests in tests/test_core.py
+[you]      Fix the failing tests in tests/test_core.py without changing the tests.
 [step 1]   Read tests/test_core.py, calc/core.py
 [step 2]   Edit calc/core.py (+1 −1)
 [step 3]   Edit calc/core.py (+2 −1)
@@ -81,9 +83,11 @@ Export the key, put it in a `.env` file, or save it with `jevcode login`. More i
   parallel.
 - **It checks its own work** with the fastest test or typecheck that covers the change. Add
   `--agent-verify tests` to have JevCode run your whole test suite as well.
-- **Jev helps on the side.** Jev is a small decision model that makes a few quick calls, such as
-  spotting a simple question so the reply comes back faster. It never blocks anything, and its
-  key is optional.
+- **Jev helps on the side.** Jev is a small decision model that makes a few quick calls. On models
+  where it helps, it spots a simple question so the reply comes back faster. It never blocks
+  anything, and its key is optional.
+
+More in [The agent loop](docs/architecture/agent-loop.md).
 
 ## Links
 

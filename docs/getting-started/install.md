@@ -190,11 +190,12 @@ flowchart TD
 
   N -->|"yes"| X1["npm i -g @coasty/jevcode, npx, bunx, pnpm dlx, yarn dlx, mise npm:@coasty/jevcode"]
   N -->|"yes"| X2["brew install coasty-ai/jevcode/jevcode"]
+  N -->|"yes"| X3["yay -S jevcode"]
   N -->|"yes"| X4["nix run github:coasty-ai/JevCode"]
   X1 --> V
   X2 --> V
   X4 --> V
-  X3["yay -S jevcode"] -.->|"AUR key not set up yet"| BLOCKED["blocked on the owner's AUR setup"]
+  X3 -.->|"AUR key not set up yet"| BLOCKED["blocked on the owner's AUR setup"]
 ```
 
 ## Measured build facts
