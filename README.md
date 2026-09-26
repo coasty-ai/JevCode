@@ -19,9 +19,9 @@ JevCode is a coding agent that runs in your terminal. You chat with it, and when
 change it reads, edits and runs your code itself.
 
 <p align="center">
-  <img alt="JevCode running in a terminal and fixing the failing tests of a small Python project" src="docs/media/demo.gif" width="800">
+  <img alt="JevCode answering hi, then fixing the failing tests of a small Python project, live" src="docs/media/demo.gif" width="800">
   <br>
-  <sub>A real run, recorded in a terminal. <a href="docs/media/demo.md">How it was recorded</a>.</sub>
+  <sub>A real session at real speed: two bugs fixed in under ten seconds, for about a tenth of a cent. <a href="docs/media/demo.md">How it was recorded</a>.</sub>
 </p>
 
 ## Install
@@ -39,20 +39,8 @@ available.
 
 Run `jevcode` in your project. The first time, it asks for an OpenRouter key and saves it; to use
 another provider, see [Bring your own model](#bring-your-own-model) below. Then just talk to it.
-Ask a question and it answers; ask for a change and it does the work. A run looks like this (the
-model's wording will differ):
-
-```text
-[you]      Fix the failing tests in tests/test_core.py without changing the tests.
-[step 1]   Read tests/test_core.py, calc/core.py
-[step 2]   Edit calc/core.py (+1 −1)
-[step 3]   Edit calc/core.py (+2 −1)
-[step 4]   Bash python -m pytest -q · 7 passed
-[jevcode]  Both bugs are fixed and all 7 tests pass.
-```
-
-On the demo project in `examples/demo-py`, this fix took about 9 seconds and a tenth of a cent
-([try it yourself](docs/getting-started/first-run.md#try-it-on-the-demo-project)).
+Ask a question and it answers; ask for a change and it does the work.
+[Try it on the demo project](docs/getting-started/first-run.md#try-it-on-the-demo-project).
 
 It acts without asking, and `/undo` reverts a step's changes to your files. Start it with
 `jevcode --autonomy review` to approve risky commands first, or use `jevcode run "<task>"` to run
