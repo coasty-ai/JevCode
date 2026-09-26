@@ -38,6 +38,15 @@ the rules are in `docs/concepts/verification.md`.
   default. Every model family without its own prompt paragraph gets the one that asks for native tool calls rather than
   calls written as text.
 
+### Fixed — a message typed while a reply streams is answered (2026-09-25)
+
+- **Nothing you type mid-reply is lost.** A message typed while the agent's reply was still streaming was queued for the
+  step in progress and, when that reply ended the run, silently dropped (it stayed pending in `state.json`). The agent now
+  takes it as soon as the turn ends and answers it in the same run: before the first tool call it shows as your next
+  `[you]` message (in the TUI, `--plain` and `transcript.log`), after one it is a directive for the task in progress, as
+  before. In the few milliseconds after the agent has decided to finish, a message is handed back and sent as your next
+  message instead of being queued. `docs/DECISIONS.md` (2026-09-25) has the details.
+
 ### Fixed — command output, test detection and the tools (2026-09-25)
 
 - **Command output is cleaned whole.** Terminal escape sequences are removed as whole sequences, never leaving `[33m` behind,
